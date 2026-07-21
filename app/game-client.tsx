@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, DragEvent, ReactNode } from "react";
+import { Boitata3DLayer } from "./boitata-3d-layer";
 import {
   BENCH_SIZE,
   BOARD_COLUMNS,
@@ -245,6 +246,7 @@ export function GameClient() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [boardHeightRatio, setBoardHeightRatio] = useState(DESKTOP_BOARD_HEIGHT_RATIO);
+  const [boitata3DReady, setBoitata3DReady] = useState(false);
   const [tutorialStage, setTutorialStage] = useState(0);
   const [tutorialVisible, setTutorialVisible] = useState(true);
 
@@ -331,6 +333,7 @@ export function GameClient() {
   }, [game.phase, game.units, game.enemyUnits, currentEvent]);
 
   const boardUnits = displayUnits.filter((unit) => unit.position !== null);
+  const boitataBoardUnits = boardUnits.filter((unit) => unit.heroId === "boitata");
   const benchUnits = game.units.filter((unit) => unit.benchIndex !== null);
   const selectedDisplay = selectedId ? displayUnits.find((unit) => unit.id === selectedId) ?? null : null;
   const selectedPersistent = selectedId ? game.units.find((unit) => unit.id === selectedId) ?? game.enemyUnits.find((unit) => unit.id === selectedId) ?? null : null;
@@ -354,6 +357,10 @@ export function GameClient() {
       })
     : [];
   const combatBeatStyle = { "--combat-beat": `${Math.round(680 / speed)}ms` } as CSSProperties;
+
+  useEffect(() => {
+    if (boitataBoardUnits.length === 0) setBoitata3DReady(false);
+  }, [boitataBoardUnits.length]);
 
   function commit(result: GameActionResult, onSuccess?: () => void) {
     setToast(result.message);
@@ -517,7 +524,7 @@ export function GameClient() {
           </div>
           <div className="board-wrap">
             <div className="territory-label territory-enemy">Enemy territory</div>
-            <div className="board-grid" role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
+            <div className={`board-grid ${boitata3DReady ? "boitata-3d-ready" : ""}`} role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
               {currentEffectKind && combatLinks.length ? (
                 <div className="combat-links" aria-hidden="true" data-testid="combat-links">
                   {combatLinks.map((link) => (
@@ -573,6 +580,19 @@ export function GameClient() {
                   </button>
                 );
               })}
+              {boitataBoardUnits.length > 0 ? (
+                <Boitata3DLayer
+                  units={boitataBoardUnits}
+                  currentEvent={currentEvent}
+                  previousEvent={previousEvent}
+                  phase={game.phase}
+                  playing={playing}
+                  speed={speed}
+                  boardHeightRatio={boardHeightRatio}
+                  onReady={() => setBoitata3DReady(true)}
+                  onFallback={() => setBoitata3DReady(false)}
+                />
+              ) : null}
             </div>
             <div className="territory-label territory-player">Your territory · {deployedCount}/{commanderCap} deployed</div>
           </div>
