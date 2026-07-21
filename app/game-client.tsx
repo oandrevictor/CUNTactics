@@ -26,6 +26,7 @@ import {
   commanderXpToNext,
   craftItem,
   createInitialGame,
+  enhanceEquippedItem,
   enhanceItem,
   equipItem,
   getActiveTraits,
@@ -64,6 +65,14 @@ const STORAGE_KEY = "hexfall-match-v1";
 const TUTORIAL_KEY = "hexfall-tutorial-complete";
 const DESKTOP_BOARD_HEIGHT_RATIO = 5.4 / 8;
 const MOBILE_BOARD_HEIGHT_RATIO = 6.3 / 8;
+const CRAFTED_ITEM_DRAG_TYPE = "application/x-hexfall-crafted-item";
+const ITEM_COMPONENT_DRAG_TYPE = "application/x-hexfall-item-component";
+
+type LoadoutDrag =
+  | { kind: "item"; id: string }
+  | { kind: "component"; id: ItemComponentId };
+
+type LoadoutDropStatus = "ready" | "blocked" | null;
 
 type DisplayUnit = {
   id: string;
@@ -198,6 +207,7 @@ function UnitToken({
   previousEvent,
   draggable,
   onDragStart,
+  loadoutDropStatus = null,
 }: {
   unit: DisplayUnit;
   selected: boolean;
@@ -206,6 +216,7 @@ function UnitToken({
   previousEvent: CombatEvent | null;
   draggable: boolean;
   onDragStart?: (event: DragEvent<HTMLDivElement>) => void;
+  loadoutDropStatus?: LoadoutDropStatus;
 }) {
   const hero = HEROES[unit.heroId];
   const isCreatureToken = unit.heroId === "boitata";
@@ -235,7 +246,7 @@ function UnitToken({
 
   return (
     <div
-      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${isActor ? `unit-event-actor unit-event-actor-${effectKind}` : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""}`}
+      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${isActor ? `unit-event-actor unit-event-actor-${effectKind}` : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""} ${loadoutDropStatus ? `unit-loadout-drop-${loadoutDropStatus}` : ""}`}
       draggable={draggable}
       onDragStart={onDragStart}
       data-testid={`unit-${unit.id}`}
@@ -366,6 +377,7 @@ export function GameClient() {
   const [tutorialVisible, setTutorialVisible] = useState(true);
   const [forgeComponents, setForgeComponents] = useState<ItemComponentId[]>([]);
   const [selectedCraftedItemId, setSelectedCraftedItemId] = useState<string | null>(null);
+  const [draggedLoadout, setDraggedLoadout] = useState<LoadoutDrag | null>(null);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -549,6 +561,50 @@ export function GameClient() {
     commit(unequipItem(game, selectedAllyForItems.id, slotIndex));
   }
 
+  function handleEnhanceEquippedGear(unitId: string, componentId: ItemComponentId) {
+    commit(enhanceEquippedItem(game, unitId, componentId), () => {
+      setForgeComponents((components) => {
+        const selectedIndex = components.indexOf(componentId);
+        return selectedIndex < 0
+          ? components
+          : components.filter((_, index) => index !== selectedIndex);
+      });
+    });
+  }
+
+  function loadoutDropStatusFor(unit: DisplayUnit): LoadoutDropStatus {
+    if (!draggedLoadout || game.phase !== "planning" || unit.side !== "player") return null;
+    const persistent = game.units.find((candidate) => candidate.id === unit.id);
+    if (!persistent) return "blocked";
+    if (draggedLoadout.kind === "item") {
+      return persistent.itemSlots.some((item) => item === null) ? "ready" : "blocked";
+    }
+    return persistent.itemSlots.some((item) => item?.tier === "full") ? "ready" : "blocked";
+  }
+
+  function handleChampionLoadoutDrop(event: DragEvent<HTMLElement>, unitId: string): boolean {
+    const craftedItemId = event.dataTransfer.getData(CRAFTED_ITEM_DRAG_TYPE);
+    const rawComponentId = event.dataTransfer.getData(ITEM_COMPONENT_DRAG_TYPE);
+    if (!craftedItemId && !rawComponentId) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+    setDraggedLoadout(null);
+    setSelectedId(unitId);
+
+    if (craftedItemId) {
+      commit(equipItem(game, unitId, craftedItemId), () => {
+        setSelectedCraftedItemId((selected) => selected === craftedItemId ? null : selected);
+      });
+      return true;
+    }
+
+    const componentId = rawComponentId as ItemComponentId;
+    if (!ITEM_COMPONENT_IDS.includes(componentId)) return false;
+    handleEnhanceEquippedGear(unitId, componentId);
+    return true;
+  }
+
   function handleBuy(offerId: string) {
     commit(buyShopUnit(game, offerId), () => {
       if (tutorialVisible && tutorialStage === 0) setTutorialStage(1);
@@ -730,19 +786,30 @@ export function GameClient() {
                 const playerCell = row >= PLAYER_START_ROW;
                 const valid = game.phase === "planning" && !!selectedAlly && playerCell;
                 const highlighted = !!unit && !!highlightedTrait && HEROES[unit.heroId].traits.includes(highlightedTrait);
+                const loadoutDropStatus = unit ? loadoutDropStatusFor(unit) : null;
                 const aria = `Row ${row + 1}, column ${column + 1}, ${playerCell ? "player" : "enemy"} territory${unit ? `, ${HEROES[unit.heroId].name}, ${ROLE_PROFILES[HEROES[unit.heroId].role].label}, range ${unit.range}, level ${unit.level}, ${Math.round(clampPercent(unit.hp, unit.maxHp))} percent health${unit.shield > 0 ? `, ${Math.round(unit.shield)} shield` : ""}` : ", empty"}`;
                 return (
                   <button
-                    className={`board-cell ${playerCell ? "board-cell-player" : "board-cell-enemy"} ${valid ? "board-cell-valid" : ""} ${unit?.id === selectedId ? "board-cell-selected" : ""}`}
+                    className={`board-cell ${playerCell ? "board-cell-player" : "board-cell-enemy"} ${valid ? "board-cell-valid" : ""} ${unit?.id === selectedId ? "board-cell-selected" : ""} ${loadoutDropStatus ? `loadout-cell-${loadoutDropStatus}` : ""}`}
                     key={index}
                     type="button"
                     role="gridcell"
                     aria-label={aria}
                     data-testid={`board-cell-r${row}-c${column}`}
                     onClick={() => handleBoardCell(index)}
-                    onDragOver={(event) => { if (playerCell && game.phase === "planning") event.preventDefault(); }}
+                    onDragOver={(event) => {
+                      if (draggedLoadout) {
+                        if (unit?.side === "player" && game.phase === "planning") {
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                        }
+                        return;
+                      }
+                      if (playerCell && game.phase === "planning") event.preventDefault();
+                    }}
                     onDrop={(event) => {
                       event.preventDefault();
+                      if (unit?.side === "player" && handleChampionLoadoutDrop(event, unit.id)) return;
                       const unitId = event.dataTransfer.getData("text/unit-id");
                       if (unitId && playerCell) handleMove(unitId, "board", index);
                     }}
@@ -757,7 +824,9 @@ export function GameClient() {
                         currentEvent={currentEvent}
                         previousEvent={previousEvent}
                         draggable={game.phase === "planning" && unit.side === "player"}
+                        loadoutDropStatus={loadoutDropStatus}
                         onDragStart={(event) => {
+                          setDraggedLoadout(null);
                           event.dataTransfer.setData("text/unit-id", unit.id);
                           setSelectedId(unit.id);
                         }}
@@ -796,23 +865,34 @@ export function GameClient() {
               {Array.from({ length: BENCH_SIZE }, (_, index) => {
                 const unit = benchUnits.find((candidate) => candidate.benchIndex === index);
                 const display = unit ? persistentDisplay(unit) : null;
+                const loadoutDropStatus = display ? loadoutDropStatusFor(display) : null;
                 return (
                   <button
-                    className={`bench-slot ${unit?.id === selectedId ? "board-cell-selected" : ""}`}
+                    className={`bench-slot ${unit?.id === selectedId ? "board-cell-selected" : ""} ${loadoutDropStatus ? `loadout-cell-${loadoutDropStatus}` : ""}`}
                     type="button"
                     key={index}
                     data-testid={`bench-slot-${index}`}
                     aria-label={display ? `Bench slot ${index + 1}, ${HEROES[display.heroId].name}, ${ROLE_PROFILES[HEROES[display.heroId].role].label}, range ${display.range}` : `Bench slot ${index + 1}, empty`}
                     disabled={game.phase !== "planning"}
                     onClick={() => handleBenchSlot(index)}
-                    onDragOver={(event) => { if (game.phase === "planning") event.preventDefault(); }}
+                    onDragOver={(event) => {
+                      if (draggedLoadout) {
+                        if (display && game.phase === "planning") {
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                        }
+                        return;
+                      }
+                      if (game.phase === "planning") event.preventDefault();
+                    }}
                     onDrop={(event) => {
                       event.preventDefault();
+                      if (display && handleChampionLoadoutDrop(event, display.id)) return;
                       const unitId = event.dataTransfer.getData("text/unit-id");
                       if (unitId) handleMove(unitId, "bench", index);
                     }}
                   >
-                    {display ? <UnitToken unit={display} selected={display.id === selectedId} highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)} currentEvent={null} previousEvent={null} draggable onDragStart={(event) => { event.dataTransfer.setData("text/unit-id", display.id); setSelectedId(display.id); }} /> : <span className="empty-copy">+</span>}
+                    {display ? <UnitToken unit={display} selected={display.id === selectedId} highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)} currentEvent={null} previousEvent={null} draggable={game.phase === "planning"} loadoutDropStatus={loadoutDropStatus} onDragStart={(event) => { setDraggedLoadout(null); event.dataTransfer.setData("text/unit-id", display.id); setSelectedId(display.id); }} /> : <span className="empty-copy">+</span>}
                   </button>
                 );
               })}
@@ -954,7 +1034,7 @@ export function GameClient() {
             <div><span className="eyebrow">Components & gear</span><h2 className="panel-title">Relic Forge</h2></div>
             <span className="panel-meta">{componentCount} parts · {game.craftedItemInventory.length} gear</span>
           </div>
-          <p className="armory-cadence">A component arrives when rounds 2, 4, 6, 8, and 10 begin. Combine two for gear; add one more to enhance it.</p>
+          <p className="armory-cadence">A component arrives when rounds 2, 4, 6, 8, and 10 begin. Combine two for gear. Drag gear onto a champion to equip it, or drag a component onto a champion with full gear to enhance it.</p>
           {game.roundResult?.itemComponentReward ? (
             <div className="armory-reward" data-testid="round-item-reward">
               <span>{ITEM_COMPONENTS[game.roundResult.itemComponentReward].glyph}</span>
@@ -969,13 +1049,20 @@ export function GameClient() {
               const available = game.componentInventory[componentId];
               return (
                 <button
-                  className={`item-component-card ${selectedCount ? "item-component-card-selected" : ""}`}
+                  className={`item-component-card ${selectedCount ? "item-component-card-selected" : ""} ${draggedLoadout?.kind === "component" && draggedLoadout.id === componentId ? "loadout-source-dragging" : ""}`}
                   type="button"
                   key={componentId}
                   data-testid={`item-component-${componentId}`}
-                  disabled={game.phase !== "planning" || available <= selectedCount || forgeComponents.length >= 2}
+                  disabled={game.phase !== "planning" || available <= 0}
+                  draggable={game.phase === "planning" && available > 0}
                   onClick={() => handleSelectComponent(componentId)}
-                  aria-label={`Add ${component.name} to forge, ${available} available${selectedCount ? `, ${selectedCount} selected` : ""}`}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData(ITEM_COMPONENT_DRAG_TYPE, componentId);
+                    setDraggedLoadout({ kind: "component", id: componentId });
+                  }}
+                  onDragEnd={() => setDraggedLoadout(null)}
+                  aria-label={`Add ${component.name} to forge, or drag it onto a champion to enhance equipped full gear, ${available} available${selectedCount ? `, ${selectedCount} selected` : ""}`}
                 >
                   <span className="item-component-glyph" aria-hidden="true">{component.glyph}</span>
                   <span><strong>{component.name}</strong><small>{component.description}</small></span>
@@ -1016,11 +1103,18 @@ export function GameClient() {
               const definition = ITEM_DEFINITIONS[item.itemId];
               return (
                 <button
-                  className={`crafted-item-card ${item.id === selectedCraftedItemId ? "crafted-item-card-selected" : ""} ${item.tier === "enhanced" ? "crafted-item-card-enhanced" : ""}`}
+                  className={`crafted-item-card ${item.id === selectedCraftedItemId ? "crafted-item-card-selected" : ""} ${item.tier === "enhanced" ? "crafted-item-card-enhanced" : ""} ${draggedLoadout?.kind === "item" && draggedLoadout.id === item.id ? "loadout-source-dragging" : ""}`}
                   type="button"
                   key={item.id}
                   data-testid={`crafted-item-${item.id}`}
                   aria-pressed={item.id === selectedCraftedItemId}
+                  draggable={game.phase === "planning"}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData(CRAFTED_ITEM_DRAG_TYPE, item.id);
+                    setDraggedLoadout({ kind: "item", id: item.id });
+                  }}
+                  onDragEnd={() => setDraggedLoadout(null)}
                   onClick={() => setSelectedCraftedItemId((selected) => selected === item.id ? null : item.id)}
                 >
                   <span className="item-mark" aria-hidden="true">{definition.recipe.map((componentId) => ITEM_COMPONENTS[componentId].glyph).join("")}{item.enhancement ? <i>{ITEM_COMPONENTS[item.enhancement].glyph}</i> : null}</span>
@@ -1034,6 +1128,19 @@ export function GameClient() {
             <div className="item-action-row">
               <button className="game-button button-secondary" type="button" data-testid={`equip-item-${selectedCraftedItem.id}`} disabled={game.phase !== "planning" || !selectedAllyForItems || selectedAllyForItems.itemSlots.every(Boolean)} onClick={() => handleEquipItem()}>Equip{selectedAllyForItems ? ` to ${HEROES[selectedAllyForItems.heroId].name}` : " selected champion"}</button>
               <button className="game-button button-primary" type="button" data-testid={`enhance-item-${selectedCraftedItem.id}`} disabled={game.phase !== "planning" || selectedCraftedItem.tier === "enhanced" || forgeComponents.length !== 1} onClick={handleEnhanceItem}>Enhance with 1 component</button>
+            </div>
+          ) : null}
+          {forgeComponents.length === 1 ? (
+            <div className="item-action-row item-component-action-row">
+              <button
+                className="game-button button-primary"
+                type="button"
+                data-testid="enhance-equipped-item"
+                disabled={game.phase !== "planning" || !selectedAllyForItems || !selectedAllyForItems.itemSlots.some((item) => item?.tier === "full")}
+                onClick={() => selectedAllyForItems && handleEnhanceEquippedGear(selectedAllyForItems.id, forgeComponents[0])}
+              >
+                Enhance {selectedAllyForItems ? `${HEROES[selectedAllyForItems.heroId].name}'s full gear` : "selected champion's gear"}
+              </button>
             </div>
           ) : null}
         </section>

@@ -15,6 +15,7 @@ import {
   calculateWallOfFireShield,
   craftItem,
   createInitialGame,
+  enhanceEquippedItem,
   enhanceItem,
   equipItem,
   getCraftedItemBonuses,
@@ -153,6 +154,58 @@ test("equipping up to three items applies combat stats and unequipping reverses 
   const emptySlot = unequipItem(unequipped.state, unit.id, 1);
   assert.equal(emptySlot.ok, false);
   assert.equal(emptySlot.state, unequipped.state);
+});
+
+test("a dropped component enhances the first eligible item equipped to a board or bench champion", () => {
+  const initial = createInitialGame(129);
+  const bearer = initial.units.find((unit) => unit.benchIndex !== null) ?? initial.units[0];
+  const alreadyEnhanced: CraftedItem = { id: "equipped-enhanced", itemId: "inferno-fang", tier: "enhanced", enhancement: "mote" };
+  const firstFull: CraftedItem = { id: "equipped-first", itemId: "cinderplate", tier: "full", enhancement: null };
+  const secondFull: CraftedItem = { id: "equipped-second", itemId: "spellfang", tier: "full", enhancement: null };
+  const stocked: GameState = {
+    ...initial,
+    componentInventory: { ...initial.componentInventory, scale: 1 },
+    units: initial.units.map((unit) => unit.id === bearer.id
+      ? { ...unit, itemSlots: [alreadyEnhanced, firstFull, secondFull] }
+      : unit),
+  };
+  const original = structuredClone(stocked);
+  const statsBefore = getUnitStats(stocked.units.find((unit) => unit.id === bearer.id)!);
+
+  const result = enhanceEquippedItem(stocked, bearer.id, "scale");
+
+  assert.equal(result.ok, true);
+  const upgradedBearer = result.state.units.find((unit) => unit.id === bearer.id)!;
+  assert.deepEqual(upgradedBearer.itemSlots.map((item) => [item?.id, item?.tier, item?.enhancement]), [
+    ["equipped-enhanced", "enhanced", "mote"],
+    ["equipped-first", "enhanced", "scale"],
+    ["equipped-second", "full", null],
+  ]);
+  assert.equal(result.state.componentInventory.scale, 0);
+  assert.deepEqual(result.state.craftedItemInventory, stocked.craftedItemInventory);
+  assert.deepEqual(stocked, original);
+  assert.deepEqual(validateState(result.state), []);
+  const statsAfter = getUnitStats(upgradedBearer);
+  assert.equal(statsAfter.maxHp, statsBefore.maxHp + ITEM_COMPONENTS.scale.enhancementBonuses.maxHp);
+  assert.equal(statsAfter.armor, statsBefore.armor + ITEM_COMPONENTS.scale.enhancementBonuses.armor);
+});
+
+test("enhancing equipped gear rejects ineligible drops without spending the component", () => {
+  const initial = createInitialGame(130);
+  const bearer = initial.units[0];
+  const stocked: GameState = {
+    ...initial,
+    componentInventory: { ...initial.componentInventory, ember: 1 },
+  };
+
+  for (const result of [
+    enhanceEquippedItem(stocked, bearer.id, "ember"),
+    enhanceEquippedItem(stocked, initial.enemyUnits[0].id, "ember"),
+    enhanceEquippedItem({ ...stocked, phase: "combat" }, bearer.id, "ember"),
+  ]) {
+    assert.equal(result.ok, false);
+    assert.equal(result.state.componentInventory.ember, 1);
+  }
 });
 
 test("selling and star-merging preserve every equipped item", () => {

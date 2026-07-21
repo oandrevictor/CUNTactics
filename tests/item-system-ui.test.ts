@@ -47,3 +47,25 @@ test("item interface is styled for forge cards, enhanced gear, and compact slot 
     assert.match(styles, new RegExp(selector.replace(".", "\\.")));
   }
 });
+
+test("items and components can be dragged onto board or bench champions", async () => {
+  const [client, engine, styles] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/game-engine.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(client, /CRAFTED_ITEM_DRAG_TYPE/);
+  assert.match(client, /ITEM_COMPONENT_DRAG_TYPE/);
+  assert.match(client, /handleChampionLoadoutDrop\(event, unit\.id\)/);
+  assert.match(client, /handleChampionLoadoutDrop\(event, display\.id\)/);
+  assert.match(client, /draggable=\{game\.phase === "planning" && available > 0\}/);
+  assert.match(client, /draggable=\{game\.phase === "planning"\}/);
+  assert.match(client, /equipItem\(game, unitId, craftedItemId\)/);
+  assert.match(client, /enhanceEquippedItem\(game, unitId, componentId\)/);
+  assert.match(client, /data-testid="enhance-equipped-item"/);
+  assert.match(engine, /export function enhanceEquippedItem/);
+  assert.match(styles, /\.loadout-cell-ready/);
+  assert.match(styles, /\.unit-loadout-drop-ready/);
+  assert.match(styles, /\.loadout-source-dragging/);
+});

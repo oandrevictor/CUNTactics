@@ -1140,6 +1140,31 @@ export function enhanceItem(
   return succeed(next, `${ITEM_DEFINITIONS[upgraded.itemId].name} enhanced with ${ITEM_COMPONENTS[componentId].name}.`);
 }
 
+export function enhanceEquippedItem(
+  state: GameState,
+  unitId: string,
+  componentId: ItemComponentId,
+): GameActionResult {
+  if (!canManageItems(state)) return fail(state, "Items can only be enhanced between combats.");
+  const unit = state.units.find((candidate) => candidate.id === unitId);
+  if (!unit) return fail(state, "That champion is no longer available.");
+  const slotIndex = unit.itemSlots.findIndex((item) => item?.tier === "full");
+  if (slotIndex < 0) return fail(state, "Equip a full item to this champion before enhancing it.");
+  if ((state.componentInventory?.[componentId] ?? 0) < 1) {
+    return fail(state, `Need 1 ${ITEM_COMPONENTS[componentId].name}.`);
+  }
+
+  const next = cloneState(state);
+  const upgraded = next.units.find((candidate) => candidate.id === unitId)!.itemSlots[slotIndex]!;
+  next.componentInventory[componentId] -= 1;
+  upgraded.tier = "enhanced";
+  upgraded.enhancement = componentId;
+  return succeed(
+    next,
+    `${ITEM_DEFINITIONS[upgraded.itemId].name} on ${HEROES[unit.heroId].name} enhanced with ${ITEM_COMPONENTS[componentId].name}.`,
+  );
+}
+
 export function equipItem(
   state: GameState,
   unitId: string,
