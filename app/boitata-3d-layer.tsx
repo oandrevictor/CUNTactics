@@ -12,6 +12,7 @@ import type {
   OrthographicCamera,
   Quaternion,
   SkinnedMesh,
+  Texture,
   Vector2,
   WebGLRenderer,
 } from "three";
@@ -60,7 +61,7 @@ interface BoitataEntity {
   model: Group;
   bones: Bone[];
   baseBoneQuaternions: Quaternion[];
-  bodyMaterial: MeshStandardMaterial;
+  bodyMaterials: MeshStandardMaterial[];
   wall: Group;
   wallRings: Mesh[];
   flames: Mesh[];
@@ -90,6 +91,10 @@ function isBone(object: Object3D): object is Bone {
 
 function isSkinnedMesh(object: Object3D): object is SkinnedMesh {
   return (object as SkinnedMesh).isSkinnedMesh === true;
+}
+
+function isTexture(value: unknown): value is Texture {
+  return typeof value === "object" && value !== null && (value as Texture).isTexture === true;
 }
 
 function smoothStep(value: number): number {
@@ -270,13 +275,6 @@ export function Boitata3DLayer({
           const root = new THREE.Group();
           root.name = `boitata-${unit.id}`;
           const seed = [...unit.id].reduce((total, character) => total + character.charCodeAt(0), 0) * 0.017;
-          const bodyMaterial = new THREE.MeshStandardMaterial({
-            color: 0x7d2113,
-            emissive: 0xff2a00,
-            emissiveIntensity: 0.82,
-            roughness: 0.48,
-            metalness: 0.06,
-          });
           const modelPivot = new THREE.Group();
           modelPivot.name = `boitata-rig-${unit.id}`;
           const model = SkeletonUtils.clone(rigTemplate) as Group;
@@ -289,10 +287,29 @@ export function Boitata3DLayer({
           );
 
           const allBones: Bone[] = [];
+          const bodyMaterials: MeshStandardMaterial[] = [];
           model.traverse((object) => {
             if (isBone(object)) allBones.push(object);
             if (isSkinnedMesh(object)) {
-              object.material = bodyMaterial;
+              const sourceMaterials = Array.isArray(object.material) ? object.material : [object.material];
+              const clonedMaterials = sourceMaterials.map((material) => {
+                if (material instanceof THREE.MeshStandardMaterial) {
+                  const clone = material.clone();
+                  clone.emissiveIntensity = 0.82;
+                  bodyMaterials.push(clone);
+                  return clone;
+                }
+                const fallbackMaterial = new THREE.MeshStandardMaterial({
+                  color: 0x7d2113,
+                  emissive: 0xff2a00,
+                  emissiveIntensity: 0.82,
+                  roughness: 0.48,
+                  metalness: 0.06,
+                });
+                bodyMaterials.push(fallbackMaterial);
+                return fallbackMaterial;
+              });
+              object.material = Array.isArray(object.material) ? clonedMaterials : clonedMaterials[0];
               object.frustumCulled = false;
               object.renderOrder = 3;
             }
@@ -376,7 +393,7 @@ export function Boitata3DLayer({
             model,
             bones,
             baseBoneQuaternions,
-            bodyMaterial,
+            bodyMaterials,
             wall,
             wallRings,
             flames,
@@ -400,7 +417,7 @@ export function Boitata3DLayer({
 
         const disposeEntity = (entity: BoitataEntity) => {
           scene.remove(entity.root);
-          entity.bodyMaterial.dispose();
+          entity.bodyMaterials.forEach((material) => material.dispose());
           entity.wallMaterial.dispose();
           entity.flameMaterial.dispose();
           entity.groundMaterial.dispose();
@@ -488,7 +505,9 @@ export function Boitata3DLayer({
             1 - breathing * 0.42 + castLift * 0.05 - deathProgress * 0.28,
             1 + breathing * 0.35 + castLift * 0.08,
           );
-          entity.bodyMaterial.emissiveIntensity = 0.82 + castLift * 0.68 + Math.abs(hitShake) * 0.62;
+          entity.bodyMaterials.forEach((material) => {
+            material.emissiveIntensity = 0.82 + castLift * 0.68 + Math.abs(hitShake) * 0.62;
+          });
 
           entity.root.position.x = entity.currentPosition.x + Math.cos(entity.facing) * hitShake * 0.1;
           entity.root.position.y = entity.currentPosition.y + Math.sin(entity.facing) * hitShake * 0.1;
@@ -668,12 +687,19 @@ export function Boitata3DLayer({
             assets.groundGeometry,
           ];
           sharedGeometries.forEach((geometry) => geometry.dispose());
+          const templateTextures = new Set<Texture>();
           rigTemplate.traverse((object) => {
             if (!isSkinnedMesh(object)) return;
             object.geometry.dispose();
             const materials = Array.isArray(object.material) ? object.material : [object.material];
-            materials.forEach((material) => material.dispose());
+            materials.forEach((material) => {
+              Object.values(material).forEach((value) => {
+                if (isTexture(value)) templateTextures.add(value);
+              });
+              material.dispose();
+            });
           });
+          templateTextures.forEach((texture) => texture.dispose());
           renderer?.dispose();
         };
       } catch {

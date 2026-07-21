@@ -22,6 +22,15 @@ type GltfJson = {
   asset?: { version?: string; generator?: string };
   accessors?: Array<{ count?: number; type?: string }>;
   buffers?: Array<{ byteLength?: number }>;
+  images?: Array<{ bufferView?: number; mimeType?: string }>;
+  materials?: Array<{
+    emissiveTexture?: { index?: number };
+    normalTexture?: { index?: number };
+    pbrMetallicRoughness?: {
+      baseColorTexture?: { index?: number };
+      metallicRoughnessTexture?: { index?: number };
+    };
+  }>;
   meshes?: Array<{ primitives?: Array<{ attributes?: Record<string, number> }> }>;
   nodes?: GltfNode[];
   scenes?: Array<{ nodes?: number[] }>;
@@ -31,6 +40,7 @@ type GltfJson = {
     joints?: number[];
     skeleton?: number;
   }>;
+  textures?: Array<{ source?: number }>;
 };
 
 type ParsedGlb = {
@@ -71,7 +81,7 @@ function parseGlb(bytes: Buffer): ParsedGlb {
   return { json, chunkTypes, declaredLength, actualLength: bytes.byteLength };
 }
 
-test("ships a valid GLB 2.0 with one ten-joint skin and a skinned mesh", async () => {
+test("ships the updated textured GLB 2.0 with one fourteen-joint skin", async () => {
   const parsed = parseGlb(await readFile(GLB_URL));
   const gltf = parsed.json;
 
@@ -85,8 +95,8 @@ test("ships a valid GLB 2.0 with one ten-joint skin and a skinned mesh", async (
 
   const skin = gltf.skins![0];
   const joints = skin.joints ?? [];
-  assert.equal(joints.length, 10, "the production rig contract is exactly ten joints");
-  assert.equal(new Set(joints).size, 10, "every skin joint should be unique");
+  assert.equal(joints.length, 14, "the updated production rig should expose fourteen joints");
+  assert.equal(new Set(joints).size, 14, "every skin joint should be unique");
 
   const nodes = gltf.nodes ?? [];
   const jointNames = joints.map((jointIndex) => {
@@ -94,15 +104,25 @@ test("ships a valid GLB 2.0 with one ten-joint skin and a skinned mesh", async (
     return nodes[jointIndex].name;
   });
   assert.ok(jointNames.every((name) => typeof name === "string" && name.length > 0), "all joints should be named for runtime lookup");
-  assert.equal(new Set(jointNames).size, 10, "joint names should be unique");
+  assert.equal(new Set(jointNames).size, 14, "joint names should be unique");
 
   assert.equal(typeof skin.inverseBindMatrices, "number", "skin should reference inverse bind matrices");
   const inverseBindAccessor = gltf.accessors?.[skin.inverseBindMatrices!];
   assert.equal(inverseBindAccessor?.type, "MAT4");
-  assert.equal(inverseBindAccessor?.count, 10);
+  assert.equal(inverseBindAccessor?.count, 14);
+
+  assert.equal(gltf.materials?.length, 1, "the updated creature should retain its authored material");
+  assert.equal(gltf.textures?.length, 4, "base color, emissive, normal, and surface maps should be embedded");
+  assert.equal(gltf.images?.length, 4);
+  assert.ok(gltf.images?.every((image) => image.mimeType === "image/jpeg" && typeof image.bufferView === "number"));
+  const material = gltf.materials![0];
+  assert.equal(material.pbrMetallicRoughness?.baseColorTexture?.index, 2);
+  assert.equal(material.emissiveTexture?.index, 0);
+  assert.equal(material.normalTexture?.index, 1);
+  assert.equal(material.pbrMetallicRoughness?.metallicRoughnessTexture?.index, 3);
 
   const skinnedMeshNodes = nodes.filter((node) => node.skin === 0 && typeof node.mesh === "number");
-  assert.ok(skinnedMeshNodes.length >= 1, "a scene node should bind the mesh to the ten-joint skin");
+  assert.ok(skinnedMeshNodes.length >= 1, "a scene node should bind the mesh to the fourteen-joint skin");
   for (const node of skinnedMeshNodes) {
     const mesh = gltf.meshes?.[node.mesh!];
     assert.ok(mesh, "skinned node should reference an existing mesh");
@@ -121,6 +141,10 @@ test("the shared board renderer loads and safely clones the rigged GLB", async (
   assert.match(source, /\/characters\/boitata\/boitata-rigged\.glb/);
   assert.match(source, /(?:loadAsync|\.load\s*\()/);
   assert.match(source, /(?:SkeletonUtils\.)?clone\s*\(/);
+  assert.match(source, /material instanceof THREE\.MeshStandardMaterial/);
+  assert.match(source, /material\.clone\(\)/, "the renderer should preserve the GLB's embedded texture maps");
+  assert.match(source, /templateTextures/);
+  assert.match(source, /texture\.dispose\(\)/, "embedded texture memory should be released when the layer unmounts");
 
   assert.equal(source.match(/<canvas\b/g)?.length, 1, "all Boitatas should share one transparent canvas");
 });
