@@ -2,21 +2,35 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   HEROES,
+  ITEM_COMPONENTS,
+  ITEM_DEFINITIONS,
+  ITEM_SLOTS_PER_UNIT,
   REFRESH_COST,
   ROLE_PROFILES,
   XP_BUY_COST,
+  advanceRound,
   applyCombatResult,
   buyPlayerXp,
   buyShopUnit,
   calculateWallOfFireShield,
+  craftItem,
   createInitialGame,
+  enhanceItem,
+  equipItem,
+  getCraftedItemBonuses,
+  getCraftedItemDefinition,
   getInterest,
+  getItemComponentRewardForRound,
   getUnitStats,
   moveUnit,
+  normalizeGameState,
   refreshShop,
   resolveCombat,
+  sellUnit,
+  unequipItem,
   unitCapForLevel,
   validateState,
+  type CraftedItem,
   type GameState,
 } from "../app/game-engine.ts";
 
@@ -29,7 +43,179 @@ test("initial campaign is deterministic and satisfies placement invariants", () 
   assert.equal(first.commanderLevel, 3);
   assert.equal(first.units.filter((unit) => unit.position !== null).length, 3);
   assert.equal(first.shop.length, 5);
+  assert.deepEqual(first.componentInventory, { ember: 0, scale: 0, mote: 0 });
+  assert.deepEqual(first.craftedItemInventory, []);
+  assert.ok(first.units.every((unit) => unit.itemSlots.length === ITEM_SLOTS_PER_UNIT));
+  assert.ok(first.units.every((unit) => unit.itemSlots.every((item) => item === null)));
   assert.deepEqual(validateState(first), []);
+});
+
+test("entering every even round awards one deterministic component exactly once", () => {
+  assert.deepEqual(
+    Array.from({ length: 10 }, (_, index) => getItemComponentRewardForRound(index + 1)),
+    [null, "ember", null, "scale", null, "mote", null, "ember", null, "scale"],
+  );
+
+  const initial = createInitialGame(124);
+  const combat = resolveCombat(initial);
+  const resolved = applyCombatResult(combat.state);
+  const advanced = advanceRound(resolved.state);
+  assert.equal(advanced.ok, true);
+  assert.equal(advanced.state.round, 2);
+  assert.equal(advanced.state.componentInventory.ember, 1);
+  assert.equal(advanced.state.roundResult?.itemComponentReward, "ember");
+  assert.match(advanced.message, new RegExp(ITEM_COMPONENTS.ember.name));
+
+  const duplicate = advanceRound(advanced.state);
+  assert.equal(duplicate.ok, false);
+  assert.equal(duplicate.state, advanced.state);
+  assert.equal(duplicate.state.componentInventory.ember, 1);
+});
+
+test("two components craft a full item and a third component enhances it immutably", () => {
+  const initial = createInitialGame(125);
+  const stocked: GameState = {
+    ...initial,
+    componentInventory: { ember: 1, scale: 1, mote: 1 },
+  };
+  assert.equal(getCraftedItemDefinition("scale", "ember")?.id, "blazing-aegis");
+
+  const crafted = craftItem(stocked, "ember", "scale");
+  assert.equal(crafted.ok, true);
+  assert.deepEqual(crafted.state.componentInventory, { ember: 0, scale: 0, mote: 1 });
+  assert.equal(crafted.state.craftedItemInventory.length, 1);
+  assert.equal(crafted.state.craftedItemInventory[0].itemId, "blazing-aegis");
+  assert.equal(crafted.state.craftedItemInventory[0].tier, "full");
+  assert.deepEqual(stocked.componentInventory, { ember: 1, scale: 1, mote: 1 });
+
+  const itemId = crafted.state.craftedItemInventory[0].id;
+  const enhanced = enhanceItem(crafted.state, itemId, "mote");
+  assert.equal(enhanced.ok, true);
+  assert.equal(enhanced.state.componentInventory.mote, 0);
+  assert.deepEqual(enhanced.state.craftedItemInventory[0], {
+    id: itemId,
+    itemId: "blazing-aegis",
+    tier: "enhanced",
+    enhancement: "mote",
+  });
+  assert.deepEqual(getCraftedItemBonuses(enhanced.state.craftedItemInventory[0]), {
+    maxHp: 70,
+    attack: 12,
+    armor: 7,
+    startingMana: 18,
+  });
+  const bearer = enhanced.state.units[0];
+  const baseStats = getUnitStats(bearer);
+  const equipped = equipItem(enhanced.state, bearer.id, itemId);
+  const equippedStats = getUnitStats(equipped.state.units[0]);
+  assert.equal(equippedStats.maxHp, baseStats.maxHp + 70);
+  assert.equal(equippedStats.attack, baseStats.attack + 12);
+  assert.equal(equippedStats.armor, baseStats.armor + 7);
+  assert.equal(equippedStats.startingMana, Math.min(baseStats.maxMana, baseStats.startingMana + 18));
+
+  const duplicateEnhancement = enhanceItem(enhanced.state, itemId, "mote");
+  assert.equal(duplicateEnhancement.ok, false);
+  assert.equal(duplicateEnhancement.state, enhanced.state);
+
+  const missingComponents = craftItem(initial, "ember", "ember");
+  assert.equal(missingComponents.ok, false);
+  assert.equal(missingComponents.state, initial);
+});
+
+test("equipping up to three items applies combat stats and unequipping reverses them", () => {
+  const initial = createInitialGame(126);
+  const unit = initial.units[0];
+  const items: CraftedItem[] = [0, 1, 2, 3].map((index) => ({
+    id: `test-item-${index}`,
+    itemId: "inferno-fang",
+    tier: "full",
+    enhancement: null,
+  }));
+  const stocked: GameState = { ...initial, craftedItemInventory: items };
+  const baseline = getUnitStats(unit);
+  const first = equipItem(stocked, unit.id, items[0].id);
+  const second = equipItem(first.state, unit.id, items[1].id);
+  const third = equipItem(second.state, unit.id, items[2].id);
+  assert.equal(third.ok, true);
+  assert.equal(third.state.units[0].itemSlots.filter(Boolean).length, 3);
+  assert.equal(getUnitStats(third.state.units[0]).attack, baseline.attack + ITEM_DEFINITIONS["inferno-fang"].bonuses.attack * 3);
+
+  const overflow = equipItem(third.state, unit.id, items[3].id);
+  assert.equal(overflow.ok, false);
+  assert.equal(overflow.state, third.state);
+
+  const unequipped = unequipItem(third.state, unit.id, 1);
+  assert.equal(unequipped.ok, true);
+  assert.equal(unequipped.state.units[0].itemSlots[1], null);
+  assert.ok(unequipped.state.craftedItemInventory.some((item) => item.id === items[1].id));
+  assert.equal(getUnitStats(unequipped.state.units[0]).attack, baseline.attack + ITEM_DEFINITIONS["inferno-fang"].bonuses.attack * 2);
+
+  const emptySlot = unequipItem(unequipped.state, unit.id, 1);
+  assert.equal(emptySlot.ok, false);
+  assert.equal(emptySlot.state, unequipped.state);
+});
+
+test("selling and star-merging preserve every equipped item", () => {
+  const initial = createInitialGame(127);
+  const item = (id: string): CraftedItem => ({
+    id,
+    itemId: "cinderplate",
+    tier: "full",
+    enhancement: null,
+  });
+  const bramble = initial.units.find((unit) => unit.heroId === "bramble")!;
+  const soldState: GameState = {
+    ...initial,
+    units: initial.units.map((unit) => unit.id === bramble.id
+      ? { ...unit, itemSlots: [item("sold-1"), item("sold-2"), null] }
+      : unit),
+  };
+  const sold = sellUnit(soldState, bramble.id);
+  assert.equal(sold.ok, true);
+  assert.deepEqual(sold.state.craftedItemInventory.map((candidate) => candidate.id).sort(), ["sold-1", "sold-2"]);
+
+  const extraBramble = {
+    ...bramble,
+    id: "merge-bramble-extra",
+    position: null,
+    benchIndex: 0,
+    itemSlots: [item("merge-1"), item("merge-2"), item("merge-3")] as const,
+  };
+  const mergeState: GameState = {
+    ...initial,
+    gold: 50,
+    units: [
+      { ...bramble, itemSlots: [item("keeper-1"), item("keeper-2"), null] },
+      { ...extraBramble, itemSlots: [...extraBramble.itemSlots] },
+      ...initial.units.filter((unit) => unit.id !== bramble.id),
+    ],
+    shop: [{ id: "merge-offer", heroId: "bramble", cost: 1 }, ...initial.shop.slice(1)],
+  };
+  const merged = buyShopUnit(mergeState, "merge-offer");
+  assert.equal(merged.ok, true);
+  const mergedBramble = merged.state.units.find((unit) => unit.heroId === "bramble")!;
+  assert.equal(mergedBramble.stars, 2);
+  assert.deepEqual(mergedBramble.itemSlots.map((candidate) => candidate?.id ?? null), ["keeper-1", "keeper-2", "merge-1"]);
+  assert.deepEqual(merged.state.craftedItemInventory.map((candidate) => candidate.id).sort(), ["merge-2", "merge-3"]);
+});
+
+test("normalizing a legacy v1 state backfills item collections and slots", () => {
+  const initial = createInitialGame(128);
+  const legacy = {
+    ...initial,
+    componentInventory: undefined,
+    craftedItemInventory: undefined,
+    units: initial.units.map((unit) => {
+      const legacyUnit = { ...unit };
+      Reflect.deleteProperty(legacyUnit, "itemSlots");
+      return legacyUnit;
+    }),
+  } as unknown as GameState;
+  const normalized = normalizeGameState(legacy);
+  assert.deepEqual(normalized.componentInventory, { ember: 0, scale: 0, mote: 0 });
+  assert.deepEqual(normalized.craftedItemInventory, []);
+  assert.ok(normalized.units.every((unit) => unit.itemSlots.length === 3));
+  assert.deepEqual(validateState(normalized), []);
 });
 
 test("roster exposes nine distinct heroes, abilities, and real trait hooks", () => {

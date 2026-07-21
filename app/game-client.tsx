@@ -8,6 +8,10 @@ import {
   BOARD_COLUMNS,
   BOARD_SIZE,
   HEROES,
+  ITEM_COMPONENTS,
+  ITEM_COMPONENT_IDS,
+  ITEM_DEFINITIONS,
+  ITEM_SLOTS_PER_UNIT,
   MAX_COMMANDER_LEVEL,
   PLAYER_START_ROW,
   REFRESH_COST,
@@ -20,29 +24,39 @@ import {
   buyPlayerXp,
   buyShopUnit,
   commanderXpToNext,
+  craftItem,
   createInitialGame,
+  enhanceItem,
+  equipItem,
   getActiveTraits,
   getCopyCount,
+  getCraftedItemBonuses,
+  getCraftedItemDefinition,
   getCombatStatistics,
   getInterest,
   getStreakBonus,
   getUnitStats,
   moveUnit,
+  normalizeGameState,
   refreshShop,
   resolveCombat,
   restartGame,
   sellUnit,
   toggleShopLock,
+  unequipItem,
   unitCapForLevel,
   unitXpToNext,
   validateState,
   type CombatEvent,
   type CombatStatistics,
   type CombatUnit,
+  type CraftedItem,
   type GameActionResult,
   type GameState,
   type HeroId,
+  type ItemComponentId,
   type TraitId,
+  type UnitItemSlots,
   type UnitInstance,
 } from "./game-engine";
 
@@ -60,6 +74,7 @@ type DisplayUnit = {
   xp: number;
   position: number | null;
   benchIndex: number | null;
+  itemSlots: UnitItemSlots;
   hp: number;
   maxHp: number;
   mana: number;
@@ -134,6 +149,7 @@ function combatDisplay(unit: CombatUnit, persistent?: UnitInstance): DisplayUnit
     ...unit,
     xp: persistent?.xp ?? 0,
     benchIndex: null,
+    itemSlots: persistent?.itemSlots ?? [null, null, null],
   };
 }
 
@@ -146,6 +162,21 @@ function phaseLabel(phase: GameState["phase"]): string {
 
 function starsLabel(stars: number): string {
   return `${"★".repeat(stars)}${"☆".repeat(Math.max(0, 3 - stars))}`;
+}
+
+function craftedItemName(item: CraftedItem): string {
+  const name = ITEM_DEFINITIONS[item.itemId].name;
+  return item.tier === "enhanced" ? `Enhanced ${name}` : name;
+}
+
+function craftedItemBonusText(item: CraftedItem): string {
+  const bonuses = getCraftedItemBonuses(item);
+  return [
+    bonuses.maxHp ? `+${bonuses.maxHp} HP` : null,
+    bonuses.attack ? `+${bonuses.attack} damage` : null,
+    bonuses.armor ? `+${bonuses.armor} armor` : null,
+    bonuses.startingMana ? `+${bonuses.startingMana} starting mana` : null,
+  ].filter(Boolean).join(" · ");
 }
 
 function HeroArt({ heroId, className, children }: { heroId: HeroId; className: string; children?: ReactNode }) {
@@ -215,6 +246,11 @@ function UnitToken({
       <HeroArt heroId={unit.heroId} className="unit-avatar" />
       {hasFireWall ? <span className={`fire-wall ${isShielded ? "fire-wall-cast" : ""} ${fireWallShieldLost > 0 ? "fire-wall-absorb" : ""} ${fireWallBroke ? "fire-wall-break" : ""}`} aria-hidden="true" /> : null}
       <span className="unit-level">L{unit.level}</span>
+      <span className="unit-item-pips" data-testid={`unit-item-slots-${unit.id}`} aria-hidden="true">
+        {unit.itemSlots.map((item, index) => (
+          <span className={`unit-item-pip ${item ? `unit-item-pip-${item.tier}` : "unit-item-pip-empty"}`} key={index}>{item ? item.tier === "enhanced" ? "✦" : "◆" : ""}</span>
+        ))}
+      </span>
       <span className="unit-name">{hero.name}</span>
       {isActor ? <span className="combat-role" aria-hidden="true">{effectKind === "shield" ? "WALL" : currentEvent?.type === "ability" ? "CAST" : "ATTACK"}</span> : null}
       <span className="unit-bars">
@@ -328,6 +364,8 @@ export function GameClient() {
   const [boitata3DReady, setBoitata3DReady] = useState(false);
   const [tutorialStage, setTutorialStage] = useState(0);
   const [tutorialVisible, setTutorialVisible] = useState(true);
+  const [forgeComponents, setForgeComponents] = useState<ItemComponentId[]>([]);
+  const [selectedCraftedItemId, setSelectedCraftedItemId] = useState<string | null>(null);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -335,7 +373,8 @@ export function GameClient() {
         const saved = window.localStorage.getItem(STORAGE_KEY);
         if (saved) {
           const parsed = JSON.parse(saved) as GameState;
-          if (parsed.version === 1 && validateState(parsed).length === 0) setGame(parsed);
+          const normalized = normalizeGameState(parsed);
+          if (normalized.version === 1 && validateState(normalized).length === 0) setGame(normalized);
         }
         setTutorialVisible(window.localStorage.getItem(TUTORIAL_KEY) !== "1");
       } catch {
@@ -416,6 +455,14 @@ export function GameClient() {
   const benchUnits = game.units.filter((unit) => unit.benchIndex !== null);
   const selectedDisplay = selectedId ? displayUnits.find((unit) => unit.id === selectedId) ?? null : null;
   const selectedPersistent = selectedId ? game.units.find((unit) => unit.id === selectedId) ?? game.enemyUnits.find((unit) => unit.id === selectedId) ?? null : null;
+  const selectedAllyForItems = selectedPersistent?.side === "player" ? selectedPersistent : null;
+  const selectedCraftedItem = selectedCraftedItemId
+    ? game.craftedItemInventory.find((item) => item.id === selectedCraftedItemId) ?? null
+    : null;
+  const forgeRecipe = forgeComponents.length === 2
+    ? getCraftedItemDefinition(forgeComponents[0], forgeComponents[1])
+    : null;
+  const componentCount = ITEM_COMPONENT_IDS.reduce((total, id) => total + game.componentInventory[id], 0);
   const selectedHero = selectedDisplay ? HEROES[selectedDisplay.heroId] : null;
   const selectedRole = selectedHero ? ROLE_PROFILES[selectedHero.role] : null;
   const traits = getActiveTraits(game.units);
@@ -441,15 +488,65 @@ export function GameClient() {
     [game.combatReport],
   );
 
-  useEffect(() => {
-    if (boitataBoardUnits.length === 0) setBoitata3DReady(false);
-  }, [boitataBoardUnits.length]);
-
   function commit(result: GameActionResult, onSuccess?: () => void) {
     setToast(result.message);
     if (!result.ok) return;
     setGame(result.state);
     onSuccess?.();
+  }
+
+  function handleSelectComponent(componentId: ItemComponentId) {
+    if (game.phase !== "planning") {
+      setToast("The forge opens during planning.");
+      return;
+    }
+    const alreadySelected = forgeComponents.filter((id) => id === componentId).length;
+    if (alreadySelected >= game.componentInventory[componentId]) {
+      setToast(`No more ${ITEM_COMPONENTS[componentId].name} components are available.`);
+      return;
+    }
+    if (forgeComponents.length >= 2) {
+      setToast("The forge tray holds two components. Remove one to change the recipe.");
+      return;
+    }
+    setForgeComponents((components) => [...components, componentId]);
+  }
+
+  function handleCraftItem() {
+    if (forgeComponents.length !== 2) {
+      setToast("Choose two components to craft a full item.");
+      return;
+    }
+    commit(craftItem(game, forgeComponents[0], forgeComponents[1]), () => {
+      setForgeComponents([]);
+      setSelectedCraftedItemId(null);
+    });
+  }
+
+  function handleEnhanceItem() {
+    if (!selectedCraftedItem || forgeComponents.length !== 1) {
+      setToast("Select one full item and one component to enhance it.");
+      return;
+    }
+    commit(enhanceItem(game, selectedCraftedItem.id, forgeComponents[0]), () => {
+      setForgeComponents([]);
+      setSelectedCraftedItemId(null);
+    });
+  }
+
+  function handleEquipItem(slotIndex?: number) {
+    if (!selectedAllyForItems || !selectedCraftedItem) {
+      setToast("Select one of your champions and an item from the forge.");
+      return;
+    }
+    commit(equipItem(game, selectedAllyForItems.id, selectedCraftedItem.id, slotIndex), () => {
+      setSelectedCraftedItemId(null);
+    });
+  }
+
+  function handleUnequipItem(slotIndex: number) {
+    if (!selectedAllyForItems) return;
+    commit(unequipItem(game, selectedAllyForItems.id, slotIndex));
   }
 
   function handleBuy(offerId: string) {
@@ -461,6 +558,9 @@ export function GameClient() {
   function handleMove(unitId: string, kind: "board" | "bench", index: number) {
     const result = moveUnit(game, unitId, { kind, index });
     commit(result, () => {
+      if (kind === "bench" && game.units.find((unit) => unit.id === unitId)?.heroId === "boitata") {
+        setBoitata3DReady(false);
+      }
       setSelectedId(unitId);
       if (tutorialVisible && tutorialStage === 1) setTutorialStage(2);
     });
@@ -518,6 +618,9 @@ export function GameClient() {
     const fresh = restartGame((Date.now() ^ 0xdecafbad) >>> 0);
     setGame(fresh);
     setSelectedId(null);
+    setSelectedCraftedItemId(null);
+    setForgeComponents([]);
+    setBoitata3DReady(false);
     setCombatIndex(0);
     setPlaying(false);
     setToast("A new campaign begins.");
@@ -720,6 +823,42 @@ export function GameClient() {
                   <span className="stat-cell stat-cell-shield" data-testid={`unit-shield-${selectedDisplay.id}`}><small>Shield</small><strong>{Math.round(selectedDisplay.shield)}</strong></span>
                 ) : null}
               </div>
+              <section className="equipment-block" data-testid={`unit-equipment-${selectedDisplay.id}`} aria-label={`${selectedHero.name} item slots`}>
+                <div className="equipment-heading">
+                  <span><small>Equipment</small><strong>Item slots</strong></span>
+                  <span>{selectedPersistent?.itemSlots.filter(Boolean).length ?? 0}/{ITEM_SLOTS_PER_UNIT}</span>
+                </div>
+                <div className="equipment-slots">
+                  {(selectedPersistent?.itemSlots ?? [null, null, null]).map((item, slotIndex) => {
+                    const definition = item ? ITEM_DEFINITIONS[item.itemId] : null;
+                    const canManageSlot = selectedPersistent?.side === "player" && game.phase === "planning";
+                    const canEquip = canManageSlot && !item && !!selectedCraftedItem;
+                    const canUnequip = canManageSlot && !!item;
+                    return (
+                      <button
+                        className={`equipment-slot ${item ? "equipment-slot-filled" : "equipment-slot-empty"} ${item?.tier === "enhanced" ? "equipment-slot-enhanced" : ""}`}
+                        type="button"
+                        key={slotIndex}
+                        data-testid={`unit-item-slot-${selectedDisplay.id}-${slotIndex}`}
+                        disabled={!canEquip && !canUnequip}
+                        onClick={() => item ? handleUnequipItem(slotIndex) : handleEquipItem(slotIndex)}
+                        aria-label={item
+                          ? `${craftedItemName(item)}, ${craftedItemBonusText(item)}${canUnequip ? ", click to unequip" : ""}`
+                          : `Empty item slot ${slotIndex + 1}${canEquip ? `, equip ${craftedItemName(selectedCraftedItem!)}` : ""}`}
+                      >
+                        <span className="item-mark" aria-hidden="true">
+                          {definition ? definition.recipe.map((componentId) => ITEM_COMPONENTS[componentId].glyph).join("") : "+"}
+                          {item?.enhancement ? <i>{ITEM_COMPONENTS[item.enhancement].glyph}</i> : null}
+                        </span>
+                        <span className="equipment-slot-copy">
+                          <strong>{item ? craftedItemName(item) : `Slot ${slotIndex + 1}`}</strong>
+                          <small>{item ? craftedItemBonusText(item) : canEquip ? "Equip selected item" : "Empty"}</small>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
               {selectedRole ? (
                 <div className={`role-range-card role-${selectedRole.id}`} data-testid={`unit-role-range-${selectedDisplay.id}`}>
                   <span className="role-range-copy">
@@ -743,7 +882,10 @@ export function GameClient() {
               {selectedPersistent?.side === "player" ? <p className="copy-progress">Copies toward next star: {selectedCopies}/3</p> : null}
               {selectedPersistent?.side === "player" && game.phase === "planning" ? (
                 <button className="game-button button-danger" type="button" onClick={() => {
-                  commit(sellUnit(game, selectedPersistent.id), () => setSelectedId(null));
+                  commit(sellUnit(game, selectedPersistent.id), () => {
+                    if (selectedPersistent.heroId === "boitata") setBoitata3DReady(false);
+                    setSelectedId(null);
+                  });
                 }}>Sell for {HEROES[selectedPersistent.heroId].cost * (selectedPersistent.stars === 3 ? 9 : selectedPersistent.stars === 2 ? 3 : 1)} gold</button>
               ) : null}
             </section>
@@ -806,6 +948,95 @@ export function GameClient() {
               );
             })}
           </div>
+        </section>
+
+        <section className="panel item-armory-panel" aria-label="Relic Forge" data-testid="item-armory">
+          <div className="panel-heading">
+            <div><span className="eyebrow">Components & gear</span><h2 className="panel-title">Relic Forge</h2></div>
+            <span className="panel-meta">{componentCount} parts · {game.craftedItemInventory.length} gear</span>
+          </div>
+          <p className="armory-cadence">A component arrives when rounds 2, 4, 6, 8, and 10 begin. Combine two for gear; add one more to enhance it.</p>
+          {game.roundResult?.itemComponentReward ? (
+            <div className="armory-reward" data-testid="round-item-reward">
+              <span>{ITEM_COMPONENTS[game.roundResult.itemComponentReward].glyph}</span>
+              <small>New component</small>
+              <strong>{ITEM_COMPONENTS[game.roundResult.itemComponentReward].name}</strong>
+            </div>
+          ) : null}
+          <div className="component-grid" aria-label="Item components">
+            {ITEM_COMPONENT_IDS.map((componentId) => {
+              const component = ITEM_COMPONENTS[componentId];
+              const selectedCount = forgeComponents.filter((id) => id === componentId).length;
+              const available = game.componentInventory[componentId];
+              return (
+                <button
+                  className={`item-component-card ${selectedCount ? "item-component-card-selected" : ""}`}
+                  type="button"
+                  key={componentId}
+                  data-testid={`item-component-${componentId}`}
+                  disabled={game.phase !== "planning" || available <= selectedCount || forgeComponents.length >= 2}
+                  onClick={() => handleSelectComponent(componentId)}
+                  aria-label={`Add ${component.name} to forge, ${available} available${selectedCount ? `, ${selectedCount} selected` : ""}`}
+                >
+                  <span className="item-component-glyph" aria-hidden="true">{component.glyph}</span>
+                  <span><strong>{component.name}</strong><small>{component.description}</small></span>
+                  <b data-testid={`item-component-count-${componentId}`}>×{available}</b>
+                </button>
+              );
+            })}
+          </div>
+          <div className="craft-tray" aria-label="Crafting tray">
+            {[0, 1].map((index) => {
+              const componentId = forgeComponents[index];
+              return (
+                <button
+                  className={`craft-slot ${componentId ? "craft-slot-filled" : ""}`}
+                  type="button"
+                  key={index}
+                  data-testid={`item-craft-slot-${index}`}
+                  disabled={!componentId}
+                  onClick={() => setForgeComponents((components) => components.filter((_, componentIndex) => componentIndex !== index))}
+                  aria-label={componentId ? `Remove ${ITEM_COMPONENTS[componentId].name} from forge` : `Empty craft slot ${index + 1}`}
+                >
+                  {componentId ? <><span>{ITEM_COMPONENTS[componentId].glyph}</span><small>{ITEM_COMPONENTS[componentId].name}</small></> : <><span>+</span><small>Component</small></>}
+                </button>
+              );
+            })}
+            <div className="craft-preview" data-testid="item-craft-preview">
+              <small>{forgeRecipe ? "Recipe ready" : forgeComponents.length ? "Choose one more" : "Crafting tray"}</small>
+              <strong>{forgeRecipe?.name ?? "2 components → full item"}</strong>
+            </div>
+            <button className="game-button button-secondary" type="button" data-testid="craft-item" disabled={game.phase !== "planning" || !forgeRecipe} onClick={handleCraftItem}>Craft full item</button>
+          </div>
+          <div className="crafted-inventory-heading">
+            <span><small>Inventory</small><strong>Crafted gear</strong></span>
+            <small>{selectedAllyForItems ? `Equipping ${HEROES[selectedAllyForItems.heroId].name}` : "Select an allied champion to equip"}</small>
+          </div>
+          <div className="crafted-item-list">
+            {game.craftedItemInventory.length ? game.craftedItemInventory.map((item) => {
+              const definition = ITEM_DEFINITIONS[item.itemId];
+              return (
+                <button
+                  className={`crafted-item-card ${item.id === selectedCraftedItemId ? "crafted-item-card-selected" : ""} ${item.tier === "enhanced" ? "crafted-item-card-enhanced" : ""}`}
+                  type="button"
+                  key={item.id}
+                  data-testid={`crafted-item-${item.id}`}
+                  aria-pressed={item.id === selectedCraftedItemId}
+                  onClick={() => setSelectedCraftedItemId((selected) => selected === item.id ? null : item.id)}
+                >
+                  <span className="item-mark" aria-hidden="true">{definition.recipe.map((componentId) => ITEM_COMPONENTS[componentId].glyph).join("")}{item.enhancement ? <i>{ITEM_COMPONENTS[item.enhancement].glyph}</i> : null}</span>
+                  <span><strong>{craftedItemName(item)}</strong><small>{craftedItemBonusText(item)}</small></span>
+                  <b className={`item-tier ${item.tier === "enhanced" ? "item-tier-enhanced" : ""}`}>{item.tier}</b>
+                </button>
+              );
+            }) : <p className="armory-empty">Your first full item can be forged after collecting two components.</p>}
+          </div>
+          {selectedCraftedItem ? (
+            <div className="item-action-row">
+              <button className="game-button button-secondary" type="button" data-testid={`equip-item-${selectedCraftedItem.id}`} disabled={game.phase !== "planning" || !selectedAllyForItems || selectedAllyForItems.itemSlots.every(Boolean)} onClick={() => handleEquipItem()}>Equip{selectedAllyForItems ? ` to ${HEROES[selectedAllyForItems.heroId].name}` : " selected champion"}</button>
+              <button className="game-button button-primary" type="button" data-testid={`enhance-item-${selectedCraftedItem.id}`} disabled={game.phase !== "planning" || selectedCraftedItem.tier === "enhanced" || forgeComponents.length !== 1} onClick={handleEnhanceItem}>Enhance with 1 component</button>
+            </div>
+          ) : null}
         </section>
 
         <section className="panel shop-panel" aria-label="Night Market" data-testid="shop">

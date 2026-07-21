@@ -277,6 +277,7 @@ button:disabled,
 .traits-panel,
 .enemy-panel,
 .bench-panel,
+.item-armory-panel,
 .shop-panel {
   padding: 16px;
 }
@@ -927,6 +928,7 @@ button:disabled,
 .unit-token-creature .unit-level,
 .unit-token-creature .unit-name,
 .unit-token-creature .unit-bars,
+.unit-token-creature .unit-item-pips,
 .unit-token-creature .status-mark {
   z-index: 5;
 }
@@ -1059,6 +1061,41 @@ button:disabled,
   color: rgb(16 12 24 / 82%);
   font-size: 8px;
   font-weight: 800;
+}
+
+.unit-item-pips {
+  position: absolute;
+  z-index: 6;
+  bottom: 1px;
+  left: -5px;
+  display: flex;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.unit-item-pip {
+  display: grid;
+  width: 9px;
+  height: 9px;
+  place-items: center;
+  border: 1px solid rgb(245 237 223 / 28%);
+  border-radius: 50%;
+  background: rgb(16 12 24 / 86%);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 46%);
+  color: var(--gold);
+  font-size: 5px;
+  line-height: 1;
+}
+
+.unit-item-pip-empty {
+  border-color: rgb(245 237 223 / 14%);
+  background: rgb(16 12 24 / 54%);
+}
+
+.unit-item-pip-enhanced {
+  border-color: #b79aff;
+  color: #cdbaff;
+  box-shadow: 0 0 5px rgb(170 140 255 / 52%);
 }
 
 .unit-name {
@@ -1354,6 +1391,136 @@ button:disabled,
   color: #ffd06a;
 }
 
+.equipment-block {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.equipment-heading,
+.crafted-inventory-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.equipment-heading > span:first-child,
+.crafted-inventory-heading > span:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.equipment-heading small,
+.crafted-inventory-heading small {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.equipment-heading strong,
+.crafted-inventory-heading strong {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 400;
+}
+
+.equipment-heading > span:last-child {
+  color: var(--gold);
+  font-family: var(--display);
+  font-size: 14px;
+}
+
+.equipment-slots {
+  display: grid;
+  gap: 5px;
+}
+
+.equipment-slot {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: rgb(255 255 255 / 3%);
+  color: inherit;
+  text-align: left;
+}
+
+.equipment-slot:not(:disabled) {
+  cursor: pointer;
+}
+
+.equipment-slot:not(:disabled):hover {
+  border-color: rgb(241 203 109 / 52%);
+  background: rgb(241 203 109 / 7%);
+}
+
+.equipment-slot-enhanced {
+  border-color: rgb(170 140 255 / 42%);
+  background: rgb(170 140 255 / 7%);
+}
+
+.equipment-slot-empty {
+  border-style: dashed;
+}
+
+.equipment-slot-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.equipment-slot-copy strong,
+.equipment-slot-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.equipment-slot-copy strong {
+  font-size: 10px;
+}
+
+.equipment-slot-copy small {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.item-mark {
+  position: relative;
+  display: grid;
+  min-width: 30px;
+  min-height: 30px;
+  place-items: center;
+  border: 1px solid rgb(241 203 109 / 46%);
+  border-radius: 7px;
+  background: radial-gradient(circle, rgb(241 203 109 / 17%), rgb(16 12 24 / 84%));
+  color: var(--gold);
+  font-size: 10px;
+  letter-spacing: -0.14em;
+}
+
+.item-mark i {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: grid;
+  width: 14px;
+  height: 14px;
+  place-items: center;
+  border: 1px solid #c2abff;
+  border-radius: 50%;
+  background: #39265d;
+  color: #e2d9ff;
+  font-size: 7px;
+  font-style: normal;
+  letter-spacing: normal;
+}
+
 .role-range-card {
   --role-color: var(--gold);
   display: grid;
@@ -1494,7 +1661,7 @@ button:disabled,
 
 .dock {
   display: grid;
-  grid-template-columns: 270px minmax(560px, 1fr) 228px;
+  grid-template-columns: 270px minmax(300px, 340px) minmax(460px, 1fr) 228px;
   align-items: stretch;
   gap: 18px;
   width: min(100%, 1600px);
@@ -1503,6 +1670,7 @@ button:disabled,
 }
 
 .bench-panel,
+.item-armory-panel,
 .shop-panel {
   min-width: 0;
 }
@@ -1543,6 +1711,268 @@ button:disabled,
   color: rgb(245 237 223 / 20%);
   font-family: var(--display);
   font-size: 22px;
+}
+
+.item-armory-panel {
+  display: grid;
+  align-content: start;
+  gap: 11px;
+  min-width: 0;
+  padding: 16px;
+}
+
+.item-armory-panel .panel-heading {
+  margin-bottom: 0;
+}
+
+.armory-cadence,
+.armory-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.armory-reward {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 1px 8px;
+  align-items: center;
+  padding: 7px 9px;
+  border: 1px solid rgb(241 203 109 / 42%);
+  border-left: 3px solid var(--gold);
+  background: rgb(241 203 109 / 8%);
+}
+
+.armory-reward > span {
+  grid-row: 1 / 3;
+  color: var(--gold);
+  font-size: 20px;
+  text-align: center;
+}
+
+.armory-reward small {
+  color: var(--muted);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.armory-reward strong {
+  font-size: 10px;
+}
+
+.component-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.item-component-card {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 70px;
+  place-items: center;
+  gap: 3px;
+  padding: 7px 5px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgb(9 7 14 / 58%);
+  color: inherit;
+  text-align: center;
+}
+
+.item-component-card:not(:disabled) {
+  cursor: pointer;
+}
+
+.item-component-card:not(:disabled):hover,
+.item-component-card-selected {
+  border-color: rgb(241 203 109 / 56%);
+  background: rgb(241 203 109 / 8%);
+}
+
+.item-component-card:disabled {
+  opacity: 0.5;
+}
+
+.item-component-card > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.item-component-card strong {
+  overflow: hidden;
+  font-size: 8px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+}
+
+.item-component-card small {
+  display: none;
+}
+
+.item-component-card b {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  color: var(--gold);
+  font-size: 8px;
+}
+
+.item-component-glyph {
+  color: var(--gold);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.craft-tray {
+  display: grid;
+  grid-template-columns: 58px 58px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.craft-slot {
+  display: grid;
+  min-height: 54px;
+  place-items: center;
+  padding: 4px;
+  border: 1px dashed var(--line-strong);
+  background: rgb(9 7 14 / 58%);
+  color: var(--dim);
+}
+
+.craft-slot-filled {
+  border-style: solid;
+  border-color: rgb(241 203 109 / 48%);
+  color: var(--gold);
+  cursor: pointer;
+}
+
+.craft-slot span {
+  font-size: 18px;
+}
+
+.craft-slot small {
+  max-width: 48px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.craft-preview {
+  display: grid;
+  min-width: 0;
+  align-content: center;
+  gap: 3px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--gold);
+  background: rgb(241 203 109 / 6%);
+}
+
+.craft-preview small {
+  color: var(--muted);
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.craft-preview strong {
+  overflow: hidden;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.craft-tray > .game-button {
+  grid-column: 1 / -1;
+}
+
+.crafted-inventory-heading > small {
+  max-width: 52%;
+  text-align: right;
+}
+
+.crafted-item-list {
+  display: grid;
+  gap: 5px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.crafted-item-card {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid var(--line);
+  background: rgb(255 255 255 / 3%);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.crafted-item-card:hover,
+.crafted-item-card-selected {
+  border-color: rgb(241 203 109 / 58%);
+  background: rgb(241 203 109 / 7%);
+}
+
+.crafted-item-card-enhanced {
+  border-color: rgb(170 140 255 / 38%);
+}
+
+.crafted-item-card > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.crafted-item-card strong,
+.crafted-item-card small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crafted-item-card strong {
+  font-size: 9px;
+}
+
+.crafted-item-card small {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.item-tier {
+  padding: 3px 4px;
+  border: 1px solid rgb(241 203 109 / 34%);
+  color: var(--gold);
+  font-size: 7px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.item-tier-enhanced {
+  border-color: rgb(170 140 255 / 58%);
+  color: #cdbaff;
+}
+
+.item-action-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.item-action-row .game-button {
+  min-height: 38px;
+  padding: 7px;
+  font-size: 8px;
 }
 
 .shop-grid {
@@ -2114,10 +2544,22 @@ button:disabled,
   }
 
   .dock {
-    grid-template-columns: minmax(0, 1fr) 228px;
+    grid-template-columns: 270px minmax(300px, 1fr) 228px;
   }
 
   .bench-panel {
+    grid-column: 1;
+  }
+
+  .item-armory-panel {
+    grid-column: 2;
+  }
+
+  .actions-panel {
+    grid-column: 3;
+  }
+
+  .shop-panel {
     grid-column: 1 / -1;
   }
 }
@@ -2193,6 +2635,7 @@ button:disabled,
   }
 
   .bench-panel,
+  .item-armory-panel,
   .shop-panel,
   .actions-panel {
     grid-column: auto;
@@ -2328,6 +2771,7 @@ button:disabled,
   .traits-panel,
   .enemy-panel,
   .bench-panel,
+  .item-armory-panel,
   .shop-panel {
     padding: 13px;
   }
@@ -2367,6 +2811,16 @@ button:disabled,
 
   .shop-card {
     scroll-snap-align: start;
+  }
+
+  .crafted-item-list {
+    grid-template-columns: none;
+    grid-auto-columns: minmax(220px, 78vw);
+    grid-auto-flow: column;
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 4px;
   }
 
   .actions-panel {

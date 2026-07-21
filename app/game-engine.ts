@@ -11,6 +11,7 @@ export const MAX_COMMANDER_LEVEL = 8;
 export const MAX_UNIT_LEVEL = 5;
 export const MAX_STARS = 3;
 export const FINAL_ROUND = 10;
+export const ITEM_SLOTS_PER_UNIT = 3;
 
 export type Side = "player" | "enemy";
 export type GamePhase = "planning" | "combat" | "resolution" | "gameover";
@@ -34,6 +35,51 @@ export type TraitId =
   | "verdant"
   | "starborn"
   | "hexer";
+export type ItemComponentId = "ember" | "scale" | "mote";
+export type ItemId =
+  | "inferno-fang"
+  | "cinderplate"
+  | "spirit-lantern"
+  | "blazing-aegis"
+  | "spellfang"
+  | "warding-flame";
+export type ItemTier = "full" | "enhanced";
+
+export interface ItemStatBonuses {
+  maxHp: number;
+  attack: number;
+  armor: number;
+  startingMana: number;
+}
+
+export interface ItemComponentDefinition {
+  id: ItemComponentId;
+  name: string;
+  glyph: string;
+  description: string;
+  enhancementBonuses: ItemStatBonuses;
+}
+
+export interface ItemDefinition {
+  id: ItemId;
+  name: string;
+  description: string;
+  recipe: readonly [ItemComponentId, ItemComponentId];
+  bonuses: ItemStatBonuses;
+}
+
+export interface CraftedItem {
+  id: string;
+  itemId: ItemId;
+  tier: ItemTier;
+  enhancement: ItemComponentId | null;
+}
+
+export type UnitItemSlots = [
+  CraftedItem | null,
+  CraftedItem | null,
+  CraftedItem | null,
+];
 
 export interface AbilityDefinition {
   id: string;
@@ -84,6 +130,7 @@ export interface UnitInstance {
   xp: number;
   position: number | null;
   benchIndex: number | null;
+  itemSlots: UnitItemSlots;
 }
 
 export interface ShopOffer {
@@ -110,6 +157,7 @@ export interface CombatUnit {
   fireWallShield: number;
   stunned: number;
   alive: boolean;
+  itemSlots?: UnitItemSlots;
 }
 
 export type CombatEventType =
@@ -162,6 +210,7 @@ export interface RoundResult {
   commanderXp: number;
   unitXp: Record<string, number>;
   income: IncomeBreakdown;
+  itemComponentReward?: ItemComponentId;
 }
 
 export interface CombatStatTotals {
@@ -195,6 +244,8 @@ export interface GameState {
   commanderXp: number;
   streak: number;
   lastOutcome: Outcome | null;
+  componentInventory: Record<ItemComponentId, number>;
+  craftedItemInventory: CraftedItem[];
   units: UnitInstance[];
   enemyUnits: UnitInstance[];
   shop: Array<ShopOffer | null>;
@@ -256,6 +307,77 @@ export const ROLE_PROFILES: Record<HeroRole, RoleProfile> = {
     label: "Shooter",
     range: 4,
     description: "Long-range marksman that attacks up to four tiles away.",
+  },
+};
+
+export const ITEM_COMPONENT_IDS = ["ember", "scale", "mote"] as const satisfies readonly ItemComponentId[];
+
+export const ITEM_COMPONENTS: Record<ItemComponentId, ItemComponentDefinition> = {
+  ember: {
+    id: "ember",
+    name: "Ember Shard",
+    glyph: "✦",
+    description: "Adds raw attack power when used to enhance an item.",
+    enhancementBonuses: { maxHp: 0, attack: 10, armor: 0, startingMana: 0 },
+  },
+  scale: {
+    id: "scale",
+    name: "Iron Scale",
+    glyph: "◆",
+    description: "Adds life and armor when used to enhance an item.",
+    enhancementBonuses: { maxHp: 60, attack: 0, armor: 6, startingMana: 0 },
+  },
+  mote: {
+    id: "mote",
+    name: "Mana Mote",
+    glyph: "●",
+    description: "Adds starting mana when used to enhance an item.",
+    enhancementBonuses: { maxHp: 0, attack: 0, armor: 0, startingMana: 18 },
+  },
+};
+
+export const ITEM_DEFINITIONS: Record<ItemId, ItemDefinition> = {
+  "inferno-fang": {
+    id: "inferno-fang",
+    name: "Inferno Fang",
+    description: "A relentless weapon forged from twin embers.",
+    recipe: ["ember", "ember"],
+    bonuses: { maxHp: 0, attack: 22, armor: 0, startingMana: 0 },
+  },
+  cinderplate: {
+    id: "cinderplate",
+    name: "Cinderplate",
+    description: "Heavy protection that hardens its bearer against focus fire.",
+    recipe: ["scale", "scale"],
+    bonuses: { maxHp: 110, attack: 0, armor: 14, startingMana: 0 },
+  },
+  "spirit-lantern": {
+    id: "spirit-lantern",
+    name: "Spirit Lantern",
+    description: "Stores power so its bearer can cast sooner.",
+    recipe: ["mote", "mote"],
+    bonuses: { maxHp: 0, attack: 0, armor: 0, startingMana: 25 },
+  },
+  "blazing-aegis": {
+    id: "blazing-aegis",
+    name: "Blazing Aegis",
+    description: "Balances offensive heat with frontline endurance.",
+    recipe: ["ember", "scale"],
+    bonuses: { maxHp: 70, attack: 12, armor: 7, startingMana: 0 },
+  },
+  spellfang: {
+    id: "spellfang",
+    name: "Spellfang",
+    description: "Turns stored magic into a sharp opening assault.",
+    recipe: ["ember", "mote"],
+    bonuses: { maxHp: 0, attack: 14, armor: 0, startingMana: 15 },
+  },
+  "warding-flame": {
+    id: "warding-flame",
+    name: "Warding Flame",
+    description: "A protective charm that also hastens the first cast.",
+    recipe: ["scale", "mote"],
+    bonuses: { maxHp: 75, attack: 0, armor: 9, startingMana: 10 },
   },
 };
 
@@ -516,11 +638,30 @@ const COMMANDER_XP: Record<number, number> = {
   8: 0,
 };
 
+function emptyItemSlots(): UnitItemSlots {
+  return [null, null, null];
+}
+
+function cloneCraftedItem(item: CraftedItem): CraftedItem {
+  return { ...item };
+}
+
+function cloneItemSlots(slots?: readonly (CraftedItem | null)[]): UnitItemSlots {
+  return [0, 1, 2].map((index) => {
+    const item = slots?.[index];
+    return item ? cloneCraftedItem(item) : null;
+  }) as UnitItemSlots;
+}
+
 function cloneState(state: GameState): GameState {
   return {
     ...state,
-    units: state.units.map((unit) => ({ ...unit })),
-    enemyUnits: state.enemyUnits.map((unit) => ({ ...unit })),
+    componentInventory: Object.fromEntries(
+      ITEM_COMPONENT_IDS.map((id) => [id, state.componentInventory?.[id] ?? 0]),
+    ) as Record<ItemComponentId, number>,
+    craftedItemInventory: (state.craftedItemInventory ?? []).map(cloneCraftedItem),
+    units: state.units.map((unit) => ({ ...unit, itemSlots: cloneItemSlots(unit.itemSlots) })),
+    enemyUnits: state.enemyUnits.map((unit) => ({ ...unit, itemSlots: cloneItemSlots(unit.itemSlots) })),
     shop: state.shop.map((offer) => (offer ? { ...offer } : null)),
     combatReport: state.combatReport,
     roundResult: state.roundResult,
@@ -589,6 +730,7 @@ function makeUnitMutable(
     xp: 0,
     position,
     benchIndex,
+    itemSlots: emptyItemSlots(),
   };
 }
 
@@ -631,17 +773,62 @@ export function getStreakBonus(streak: number): number {
   return absolute >= 5 ? 3 : absolute >= 3 ? 2 : absolute >= 2 ? 1 : 0;
 }
 
-export function getUnitStats(unit: Pick<UnitInstance, "heroId" | "stars" | "level">): UnitStats {
+function recipeKey(first: ItemComponentId, second: ItemComponentId): string {
+  return [first, second].sort().join("+");
+}
+
+export function getCraftedItemDefinition(
+  first: ItemComponentId,
+  second: ItemComponentId,
+): ItemDefinition | null {
+  const key = recipeKey(first, second);
+  return Object.values(ITEM_DEFINITIONS).find(
+    (definition) => recipeKey(definition.recipe[0], definition.recipe[1]) === key,
+  ) ?? null;
+}
+
+export function getCraftedItemBonuses(item: CraftedItem): ItemStatBonuses {
+  const base = ITEM_DEFINITIONS[item.itemId].bonuses;
+  const enhancement = item.tier === "enhanced" && item.enhancement
+    ? ITEM_COMPONENTS[item.enhancement].enhancementBonuses
+    : null;
+  return {
+    maxHp: base.maxHp + (enhancement?.maxHp ?? 0),
+    attack: base.attack + (enhancement?.attack ?? 0),
+    armor: base.armor + (enhancement?.armor ?? 0),
+    startingMana: base.startingMana + (enhancement?.startingMana ?? 0),
+  };
+}
+
+export function getUnitStats(
+  unit: Pick<UnitInstance, "heroId" | "stars" | "level"> &
+    Partial<Pick<UnitInstance, "itemSlots">>,
+): UnitStats {
   const hero = HEROES[unit.heroId];
   const starScale = [1, 1, 1.65, 2.55][Math.min(MAX_STARS, Math.max(1, unit.stars))];
   const levelScale = 1 + (Math.min(MAX_UNIT_LEVEL, Math.max(1, unit.level)) - 1) * 0.12;
+  const equippedItems: Array<CraftedItem | null> = unit.itemSlots ? [...unit.itemSlots] : [];
+  const itemBonuses = equippedItems.reduce<ItemStatBonuses>(
+    (total, item) => {
+      if (!item) return total;
+      const bonuses = getCraftedItemBonuses(item);
+      return {
+        maxHp: total.maxHp + bonuses.maxHp,
+        attack: total.attack + bonuses.attack,
+        armor: total.armor + bonuses.armor,
+        startingMana: total.startingMana + bonuses.startingMana,
+      };
+    },
+    { maxHp: 0, attack: 0, armor: 0, startingMana: 0 },
+  );
+  const maxMana = hero.ability.manaCost;
   return {
-    maxHp: Math.round(hero.maxHp * starScale * levelScale),
-    attack: Math.round(hero.attack * starScale * levelScale),
-    armor: Math.round(hero.armor * (1 + (unit.level - 1) * 0.08)),
+    maxHp: Math.round(hero.maxHp * starScale * levelScale) + itemBonuses.maxHp,
+    attack: Math.round(hero.attack * starScale * levelScale) + itemBonuses.attack,
+    armor: Math.round(hero.armor * (1 + (unit.level - 1) * 0.08)) + itemBonuses.armor,
     range: ROLE_PROFILES[hero.role].range,
-    maxMana: hero.ability.manaCost,
-    startingMana: Math.min(hero.ability.manaCost, hero.startingMana),
+    maxMana,
+    startingMana: Math.min(maxMana, hero.startingMana + itemBonuses.startingMana),
   };
 }
 
@@ -694,6 +881,8 @@ export function createInitialGame(seed = 0xdecafbad): GameState {
     commanderXp: 4,
     streak: 0,
     lastOutcome: null,
+    componentInventory: { ember: 0, scale: 0, mote: 0 },
+    craftedItemInventory: [],
     units: [],
     enemyUnits: [],
     shop: [],
@@ -758,6 +947,13 @@ function combineUnitsMutable(state: GameState): string[] {
         keeper.level = Math.max(keeper.level, second.level, third.level);
         keeper.xp = keeper.xp + second.xp + third.xp;
         addUnitXpMutable(keeper, 2);
+        for (const item of [...second.itemSlots, ...third.itemSlots].filter(
+          (candidate): candidate is CraftedItem => candidate !== null,
+        )) {
+          const freeSlot = keeper.itemSlots.findIndex((candidate) => candidate === null);
+          if (freeSlot >= 0) keeper.itemSlots[freeSlot] = item;
+          else state.craftedItemInventory.push(item);
+        }
         state.units = state.units.filter((unit) => unit.id !== second.id && unit.id !== third.id);
         if (keeper.position === null && keeper.benchIndex === null) {
           keeper.benchIndex = firstFreeBench(state.units);
@@ -882,9 +1078,111 @@ export function sellUnit(state: GameState, unitId: string): GameActionResult {
   const copyValue = unit.stars === 3 ? 9 : unit.stars === 2 ? 3 : 1;
   const refund = HEROES[unit.heroId].cost * copyValue;
   const next = cloneState(state);
+  const selling = next.units.find((candidate) => candidate.id === unitId)!;
+  next.craftedItemInventory.push(
+    ...selling.itemSlots.filter((item): item is CraftedItem => item !== null),
+  );
   next.units = next.units.filter((candidate) => candidate.id !== unitId);
   next.gold += refund;
   return succeed(next, `${HEROES[unit.heroId].name} sold for ${refund} gold.`);
+}
+
+function canManageItems(state: GameState): boolean {
+  return state.phase === "planning" || state.phase === "resolution";
+}
+
+export function craftItem(
+  state: GameState,
+  firstComponent: ItemComponentId,
+  secondComponent: ItemComponentId,
+): GameActionResult {
+  if (!canManageItems(state)) return fail(state, "Items can only be crafted between combats.");
+  const definition = getCraftedItemDefinition(firstComponent, secondComponent);
+  if (!definition) return fail(state, "Those components do not form an item.");
+  const needed = new Map<ItemComponentId, number>();
+  needed.set(firstComponent, (needed.get(firstComponent) ?? 0) + 1);
+  needed.set(secondComponent, (needed.get(secondComponent) ?? 0) + 1);
+  for (const [componentId, count] of needed) {
+    if ((state.componentInventory?.[componentId] ?? 0) < count) {
+      return fail(state, `Need ${count} ${ITEM_COMPONENTS[componentId].name}${count === 1 ? "" : "s"}.`);
+    }
+  }
+
+  const next = cloneState(state);
+  for (const [componentId, count] of needed) next.componentInventory[componentId] -= count;
+  next.craftedItemInventory.push({
+    id: nextId(next, "item"),
+    itemId: definition.id,
+    tier: "full",
+    enhancement: null,
+  });
+  return succeed(next, `${definition.name} crafted.`);
+}
+
+export function enhanceItem(
+  state: GameState,
+  craftedItemId: string,
+  componentId: ItemComponentId,
+): GameActionResult {
+  if (!canManageItems(state)) return fail(state, "Items can only be enhanced between combats.");
+  const item = state.craftedItemInventory?.find((candidate) => candidate.id === craftedItemId);
+  if (!item) return fail(state, "That item is not in your inventory.");
+  if (item.tier === "enhanced") return fail(state, "That item is already enhanced.");
+  if ((state.componentInventory?.[componentId] ?? 0) < 1) {
+    return fail(state, `Need 1 ${ITEM_COMPONENTS[componentId].name}.`);
+  }
+
+  const next = cloneState(state);
+  const upgraded = next.craftedItemInventory.find((candidate) => candidate.id === craftedItemId)!;
+  next.componentInventory[componentId] -= 1;
+  upgraded.tier = "enhanced";
+  upgraded.enhancement = componentId;
+  return succeed(next, `${ITEM_DEFINITIONS[upgraded.itemId].name} enhanced with ${ITEM_COMPONENTS[componentId].name}.`);
+}
+
+export function equipItem(
+  state: GameState,
+  unitId: string,
+  craftedItemId: string,
+  slotIndex?: number,
+): GameActionResult {
+  if (!canManageItems(state)) return fail(state, "Items can only be equipped between combats.");
+  const unit = state.units.find((candidate) => candidate.id === unitId);
+  if (!unit) return fail(state, "That unit is no longer available.");
+  const item = state.craftedItemInventory?.find((candidate) => candidate.id === craftedItemId);
+  if (!item) return fail(state, "That item is not in your inventory.");
+  const destination = slotIndex ?? unit.itemSlots.findIndex((candidate) => candidate === null);
+  if (!Number.isInteger(destination) || destination < 0 || destination >= ITEM_SLOTS_PER_UNIT) {
+    return fail(state, "That item slot does not exist.");
+  }
+  if (unit.itemSlots[destination] !== null) return fail(state, "That item slot is already occupied.");
+
+  const next = cloneState(state);
+  const inventoryIndex = next.craftedItemInventory.findIndex((candidate) => candidate.id === craftedItemId);
+  const [equipped] = next.craftedItemInventory.splice(inventoryIndex, 1);
+  next.units.find((candidate) => candidate.id === unitId)!.itemSlots[destination] = equipped;
+  return succeed(next, `${ITEM_DEFINITIONS[equipped.itemId].name} equipped to ${HEROES[unit.heroId].name}.`);
+}
+
+export function unequipItem(
+  state: GameState,
+  unitId: string,
+  slotIndex: number,
+): GameActionResult {
+  if (!canManageItems(state)) return fail(state, "Items can only be unequipped between combats.");
+  const unit = state.units.find((candidate) => candidate.id === unitId);
+  if (!unit) return fail(state, "That unit is no longer available.");
+  if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= ITEM_SLOTS_PER_UNIT) {
+    return fail(state, "That item slot does not exist.");
+  }
+  const item = unit.itemSlots[slotIndex];
+  if (!item) return fail(state, "That item slot is empty.");
+
+  const next = cloneState(state);
+  const unequipped = next.units.find((candidate) => candidate.id === unitId)!.itemSlots[slotIndex]!;
+  next.units.find((candidate) => candidate.id === unitId)!.itemSlots[slotIndex] = null;
+  next.craftedItemInventory.push(unequipped);
+  return succeed(next, `${ITEM_DEFINITIONS[item.itemId].name} returned to inventory.`);
 }
 
 function manhattan(a: number, b: number): number {
@@ -900,7 +1198,10 @@ function adjacent(a: number, b: number): boolean {
 }
 
 function snapshot(units: CombatUnit[]): CombatUnit[] {
-  return units.map((unit) => ({ ...unit }));
+  return units.map((unit) => ({
+    ...unit,
+    itemSlots: unit.itemSlots ? cloneItemSlots(unit.itemSlots) : undefined,
+  }));
 }
 
 /**
@@ -1005,6 +1306,7 @@ function makeCombatUnits(state: GameState): CombatUnit[] {
       fireWallShield: 0,
       stunned: 0,
       alive: true,
+      itemSlots: cloneItemSlots(unit.itemSlots),
     } satisfies CombatUnit;
   });
   for (const side of ["player", "enemy"] as Side[]) {
@@ -1371,16 +1673,32 @@ export function applyCombatResult(state: GameState): GameActionResult {
   return succeed(next, report.outcome === "victory" ? "Victory rewards claimed." : "Defeat resolved. Regroup for the next round.");
 }
 
+export function getItemComponentRewardForRound(round: number): ItemComponentId | null {
+  if (round < 2 || round > FINAL_ROUND || round % 2 !== 0) return null;
+  return ITEM_COMPONENT_IDS[(round / 2 - 1) % ITEM_COMPONENT_IDS.length];
+}
+
 export function advanceRound(state: GameState): GameActionResult {
   if (state.phase !== "resolution") return fail(state, "Finish the current round first.");
   const next = cloneState(state);
   next.round += 1;
   next.phase = "planning";
   next.combatReport = null;
-  next.roundResult = null;
+  const componentReward = getItemComponentRewardForRound(next.round);
+  if (componentReward) {
+    next.componentInventory[componentReward] += 1;
+    if (next.roundResult) {
+      next.roundResult = { ...next.roundResult, itemComponentReward: componentReward };
+    }
+  } else {
+    next.roundResult = null;
+  }
   next.enemyUnits = generateEnemyMutable(next);
   if (!next.shopLocked) next.shop = rollShopMutable(next);
-  return succeed(next, `Round ${next.round}. Scout the enemy and set your formation.`);
+  const rewardMessage = componentReward
+    ? ` ${ITEM_COMPONENTS[componentReward].name} added to your component inventory.`
+    : "";
+  return succeed(next, `Round ${next.round}.${rewardMessage} Scout the enemy and set your formation.`);
 }
 
 export function toggleShopLock(state: GameState): GameActionResult {
@@ -1392,6 +1710,10 @@ export function toggleShopLock(state: GameState): GameActionResult {
 
 export function restartGame(seed = 0xdecafbad): GameState {
   return createInitialGame(seed);
+}
+
+export function normalizeGameState(state: GameState): GameState {
+  return cloneState(state);
 }
 
 export function validateState(state: GameState): string[] {
@@ -1406,5 +1728,33 @@ export function validateState(state: GameState): string[] {
   if (state.units.some((unit) => unit.position === null && unit.benchIndex === null)) problems.push("Every allied unit must be deployed or benched.");
   if (state.units.some((unit) => unit.stars < 1 || unit.stars > MAX_STARS)) problems.push("Unit star rank is out of range.");
   if (state.units.some((unit) => unit.level < 1 || unit.level > MAX_UNIT_LEVEL)) problems.push("Unit level is out of range.");
+  if (state.units.some((unit) => !Array.isArray(unit.itemSlots) || unit.itemSlots.length !== ITEM_SLOTS_PER_UNIT)) {
+    problems.push(`Every allied unit must have exactly ${ITEM_SLOTS_PER_UNIT} item slots.`);
+  }
+  if (ITEM_COMPONENT_IDS.some((id) => {
+    const count = state.componentInventory?.[id];
+    return !Number.isInteger(count) || count < 0;
+  })) {
+    problems.push("Item component counts must be non-negative integers.");
+  }
+  const inventoryItems = state.craftedItemInventory ?? [];
+  const equippedItems = state.units.flatMap((unit) =>
+    Array.isArray(unit.itemSlots)
+      ? unit.itemSlots.filter((item): item is CraftedItem => item !== null)
+      : [],
+  );
+  const allItems = [...inventoryItems, ...equippedItems];
+  if (new Set(allItems.map((item) => item.id)).size !== allItems.length) {
+    problems.push("Crafted item instance IDs must be unique.");
+  }
+  if (allItems.some((item) => !ITEM_DEFINITIONS[item.itemId])) {
+    problems.push("Every crafted item must reference a known definition.");
+  }
+  if (allItems.some((item) =>
+    (item.tier === "full" && item.enhancement !== null) ||
+    (item.tier === "enhanced" && !item.enhancement),
+  )) {
+    problems.push("Crafted item enhancement state is invalid.");
+  }
   return problems;
 }
