@@ -44,3 +44,12 @@ test("ships the bespoke social card and no starter preview dependency", async ()
   assert.match(layout, /\/og\.png/);
   assert.match(layout, /x-forwarded-host/);
 });
+
+test("combat autoplay schedules every playback tick without a pause toggle", async () => {
+  const client = await readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8");
+
+  assert.match(
+    client,
+    /\[game\.phase, playing, atCombatEnd, combatEvents\.length, speed, combatIndex\]/,
+  );
+});

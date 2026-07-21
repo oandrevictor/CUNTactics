@@ -221,7 +221,7 @@ export function GameClient() {
       Math.round(820 / speed),
     );
     return () => window.clearTimeout(timeout);
-  }, [game.phase, playing, atCombatEnd, combatEvents.length, speed]);
+  }, [game.phase, playing, atCombatEnd, combatEvents.length, speed, combatIndex]);
 
   useEffect(() => {
     const handleKey = (event: globalThis.KeyboardEvent) => {
