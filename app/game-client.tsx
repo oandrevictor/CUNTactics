@@ -30,6 +30,7 @@ import {
   enhanceItem,
   equipItem,
   getActiveTraits,
+  getAbilityPreview,
   getCopyCount,
   getCraftedItemBonuses,
   getCraftedItemDefinition,
@@ -51,6 +52,8 @@ import {
   type CombatEvent,
   type CombatStatistics,
   type CombatUnit,
+  type AbilityPreview,
+  type AbilityValues,
   type CraftedItem,
   type GameActionResult,
   type GameState,
@@ -73,6 +76,14 @@ type LoadoutDrag =
   | { kind: "component"; id: ItemComponentId };
 
 type LoadoutDropStatus = "ready" | "blocked" | null;
+
+type AbilityMetric = {
+  id: string;
+  label: string;
+  kind: string;
+  applies: (values: AbilityValues) => boolean;
+  format: (values: AbilityValues) => string;
+};
 
 type DisplayUnit = {
   id: string;
@@ -223,6 +234,92 @@ function craftedItemBonusText(item: CraftedItem): string {
     bonuses.armor ? `+${bonuses.armor} armor` : null,
     bonuses.startingMana ? `+${bonuses.startingMana} starting mana` : null,
   ].filter(Boolean).join(" · ");
+}
+
+function targetCountText(values: AbilityValues): string {
+  if (values.minTargets === values.maxTargets) return String(values.maxTargets);
+  if (values.minTargets === 0) return `Up to ${values.maxTargets}`;
+  return `${values.minTargets}–${values.maxTargets}`;
+}
+
+function abilityMetricDefinitions(preview: AbilityPreview): AbilityMetric[] {
+  const damageLabel = preview.current.ignoresArmor ? "True damage" : "Raw damage";
+  const targetLabel: Record<HeroId, string> = {
+    bramble: "Allies healed",
+    boitata: "Target",
+    sol: "Enemies hit",
+    nix: "Enemies hit",
+    aster: "Enemies hit",
+    morrow: "Enemies drained",
+    tide: "Allies healed",
+    vesper: "Enemies hit",
+    piper: "Enemies hit",
+  };
+  return [
+    {
+      id: "damage",
+      label: damageLabel,
+      kind: preview.current.ignoresArmor ? "true-damage" : "raw-damage",
+      applies: (values) => values.damage > 0,
+      format: (values) => String(values.damage),
+    },
+    {
+      id: "healing",
+      label: "Healing",
+      kind: "healing",
+      applies: (values) => values.healing > 0,
+      format: (values) => String(values.healing),
+    },
+    {
+      id: "shield",
+      label: "Shield",
+      kind: "shield",
+      applies: (values) => values.shield > 0,
+      format: (values) => String(values.shield),
+    },
+    {
+      id: "targets",
+      label: targetLabel[preview.current.heroId],
+      kind: "targets",
+      applies: (values) => values.maxTargets > 0,
+      format: preview.current.heroId === "boitata" ? () => "Self" : targetCountText,
+    },
+    {
+      id: "projectiles",
+      label: "Projectiles",
+      kind: "projectiles",
+      applies: (values) => values.projectiles > 0,
+      format: (values) => String(values.projectiles),
+    },
+    {
+      id: "mana-drain",
+      label: "Mana drain",
+      kind: "mana-drain",
+      applies: (values) => values.manaDrain > 0,
+      format: (values) => String(values.manaDrain),
+    },
+    {
+      id: "stun",
+      label: "Stun",
+      kind: "stun",
+      applies: (values) => values.stunTurns > 0,
+      format: (values) => `${values.stunTurns} ${values.stunTurns === 1 ? "turn" : "turns"}`,
+    },
+    {
+      id: "self-heal",
+      label: "Self-heal",
+      kind: "self-heal",
+      applies: (values) => values.selfHealPercent > 0,
+      format: (values) => `${values.selfHealPercent}%`,
+    },
+    {
+      id: "team-heal",
+      label: "Team heal",
+      kind: "team-heal",
+      applies: (values) => values.teamHealing > 0,
+      format: (values) => `${values.teamHealing} each`,
+    },
+  ];
 }
 
 function HeroArt({ heroId, className, children }: { heroId: HeroId; className: string; children?: ReactNode }) {
@@ -522,6 +619,21 @@ export function GameClient() {
   const componentCount = ITEM_COMPONENT_IDS.reduce((total, id) => total + game.componentInventory[id], 0);
   const selectedHero = selectedDisplay ? HEROES[selectedDisplay.heroId] : null;
   const selectedRole = selectedHero ? ROLE_PROFILES[selectedHero.role] : null;
+  const selectedTeamUnits = selectedPersistent
+    ? selectedPersistent.side === "player" ? game.units : game.enemyUnits
+    : [];
+  const abilityPreview = selectedPersistent
+    ? getAbilityPreview(selectedPersistent, selectedTeamUnits)
+    : null;
+  const selectedAbilityMetrics = abilityPreview
+    ? abilityMetricDefinitions(abilityPreview)
+    : [];
+  const currentAbilityMetrics = abilityPreview
+    ? selectedAbilityMetrics.filter((metric) => metric.applies(abilityPreview.current))
+    : [];
+  const scalingAbilityMetrics = abilityPreview
+    ? selectedAbilityMetrics.filter((metric) => abilityPreview.byStar.some(metric.applies))
+    : [];
   const traits = getActiveTraits(game.units);
   const deployedCount = game.units.filter((unit) => unit.position !== null).length;
   const commanderXpMaximum = commanderXpToNext(game.commanderLevel);
@@ -1062,12 +1174,79 @@ export function GameClient() {
                   </span>
                 </div>
               ) : null}
-              <div className="ability-box" data-testid={`ability-${selectedHero.ability.id}`}>
-                <span className="eyebrow">Ability · {selectedHero.ability.manaCost} mana</span>
-                <strong>{selectedHero.ability.name}</strong>
-                <p>{selectedHero.ability.description}</p>
-                <small>Targets: {selectedHero.ability.targetRule}</small>
-              </div>
+              {abilityPreview ? (
+                <details className="ability-box ability-card" data-testid={`ability-${selectedHero.ability.id}`}>
+                  <summary className="ability-summary">
+                    <span className="ability-heading">
+                      <span>
+                        <span className="eyebrow">Ability · {selectedHero.ability.manaCost} mana</span>
+                        <strong className="ability-name" id={`ability-name-${selectedHero.ability.id}`}>{selectedHero.ability.name}</strong>
+                      </span>
+                      <span className="ability-rank">Current · {"★".repeat(abilityPreview.current.stars)}</span>
+                    </span>
+                    <span className="ability-description">{selectedHero.ability.description}</span>
+                    <span
+                      className="ability-current-values"
+                      data-testid={`ability-current-values-${selectedHero.ability.id}`}
+                      role="list"
+                      aria-label={`${selectedHero.ability.name} current values`}
+                    >
+                      {currentAbilityMetrics.map((metric) => (
+                        <span className={`ability-value ability-value-${metric.kind}`} role="listitem" key={metric.id}>
+                          <small>{metric.label}</small>
+                          <strong>{metric.format(abilityPreview.current)}</strong>
+                        </span>
+                      ))}
+                    </span>
+                    <span className="ability-target-rule">Targets: {selectedHero.ability.targetRule}</span>
+                    <span className="ability-disclosure" aria-hidden="true">Hover or tap for star scaling</span>
+                  </summary>
+                  <div className="ability-breakdown" aria-labelledby={`ability-name-${selectedHero.ability.id}`}>
+                    <div className="ability-breakdown-heading">
+                      <strong>Star scaling</strong>
+                      <small>Same level, equipment, and bonds</small>
+                    </div>
+                    <p className="ability-scale-copy">{abilityPreview.scalingDescription}</p>
+                    <table className="ability-scale-table" data-testid={`ability-scaling-${selectedHero.ability.id}`}>
+                      <caption className="sr-only">{selectedHero.ability.name} values by star level</caption>
+                      <thead>
+                        <tr>
+                          <th scope="col">Value</th>
+                          <th scope="col">1★</th>
+                          <th scope="col">2★</th>
+                          <th scope="col">3★</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {scalingAbilityMetrics.map((metric) => (
+                          <tr key={metric.id}>
+                            <th scope="row">{metric.label}</th>
+                            {abilityPreview.byStar.map((values) => (
+                              <td aria-current={values.stars === abilityPreview.current.stars ? "true" : undefined} key={values.stars}>
+                                {metric.applies(values) ? metric.format(values) : "—"}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {abilityPreview.modifiers.length ? (
+                      <div className="ability-modifiers" aria-label="Included ability modifiers">
+                        <span className="ability-modifier-label">Included</span>
+                        {abilityPreview.modifiers.map((modifier) => (
+                          <span
+                            className={`ability-modifier ${modifier.startsWith("Item ·") ? "ability-modifier-item" : modifier.startsWith("Bond ·") ? "ability-modifier-bond" : ""}`}
+                            key={modifier}
+                          >
+                            {modifier}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {abilityPreview.contextNote ? <p className="ability-context-note">{abilityPreview.contextNote}</p> : null}
+                  </div>
+                </details>
+              ) : null}
               <div className="trait-chips">{selectedHero.traits.map((trait) => <span key={trait}>{TRAITS[trait].glyph} {TRAITS[trait].name}</span>)}</div>
               {selectedPersistent?.side === "player" ? <p className="copy-progress">Copies toward next star: {selectedCopies}/3</p> : null}
               {selectedPersistent?.side === "player" && game.phase === "planning" ? (

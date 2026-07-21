@@ -89,6 +89,32 @@ export interface AbilityDefinition {
   targetRule: string;
 }
 
+export interface AbilityValues {
+  heroId: HeroId;
+  stars: 1 | 2 | 3;
+  damage: number;
+  healing: number;
+  shield: number;
+  minTargets: number;
+  maxTargets: number;
+  projectiles: number;
+  manaDrain: number;
+  stunTurns: number;
+  selfHealPercent: number;
+  teamHealing: number;
+  takedownMana: number;
+  startingManaBonus: number;
+  ignoresArmor: boolean;
+}
+
+export interface AbilityPreview {
+  current: AbilityValues;
+  byStar: [AbilityValues, AbilityValues, AbilityValues];
+  modifiers: string[];
+  scalingDescription: string;
+  contextNote: string;
+}
+
 export interface HeroDefinition {
   id: HeroId;
   name: string;
@@ -398,9 +424,9 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     ability: {
       id: "thornwall",
       name: "Thornwall",
-      description: "Gains a shield and restores life to the most wounded adjacent ally.",
+      description: "Gains a shield and restores life to the most wounded adjacent allies, healing more allies at 3 stars.",
       manaCost: 80,
-      targetRule: "Self and lowest-life adjacent ally",
+      targetRule: "Self and lowest-life adjacent allies",
     },
   },
   boitata: {
@@ -567,9 +593,9 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     ability: {
       id: "briar-volley",
       name: "Briar Volley",
-      description: "Fires binding arrows into the two weakest enemies.",
+      description: "Fires binding arrows into the weakest enemies, launching a third arrow at 3 stars.",
       manaCost: 80,
-      targetRule: "Two lowest-life enemies",
+      targetRule: "Weakest enemies",
     },
   },
 };
@@ -800,15 +826,10 @@ export function getCraftedItemBonuses(item: CraftedItem): ItemStatBonuses {
   };
 }
 
-export function getUnitStats(
-  unit: Pick<UnitInstance, "heroId" | "stars" | "level"> &
-    Partial<Pick<UnitInstance, "itemSlots">>,
-): UnitStats {
-  const hero = HEROES[unit.heroId];
-  const starScale = [1, 1, 1.65, 2.55][Math.min(MAX_STARS, Math.max(1, unit.stars))];
-  const levelScale = 1 + (Math.min(MAX_UNIT_LEVEL, Math.max(1, unit.level)) - 1) * 0.12;
-  const equippedItems: Array<CraftedItem | null> = unit.itemSlots ? [...unit.itemSlots] : [];
-  const itemBonuses = equippedItems.reduce<ItemStatBonuses>(
+function getEquippedItemBonuses(
+  itemSlots?: readonly (CraftedItem | null)[],
+): ItemStatBonuses {
+  return (itemSlots ?? []).reduce<ItemStatBonuses>(
     (total, item) => {
       if (!item) return total;
       const bonuses = getCraftedItemBonuses(item);
@@ -821,6 +842,16 @@ export function getUnitStats(
     },
     { maxHp: 0, attack: 0, armor: 0, startingMana: 0 },
   );
+}
+
+export function getUnitStats(
+  unit: Pick<UnitInstance, "heroId" | "stars" | "level"> &
+    Partial<Pick<UnitInstance, "itemSlots">>,
+): UnitStats {
+  const hero = HEROES[unit.heroId];
+  const starScale = [1, 1, 1.65, 2.55][Math.min(MAX_STARS, Math.max(1, unit.stars))];
+  const levelScale = 1 + (Math.min(MAX_UNIT_LEVEL, Math.max(1, unit.level)) - 1) * 0.12;
+  const itemBonuses = getEquippedItemBonuses(unit.itemSlots);
   const maxMana = hero.ability.manaCost;
   return {
     maxHp: Math.round(hero.maxHp * starScale * levelScale) + itemBonuses.maxHp,
@@ -1293,7 +1324,10 @@ function combatName(unit: CombatUnit): string {
   return HEROES[unit.heroId].name;
 }
 
-function traitCountsForSide(units: CombatUnit[], side: Side): Record<TraitId, number> {
+function traitCountsForSide(
+  units: readonly Pick<CombatUnit, "heroId" | "side">[],
+  side: Side,
+): Record<TraitId, number> {
   const counts = Object.fromEntries((Object.keys(TRAITS) as TraitId[]).map((id) => [id, 0])) as Record<TraitId, number>;
   for (const unit of units.filter((candidate) => candidate.side === side)) {
     for (const trait of HEROES[unit.heroId].traits) counts[trait] += 1;
@@ -1304,6 +1338,223 @@ function traitCountsForSide(units: CombatUnit[], side: Side): Record<TraitId, nu
 function tierValue(id: TraitId, count: number, values: number[]): number {
   const tier = traitTier(id, count);
   return tier > 0 ? values[Math.min(values.length, tier) - 1] : 0;
+}
+
+interface FormationAbilityBonuses {
+  armor: number;
+  attackPercent: number;
+  abilityDamagePercent: number;
+  hexerManaDrain: number;
+  teamHealing: number;
+  takedownMana: number;
+  startingManaBonus: number;
+}
+
+interface AbilityEvaluationInput {
+  heroId: HeroId;
+  stars: 1 | 2 | 3;
+  level: number;
+  attack: number;
+  maxHp: number;
+  armor: number;
+  formation: FormationAbilityBonuses;
+}
+
+function formationAbilityBonuses(counts: Record<TraitId, number>): FormationAbilityBonuses {
+  return {
+    armor: tierValue("vanguard", counts.vanguard, [15, 35]),
+    attackPercent: tierValue("duelist", counts.duelist, [0.12, 0.28]),
+    abilityDamagePercent: tierValue("starborn", counts.starborn, [0.15, 0.3]),
+    hexerManaDrain: tierValue("hexer", counts.hexer, [12, 25]),
+    teamHealing: tierValue("verdant", counts.verdant, [8, 18]),
+    takedownMana: tierValue("nightbound", counts.nightbound, [20, 35]),
+    startingManaBonus: tierValue("invoker", counts.invoker, [12, 28]),
+  };
+}
+
+function normalizeStars(stars: number): 1 | 2 | 3 {
+  return Math.min(MAX_STARS, Math.max(1, Math.round(stars))) as 1 | 2 | 3;
+}
+
+/**
+ * The single source of truth for scalar ability output. Values are raw,
+ * pre-mitigation amounts; combat later records the amount actually applied.
+ */
+function evaluateAbilityValues(input: AbilityEvaluationInput): AbilityValues {
+  const values: AbilityValues = {
+    heroId: input.heroId,
+    stars: input.stars,
+    damage: 0,
+    healing: 0,
+    shield: 0,
+    minTargets: 1,
+    maxTargets: 1,
+    projectiles: 0,
+    manaDrain: 0,
+    stunTurns: 0,
+    selfHealPercent: 0,
+    teamHealing: input.formation.teamHealing,
+    takedownMana: 0,
+    startingManaBonus: input.formation.startingManaBonus,
+    ignoresArmor: false,
+  };
+  const scaleDamage = (amount: number) =>
+    Math.round(amount * (1 + input.formation.abilityDamagePercent));
+
+  if (input.heroId === "bramble") {
+    values.healing = Math.round(23 + input.level * 6 + input.attack * 0.3);
+    values.shield = Math.round(42 + input.attack * 0.8);
+    values.minTargets = 0;
+    values.maxTargets = input.stars >= 3 ? 2 : 1;
+  } else if (input.heroId === "boitata") {
+    values.shield = calculateWallOfFireShield(input);
+  } else if (input.heroId === "sol") {
+    values.damage = scaleDamage(48 + input.attack * 0.9);
+    values.maxTargets = 5;
+  } else if (input.heroId === "nix") {
+    values.damage = scaleDamage(58 + input.attack * 1.15);
+    values.ignoresArmor = true;
+  } else if (input.heroId === "aster") {
+    values.damage = scaleDamage(54 + input.attack * 1.25);
+    values.shield = Math.round(28 + input.attack * 0.35);
+  } else if (input.heroId === "morrow") {
+    values.damage = scaleDamage(50 + input.attack);
+    values.manaDrain = 28 + input.formation.hexerManaDrain;
+    values.selfHealPercent = 55;
+  } else if (input.heroId === "tide") {
+    values.healing = Math.round(44 + input.attack * 0.7);
+    values.shield = Math.round(19 + input.level * 4 + input.attack * 0.35);
+  } else if (input.heroId === "vesper") {
+    values.damage = scaleDamage(42 + input.attack * 0.85);
+    values.manaDrain = 35 + input.formation.hexerManaDrain;
+    values.stunTurns = 1;
+  } else if (input.heroId === "piper") {
+    values.damage = scaleDamage(31 + input.attack * 0.65);
+    values.maxTargets = input.stars >= 3 ? 3 : 2;
+    values.projectiles = values.maxTargets;
+  }
+
+  const isEnemyDamageAbility = values.damage > 0;
+  if (isEnemyDamageAbility && input.heroId !== "morrow" && input.heroId !== "vesper") {
+    values.manaDrain = input.formation.hexerManaDrain;
+  }
+  if (isEnemyDamageAbility) values.takedownMana = input.formation.takedownMana;
+  return values;
+}
+
+function abilityScalingDescription(byStar: AbilityPreview["byStar"]): string {
+  const heroId = byStar[0].heroId;
+  const triplet = (read: (value: AbilityValues) => number | string) =>
+    `(${byStar.map(read).join("/")})`;
+
+  if (heroId === "bramble") {
+    return `Shields self for ${triplet((value) => value.shield)} and heals up to ${triplet((value) => value.maxTargets)} adjacent allies for ${triplet((value) => value.healing)} Life each at 1★/2★/3★.`;
+  }
+  if (heroId === "boitata") {
+    return `Shields self for ${triplet((value) => value.shield)} damage at 1★/2★/3★.`;
+  }
+  if (heroId === "sol") {
+    return `Hits ${triplet((value) => `${value.minTargets}–${value.maxTargets}`)} clustered enemies for ${triplet((value) => value.damage)} raw damage each at 1★/2★/3★.`;
+  }
+  if (heroId === "nix") {
+    return `Strikes ${triplet((value) => value.maxTargets)} enemy for ${triplet((value) => value.damage)} true damage at 1★/2★/3★.`;
+  }
+  if (heroId === "aster") {
+    return `Strikes ${triplet((value) => value.maxTargets)} enemy for ${triplet((value) => value.damage)} raw damage and gains ${triplet((value) => value.shield)} Shield at 1★/2★/3★.`;
+  }
+  if (heroId === "morrow") {
+    return `Drains ${triplet((value) => value.maxTargets)} enemy for ${triplet((value) => value.damage)} raw damage and heals self for ${triplet((value) => value.selfHealPercent)}% of applied damage at 1★/2★/3★.`;
+  }
+  if (heroId === "tide") {
+    return `Heals ${triplet((value) => value.maxTargets)} ally for ${triplet((value) => value.healing)} Life and grants ${triplet((value) => value.shield)} Shield at 1★/2★/3★.`;
+  }
+  if (heroId === "vesper") {
+    return `Hits ${triplet((value) => value.maxTargets)} enemy for ${triplet((value) => value.damage)} raw damage, drains ${triplet((value) => value.manaDrain)} Mana, and stuns for ${triplet((value) => value.stunTurns)} turn at 1★/2★/3★.`;
+  }
+  return `Fires ${triplet((value) => value.projectiles)} projectiles into up to ${triplet((value) => value.maxTargets)} enemies for ${triplet((value) => value.damage)} raw damage each at 1★/2★/3★.`;
+}
+
+export function getAbilityPreview(
+  unit: UnitInstance,
+  teamUnits: readonly UnitInstance[],
+): AbilityPreview {
+  const isDeployed = unit.position !== null;
+  const formationUnits = isDeployed
+    ? teamUnits.filter((candidate) => candidate.side === unit.side && candidate.position !== null)
+    : [];
+  if (isDeployed && !formationUnits.some((candidate) => candidate.id === unit.id)) {
+    formationUnits.push(unit);
+  }
+  const counts = traitCountsForSide(formationUnits, unit.side);
+  const formation = formationAbilityBonuses(counts);
+  const byStar = ([1, 2, 3] as const).map((stars) => {
+    const base = getUnitStats({ ...unit, stars });
+    return evaluateAbilityValues({
+      heroId: unit.heroId,
+      stars,
+      level: unit.level,
+      attack: Math.round(base.attack * (1 + formation.attackPercent)),
+      maxHp: base.maxHp,
+      armor: base.armor + formation.armor,
+      formation,
+    });
+  }) as AbilityPreview["byStar"];
+  const current = byStar[normalizeStars(unit.stars) - 1];
+  const itemBonuses = getEquippedItemBonuses(unit.itemSlots);
+  const currentStats = getUnitStats(unit);
+  const baseStartingMana = Math.min(currentStats.maxMana, HEROES[unit.heroId].startingMana);
+  const itemStartingMana = Math.max(0, currentStats.startingMana - baseStartingMana);
+  const bondStartingMana = Math.max(
+    0,
+    Math.min(currentStats.maxMana, currentStats.startingMana + formation.startingManaBonus) - currentStats.startingMana,
+  );
+  const usesAttackScaling = unit.heroId !== "boitata";
+  const usesDefensiveScaling = unit.heroId === "boitata";
+  const modifiers: string[] = [];
+  if (usesDefensiveScaling && itemBonuses.maxHp > 0) modifiers.push(`Item · +${itemBonuses.maxHp} max Life`);
+  if (usesAttackScaling && itemBonuses.attack > 0) modifiers.push(`Item · +${itemBonuses.attack} Attack`);
+  if (usesDefensiveScaling && itemBonuses.armor > 0) modifiers.push(`Item · +${itemBonuses.armor} Armor`);
+  if (itemStartingMana > 0) modifiers.push(`Item · +${itemStartingMana} starting Mana`);
+  if (usesDefensiveScaling && formation.armor > 0) modifiers.push(`Bond · Vanguard +${formation.armor} Armor`);
+  if (usesAttackScaling && formation.attackPercent > 0) {
+    modifiers.push(`Bond · Duelist +${Math.round(formation.attackPercent * 100)}% Attack`);
+  }
+  if (formation.abilityDamagePercent > 0 && current.damage > 0) {
+    modifiers.push(`Bond · Starborn +${Math.round(formation.abilityDamagePercent * 100)}% ability damage`);
+  }
+  if (formation.hexerManaDrain > 0 && current.damage > 0) {
+    modifiers.push(`Bond · Hexer drains ${formation.hexerManaDrain} Mana from ability targets`);
+  }
+  if (formation.teamHealing > 0) {
+    modifiers.push(`Bond · Verdant heals all allies for ${formation.teamHealing} after casting`);
+  }
+  if (current.takedownMana > 0) {
+    modifiers.push(`Bond · Nightbound grants ${current.takedownMana} Mana per takedown`);
+  }
+  if (bondStartingMana > 0) {
+    modifiers.push(`Bond · Invoker +${bondStartingMana} starting Mana`);
+  }
+  const formationContext = isDeployed
+    ? `Current values include the deployed ${unit.side} formation's active bonds.`
+    : "Bench preview: deploy this character to activate formation bonds.";
+  const outputNotes = [formationContext];
+  if (current.damage > 0) {
+    outputNotes.push(current.ignoresArmor
+      ? "Damage is shown before shields; this ability ignores Armor."
+      : "Damage is shown before enemy Armor, shields, and remaining-Life limits.");
+  }
+  if (current.healing > 0) outputNotes.push("Healing is shown before missing-Life limits.");
+  if (current.selfHealPercent > 0) outputNotes.push("Self-healing uses the damage actually applied.");
+  if (current.teamHealing > 0) outputNotes.push("Team healing is shown before missing-Life limits.");
+  if (current.shield > 0) outputNotes.push("Shield is the full amount granted.");
+
+  return {
+    current,
+    byStar,
+    modifiers,
+    scalingDescription: abilityScalingDescription(byStar),
+    contextNote: outputNotes.join(" "),
+  };
 }
 
 function makeCombatUnits(state: GameState): CombatUnit[] {
@@ -1336,13 +1587,11 @@ function makeCombatUnits(state: GameState): CombatUnit[] {
   });
   for (const side of ["player", "enemy"] as Side[]) {
     const counts = traitCountsForSide(base, side);
-    const armorBonus = tierValue("vanguard", counts.vanguard, [15, 35]);
-    const attackBonus = tierValue("duelist", counts.duelist, [0.12, 0.28]);
-    const manaBonus = tierValue("invoker", counts.invoker, [12, 28]);
+    const formation = formationAbilityBonuses(counts);
     for (const unit of base.filter((candidate) => candidate.side === side)) {
-      unit.armor += armorBonus;
-      unit.attack = Math.round(unit.attack * (1 + attackBonus));
-      unit.mana = Math.min(unit.maxMana, unit.mana + manaBonus);
+      unit.armor += formation.armor;
+      unit.attack = Math.round(unit.attack * (1 + formation.attackPercent));
+      unit.mana = Math.min(unit.maxMana, unit.mana + formation.startingManaBonus);
     }
   }
   return base;
@@ -1424,9 +1673,15 @@ function castAbility(actor: CombatUnit, units: CombatUnit[], events: CombatEvent
   const allies = units.filter((unit) => unit.side === actor.side && unit.alive);
   const enemies = units.filter((unit) => unit.side !== actor.side && unit.alive);
   const counts = traitCountsForSide(units, actor.side);
-  const abilityScale = 1 + tierValue("starborn", counts.starborn, [0.15, 0.3]);
-  const manaDrain = tierValue("hexer", counts.hexer, [12, 25]);
-  const verdantHeal = tierValue("verdant", counts.verdant, [8, 18]);
+  const values = evaluateAbilityValues({
+    heroId: actor.heroId,
+    stars: normalizeStars(actor.stars),
+    level: actor.level,
+    attack: actor.attack,
+    maxHp: actor.maxHp,
+    armor: actor.armor,
+    formation: formationAbilityBonuses(counts),
+  });
   const targets: CombatUnit[] = [];
   let amount = 0;
   const amounts: Record<string, number> = {};
@@ -1438,15 +1693,16 @@ function castAbility(actor: CombatUnit, units: CombatUnit[], events: CombatEvent
 
   actor.mana = 0;
   if (actor.heroId === "bramble") {
-    actor.shield += Math.round((42 + actor.attack * 0.8) * abilityScale);
-    const ally = allies
+    actor.shield += values.shield;
+    const woundedAllies = allies
       .filter((unit) => unit.id !== actor.id && adjacent(unit.position, actor.position))
-      .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
-    if (ally) {
-      addTarget(ally, healUnit(ally, 28 + actor.level * 6));
+      .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)
+      .slice(0, values.maxTargets);
+    for (const ally of woundedAllies) {
+      addTarget(ally, healUnit(ally, values.healing));
     }
   } else if (actor.heroId === "boitata") {
-    const gainedShield = calculateWallOfFireShield(actor);
+    const gainedShield = values.shield;
     actor.shield += gainedShield;
     actor.fireWallShield += gainedShield;
     addTarget(actor, gainedShield);
@@ -1454,16 +1710,16 @@ function castAbility(actor: CombatUnit, units: CombatUnit[], events: CombatEvent
     const center = strongestClusterTarget(actor, units);
     if (center) {
       for (const target of enemies.filter((enemy) => adjacent(enemy.position, center.position))) {
-        const impact = damageUnit(target, Math.round((48 + actor.attack * 0.9) * abilityScale));
-        target.mana = Math.max(0, target.mana - manaDrain);
+        const impact = damageUnit(target, values.damage);
+        target.mana = Math.max(0, target.mana - values.manaDrain);
         addTarget(target, impact);
       }
     }
   } else if (actor.heroId === "nix") {
     const target = enemies.sort((a, b) => manhattan(actor.position, b.position) - manhattan(actor.position, a.position))[0];
     if (target) {
-      const impact = damageUnit(target, Math.round((58 + actor.attack * 1.15) * abilityScale), true);
-      target.mana = Math.max(0, target.mana - manaDrain);
+      const impact = damageUnit(target, values.damage, values.ignoresArmor);
+      target.mana = Math.max(0, target.mana - values.manaDrain);
       const step = openStepToward(actor, target, units);
       if (step !== null) actor.position = step;
       addTarget(target, impact);
@@ -1471,44 +1727,44 @@ function castAbility(actor: CombatUnit, units: CombatUnit[], events: CombatEvent
   } else if (actor.heroId === "aster") {
     const target = nearestEnemy(actor, units);
     if (target) {
-      const impact = damageUnit(target, Math.round((54 + actor.attack * 1.25) * abilityScale));
-      target.mana = Math.max(0, target.mana - manaDrain);
-      actor.shield += Math.round(28 + actor.attack * 0.35);
+      const impact = damageUnit(target, values.damage);
+      target.mana = Math.max(0, target.mana - values.manaDrain);
+      actor.shield += values.shield;
       addTarget(target, impact);
     }
   } else if (actor.heroId === "morrow") {
     const target = enemies.sort((a, b) => b.mana - a.mana || a.hp - b.hp)[0];
     if (target) {
-      const impact = damageUnit(target, Math.round((50 + actor.attack) * abilityScale));
-      target.mana = Math.max(0, target.mana - (28 + manaDrain));
-      healUnit(actor, impact * 0.55);
+      const impact = damageUnit(target, values.damage);
+      target.mana = Math.max(0, target.mana - values.manaDrain);
+      healUnit(actor, impact * (values.selfHealPercent / 100));
       addTarget(target, impact);
     }
   } else if (actor.heroId === "tide") {
     const target = allies.sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
     if (target) {
-      const impact = healUnit(target, Math.round((44 + actor.attack * 0.7) * abilityScale));
-      target.shield += 24 + actor.level * 5;
+      const impact = healUnit(target, values.healing);
+      target.shield += values.shield;
       addTarget(target, impact);
     }
   } else if (actor.heroId === "vesper") {
     const target = enemies.sort((a, b) => b.mana - a.mana || a.hp - b.hp)[0];
     if (target) {
-      const impact = damageUnit(target, Math.round((42 + actor.attack * 0.85) * abilityScale));
-      target.mana = Math.max(0, target.mana - (35 + manaDrain));
-      target.stunned = Math.max(target.stunned, 1);
+      const impact = damageUnit(target, values.damage);
+      target.mana = Math.max(0, target.mana - values.manaDrain);
+      target.stunned = Math.max(target.stunned, values.stunTurns);
       addTarget(target, impact);
     }
   } else if (actor.heroId === "piper") {
-    for (const target of enemies.sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp).slice(0, 2)) {
-      const impact = damageUnit(target, Math.round((31 + actor.attack * 0.65) * abilityScale));
-      target.mana = Math.max(0, target.mana - manaDrain);
+    for (const target of enemies.sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp).slice(0, values.maxTargets)) {
+      const impact = damageUnit(target, values.damage);
+      target.mana = Math.max(0, target.mana - values.manaDrain);
       addTarget(target, impact);
     }
   }
 
-  if (verdantHeal > 0) {
-    for (const ally of allies) healUnit(ally, verdantHeal);
+  if (values.teamHealing > 0) {
+    for (const ally of allies) healUnit(ally, values.teamHealing);
   }
   const abilityText = actor.heroId === "boitata"
     ? `${combatName(actor)} coils into ${hero.ability.name} and gains ${Math.round(amount)} shield.`
@@ -1523,8 +1779,7 @@ function castAbility(actor: CombatUnit, units: CombatUnit[], events: CombatEvent
   );
   const defeatedEnemies = targets.filter((unit) => unit.side !== actor.side && !unit.alive);
   if (defeatedEnemies.length > 0) {
-    const takedownMana = tierValue("nightbound", counts.nightbound, [20, 35]);
-    actor.mana = Math.min(actor.maxMana, actor.mana + takedownMana * defeatedEnemies.length);
+    actor.mana = Math.min(actor.maxMana, actor.mana + values.takedownMana * defeatedEnemies.length);
   }
   for (const target of defeatedEnemies) {
     addEvent(events, units, turn, "defeat", `${combatName(target)} is defeated.`, {

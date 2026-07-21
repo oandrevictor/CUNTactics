@@ -20,6 +20,7 @@ import {
   equipItem,
   getCraftedItemBonuses,
   getCraftedItemDefinition,
+  getAbilityPreview,
   getInterest,
   getItemComponentRewardForRound,
   getUnitStats,
@@ -33,7 +34,46 @@ import {
   validateState,
   type CraftedItem,
   type GameState,
+  type HeroId,
+  type UnitInstance,
+  type UnitItemSlots,
 } from "../app/game-engine.ts";
+
+function fullItem(id: string, itemId: CraftedItem["itemId"]): CraftedItem {
+  return { id, itemId, tier: "full", enhancement: null };
+}
+
+function abilityTestUnit(
+  base: UnitInstance,
+  heroId: HeroId,
+  overrides: Partial<UnitInstance> = {},
+): UnitInstance {
+  return {
+    ...base,
+    id: `ability-${heroId}`,
+    heroId,
+    stars: 1,
+    level: 1,
+    xp: 0,
+    position: 40,
+    benchIndex: null,
+    itemSlots: [null, null, null],
+    ...overrides,
+  };
+}
+
+function abilityCast(
+  state: GameState,
+  actorId: string,
+) {
+  const combat = resolveCombat(state);
+  assert.equal(combat.ok, true);
+  const cast = combat.report?.events.find(
+    (event) => event.type === "ability" && event.actorId === actorId,
+  );
+  assert.ok(cast, `expected ${actorId} to cast an ability`);
+  return cast;
+}
 
 test("initial campaign is deterministic and satisfies placement invariants", () => {
   const first = createInitialGame(12345);
@@ -281,6 +321,47 @@ test("roster exposes nine distinct heroes, abilities, and real trait hooks", () 
   assert.equal(HEROES.boitata.ability.id, "wall-of-fire");
 });
 
+test("every hero exposes a complete three-star ability preview", () => {
+  const initial = createInitialGame(800);
+  const numericFields = [
+    "damage",
+    "healing",
+    "shield",
+    "minTargets",
+    "maxTargets",
+    "projectiles",
+    "manaDrain",
+    "stunTurns",
+    "selfHealPercent",
+    "teamHealing",
+    "takedownMana",
+    "startingManaBonus",
+  ] as const;
+
+  for (const hero of Object.values(HEROES)) {
+    const unit = abilityTestUnit(initial.units[0], hero.id, { id: `preview-${hero.id}` });
+    const preview = getAbilityPreview(unit, [unit]);
+
+    assert.deepEqual(preview.byStar.map((values) => values.stars), [1, 2, 3]);
+    assert.deepEqual(preview.current, preview.byStar[0]);
+    assert.ok(preview.scalingDescription.trim().length > 0, `${hero.name} needs scaling copy`);
+    assert.ok(preview.contextNote.trim().length > 0, `${hero.name} needs preview context`);
+    assert.ok(preview.scalingDescription.includes("/"), `${hero.name} should expose three-star values`);
+    assert.equal(
+      preview.current.projectiles > 0,
+      hero.id === "piper",
+      `${hero.name} should only expose a projectile count when it fires projectiles`,
+    );
+    for (const values of preview.byStar) {
+      assert.equal(values.heroId, hero.id);
+      assert.equal(typeof values.ignoresArmor, "boolean");
+      for (const field of numericFields) {
+        assert.ok(Number.isFinite(values[field]), `${hero.name} ${field} must be numeric`);
+      }
+    }
+  }
+});
+
 test("combat roles define distinct ranges and every hero inherits its role range", () => {
   assert.deepEqual(
     Object.fromEntries(Object.entries(ROLE_PROFILES).map(([role, profile]) => [role, profile.range])),
@@ -295,6 +376,167 @@ test("combat roles define distinct ranges and every hero inherits its role range
     assert.equal(stats.range, ROLE_PROFILES[hero.role].range);
   }
   assert.equal(getUnitStats({ ...baseUnit, heroId: "boitata" }).range, 1);
+});
+
+test("ability previews apply star rank, attack items, and active offensive bonds exactly", () => {
+  const initial = createInitialGame(801);
+  const lanterns: UnitItemSlots = [
+    fullItem("preview-lantern-1", "spirit-lantern"),
+    fullItem("preview-lantern-2", "spirit-lantern"),
+    fullItem("preview-lantern-3", "spirit-lantern"),
+  ];
+  const baselineNix = abilityTestUnit(initial.units[0], "nix", {
+    id: "preview-nix",
+    stars: 2,
+    itemSlots: lanterns,
+  });
+  const baseline = getAbilityPreview(baselineNix, [baselineNix]);
+
+  assert.deepEqual(baseline.byStar.map((values) => values.damage), [94, 117, 149]);
+  assert.equal(baseline.current.damage, 117);
+  assert.ok(baseline.byStar.every((values) => values.ignoresArmor));
+  assert.ok(baseline.modifiers.includes("Item · +45 starting Mana"));
+
+  const armedNix: UnitInstance = {
+    ...baselineNix,
+    itemSlots: [fullItem("preview-fang", "inferno-fang"), lanterns[1], lanterns[2]],
+  };
+  const armed = getAbilityPreview(armedNix, [armedNix]);
+  assert.deepEqual(armed.byStar.map((values) => values.damage), [119, 142, 174]);
+  assert.ok(armed.modifiers.some((modifier) => modifier.startsWith("Item ·")));
+
+  const sol = abilityTestUnit(initial.units[0], "sol", {
+    id: "preview-support-sol",
+    position: 46,
+  });
+  const aster = abilityTestUnit(initial.units[0], "aster", {
+    id: "preview-support-aster",
+    position: 47,
+  });
+  const bonded = getAbilityPreview(armedNix, [armedNix, sol, aster]);
+  assert.deepEqual(bonded.byStar.map((values) => values.damage), [145, 175, 216]);
+  assert.ok(bonded.modifiers.some((modifier) => /Bond · Duelist/.test(modifier)));
+  assert.ok(bonded.modifiers.some((modifier) => /Bond · Starborn/.test(modifier)));
+});
+
+test("starting Mana modifiers report only the amount that fits below the ability cap", () => {
+  const initial = createInitialGame(806);
+  const tide = abilityTestUnit(initial.units[0], "tide", {
+    id: "preview-capped-tide",
+    itemSlots: [
+      fullItem("tide-lantern-1", "spirit-lantern"),
+      fullItem("tide-lantern-2", "spirit-lantern"),
+      fullItem("tide-lantern-3", "spirit-lantern"),
+    ],
+  });
+  const sol = abilityTestUnit(initial.units[0], "sol", {
+    id: "preview-invoker-sol",
+    position: 41,
+  });
+  const capped = getAbilityPreview(tide, [tide, sol]);
+  assert.ok(capped.modifiers.includes("Item · +45 starting Mana"));
+  assert.ok(!capped.modifiers.some((modifier) => modifier.startsWith("Bond · Invoker")));
+
+  const uncappedTide = { ...tide, itemSlots: [null, null, null] } satisfies UnitInstance;
+  const uncapped = getAbilityPreview(uncappedTide, [uncappedTide, sol]);
+  assert.ok(uncapped.modifiers.includes("Bond · Invoker +12 starting Mana"));
+});
+
+test("Nix's displayed true damage matches the amount resolved by combat", () => {
+  const initial = createInitialGame(802);
+  const caster = abilityTestUnit(initial.units[0], "nix", {
+    id: "a-preview-nix",
+    itemSlots: [
+      fullItem("combat-lantern-1", "spirit-lantern"),
+      fullItem("combat-lantern-2", "spirit-lantern"),
+      fullItem("combat-lantern-3", "spirit-lantern"),
+    ],
+  });
+  const enemy = abilityTestUnit(initial.enemyUnits[0], "bramble", {
+    id: "z-preview-target",
+    position: 8,
+    stars: 3,
+    level: 5,
+  });
+  const preview = getAbilityPreview(caster, [caster]);
+  const cast = abilityCast(
+    { ...initial, commanderLevel: 8, units: [caster], enemyUnits: [enemy] },
+    caster.id,
+  );
+
+  assert.equal(preview.current.damage, 94);
+  assert.equal(cast.amount, preview.current.damage);
+  assert.equal(cast.amounts?.[enemy.id], preview.current.damage);
+});
+
+test("Boitata's preview includes defensive item stats and Vanguard armor", () => {
+  const initial = createInitialGame(803);
+  const boitata = abilityTestUnit(initial.units[0], "boitata", {
+    id: "preview-boitata",
+    itemSlots: [
+      fullItem("preview-ward", "warding-flame"),
+      fullItem("preview-wall-lantern-1", "spirit-lantern"),
+      fullItem("preview-wall-lantern-2", "spirit-lantern"),
+    ],
+  });
+  const itemPreview = getAbilityPreview(boitata, [boitata]);
+  assert.deepEqual(itemPreview.byStar.map((values) => values.shield), [118, 143, 179]);
+  assert.ok(itemPreview.modifiers.some((modifier) => modifier.startsWith("Item ·")));
+
+  const bramble = abilityTestUnit(initial.units[0], "bramble", {
+    id: "preview-vanguard-bramble",
+    position: 47,
+  });
+  const bondedPreview = getAbilityPreview(boitata, [boitata, bramble]);
+  assert.deepEqual(bondedPreview.byStar.map((values) => values.shield), [134, 159, 194]);
+  assert.ok(bondedPreview.modifiers.some((modifier) => /Bond · Vanguard/.test(modifier)));
+});
+
+test("Bramble's preview exposes star-scaled healing and ally target count", () => {
+  const initial = createInitialGame(804);
+  const bramble = abilityTestUnit(initial.units[0], "bramble", { id: "preview-bramble" });
+  const preview = getAbilityPreview(bramble, [bramble]);
+  const healing = preview.byStar.map((values) => values.healing);
+
+  assert.deepEqual(preview.byStar.map((values) => values.maxTargets), [1, 1, 2]);
+  assert.deepEqual(preview.byStar.map((values) => values.minTargets), [0, 0, 0]);
+  assert.ok(healing[0] < healing[1] && healing[1] < healing[2]);
+});
+
+test("Piper's third star previews and fires a three-projectile volley", () => {
+  const initial = createInitialGame(805);
+  const piper = abilityTestUnit(initial.units[0], "piper", {
+    id: "a-preview-piper",
+    stars: 3,
+    itemSlots: [
+      fullItem("piper-lantern-1", "spirit-lantern"),
+      fullItem("piper-lantern-2", "spirit-lantern"),
+      fullItem("piper-lantern-3", "spirit-lantern"),
+    ],
+  });
+  const preview = getAbilityPreview(piper, [piper]);
+  assert.deepEqual(preview.byStar.map((values) => values.maxTargets), [2, 2, 3]);
+  assert.deepEqual(preview.byStar.map((values) => values.projectiles), [2, 2, 3]);
+  assert.equal(preview.current.maxTargets, 3);
+  assert.equal(preview.current.projectiles, 3);
+
+  const enemies = [8, 10, 12].map((position, index) => abilityTestUnit(
+    initial.enemyUnits[0],
+    "bramble",
+    {
+      id: `z-volley-target-${index}`,
+      position,
+      stars: 3,
+      level: 5,
+    },
+  ));
+  const cast = abilityCast(
+    { ...initial, commanderLevel: 8, units: [piper], enemyUnits: enemies },
+    piper.id,
+  );
+
+  assert.equal(cast.targetIds?.length, 3);
+  assert.equal(Object.keys(cast.amounts ?? {}).length, 3);
 });
 
 test("Boitata's Wall of Fire shield scales with level, max life, and armor", () => {

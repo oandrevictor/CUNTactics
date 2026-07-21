@@ -163,6 +163,45 @@ test("character inspector presents combat role and exact basic-attack range", as
   assert.match(engine, /shooter:[\s\S]*?range: 4/);
 });
 
+test("ability inspector shows current values and an accessible star-scaling breakdown", async () => {
+  const [client, styles] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(client, /\bgetAbilityPreview\(/);
+  const cardStart = client.indexOf('<details className="ability-box ability-card"');
+  const cardEnd = client.indexOf('<div className="trait-chips">', cardStart);
+  assert.ok(cardStart >= 0 && cardEnd > cardStart, "the inspector should render the ability as a disclosure card");
+  const abilityCard = client.slice(cardStart, cardEnd);
+  const summaryEnd = abilityCard.indexOf("</summary>");
+
+  assert.match(abilityCard, /<summary className="ability-summary">/);
+  assert.match(abilityCard, /className="ability-current-values"/);
+  assert.ok(
+    abilityCard.indexOf('className="ability-current-values"') < summaryEnd,
+    "current ability metrics should remain visible before the expanded breakdown",
+  );
+  assert.match(abilityCard, /ability-value-/);
+  assert.match(abilityCard, /className="ability-breakdown"/);
+  assert.match(abilityCard, /abilityPreview\.scalingDescription/);
+  assert.match(abilityCard, /className="ability-scale-table"/);
+  assert.match(abilityCard, /data-testid=\{`ability-scaling-\$\{selectedHero\.ability\.id\}`\}/);
+  assert.match(abilityCard, /className="ability-modifiers"/);
+  assert.match(abilityCard, /abilityPreview\.modifiers/);
+  assert.match(abilityCard, /className="ability-context-note"/);
+  assert.match(abilityCard, /abilityPreview\.contextNote/);
+
+  assert.match(styles, /\.ability-card:hover\s*>?\s*\.ability-breakdown/);
+  assert.match(styles, /\.ability-card:focus-within\s*>?\s*\.ability-breakdown/);
+  assert.match(styles, /\.ability-card\[open\]\s*>?\s*\.ability-breakdown/);
+  assert.match(styles, /\.ability-summary:focus-visible/);
+  assert.match(
+    styles,
+    /@media\s*\(hover:\s*none\)[^{]*\{[\s\S]*?\.ability-card\[open\]\s*>?\s*\.ability-breakdown/,
+  );
+});
+
 test("ships Boitata's portrait and fire-wall shield animation states", async () => {
   const [client, engine, styles] = await Promise.all([
     readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
