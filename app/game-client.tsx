@@ -790,6 +790,34 @@ export function GameClient() {
           ) : (
             <p className="placement-hint">Tap an ally, then a teal tile to place or swap. Dragging also works with a pointer.</p>
           )}
+          <section className="panel bench-panel board-bench-panel" aria-label="Bench" data-testid="bench">
+            <div className="panel-heading"><div><span className="eyebrow">Reserve line</span><h2 className="panel-title">Bench</h2></div><span className="panel-meta">{benchUnits.length}/{BENCH_SIZE}</span></div>
+            <div className="bench-grid">
+              {Array.from({ length: BENCH_SIZE }, (_, index) => {
+                const unit = benchUnits.find((candidate) => candidate.benchIndex === index);
+                const display = unit ? persistentDisplay(unit) : null;
+                return (
+                  <button
+                    className={`bench-slot ${unit?.id === selectedId ? "board-cell-selected" : ""}`}
+                    type="button"
+                    key={index}
+                    data-testid={`bench-slot-${index}`}
+                    aria-label={display ? `Bench slot ${index + 1}, ${HEROES[display.heroId].name}, ${ROLE_PROFILES[HEROES[display.heroId].role].label}, range ${display.range}` : `Bench slot ${index + 1}, empty`}
+                    disabled={game.phase !== "planning"}
+                    onClick={() => handleBenchSlot(index)}
+                    onDragOver={(event) => { if (game.phase === "planning") event.preventDefault(); }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const unitId = event.dataTransfer.getData("text/unit-id");
+                      if (unitId) handleMove(unitId, "bench", index);
+                    }}
+                  >
+                    {display ? <UnitToken unit={display} selected={display.id === selectedId} highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)} currentEvent={null} previousEvent={null} draggable onDragStart={(event) => { event.dataTransfer.setData("text/unit-id", display.id); setSelectedId(display.id); }} /> : <span className="empty-copy">+</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
         </section>
 
         <aside className="panel enemy-panel" aria-label={selectedDisplay ? "Unit inspector" : "Enemy scout report"}>
@@ -921,35 +949,6 @@ export function GameClient() {
       </section>
 
       <section className="dock">
-        <section className="panel bench-panel" aria-label="Bench" data-testid="bench">
-          <div className="panel-heading"><h2 className="panel-title">Bench</h2><span className="panel-meta">{benchUnits.length}/{BENCH_SIZE}</span></div>
-          <div className="bench-grid">
-            {Array.from({ length: BENCH_SIZE }, (_, index) => {
-              const unit = benchUnits.find((candidate) => candidate.benchIndex === index);
-              const display = unit ? persistentDisplay(unit) : null;
-              return (
-                <button
-                  className={`bench-slot ${unit?.id === selectedId ? "board-cell-selected" : ""}`}
-                  type="button"
-                  key={index}
-                  data-testid={`bench-slot-${index}`}
-                  aria-label={display ? `Bench slot ${index + 1}, ${HEROES[display.heroId].name}, ${ROLE_PROFILES[HEROES[display.heroId].role].label}, range ${display.range}` : `Bench slot ${index + 1}, empty`}
-                  disabled={game.phase !== "planning"}
-                  onClick={() => handleBenchSlot(index)}
-                  onDragOver={(event) => { if (game.phase === "planning") event.preventDefault(); }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const unitId = event.dataTransfer.getData("text/unit-id");
-                    if (unitId) handleMove(unitId, "bench", index);
-                  }}
-                >
-                  {display ? <UnitToken unit={display} selected={display.id === selectedId} highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)} currentEvent={null} previousEvent={null} draggable onDragStart={(event) => { event.dataTransfer.setData("text/unit-id", display.id); setSelectedId(display.id); }} /> : <span className="empty-copy">+</span>}
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
         <section className="panel item-armory-panel" aria-label="Relic Forge" data-testid="item-armory">
           <div className="panel-heading">
             <div><span className="eyebrow">Components & gear</span><h2 className="panel-title">Relic Forge</h2></div>

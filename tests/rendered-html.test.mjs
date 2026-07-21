@@ -31,6 +31,26 @@ test("server-renders the complete HEXFALL game surface", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site|react-loading-skeleton/i);
 });
 
+test("places the bench directly beneath the battle board", async () => {
+  const [client, styles] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  const boardSection = client.slice(
+    client.indexOf('<section className="board-section"'),
+    client.indexOf('<aside className="panel enemy-panel"'),
+  );
+  const dockSection = client.slice(
+    client.indexOf('<section className="dock">'),
+    client.indexOf('{game.phase === "resolution"'),
+  );
+
+  assert.match(boardSection, /className="panel bench-panel board-bench-panel"/);
+  assert.doesNotMatch(dockSection, /data-testid="bench"/);
+  assert.match(styles, /\.board-bench-panel\s*\{/);
+});
+
 test("ships the bespoke social card and no starter preview dependency", async () => {
   const [packageJson, page, layout] = await Promise.all([
     readFile(new URL("../package.json", import.meta.url), "utf8"),
