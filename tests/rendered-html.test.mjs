@@ -74,6 +74,30 @@ test("combat autoplay schedules every playback tick without a pause toggle", asy
   );
 });
 
+test("character clicks inspect while formation changes require dragging", async () => {
+  const client = await readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8");
+  const boardClickHandler = client.slice(
+    client.indexOf("function handleBoardCell"),
+    client.indexOf("function handleBenchSlot"),
+  );
+  const benchClickHandler = client.slice(
+    client.indexOf("function handleBenchSlot"),
+    client.indexOf("function handleBeginCombat"),
+  );
+
+  assert.match(boardClickHandler, /if \(occupant\) setSelectedId\(occupant\.id\)/);
+  assert.match(benchClickHandler, /if \(occupant\) setSelectedId\(occupant\.id\)/);
+  assert.doesNotMatch(boardClickHandler, /handleMove|moveUnit/);
+  assert.doesNotMatch(benchClickHandler, /handleMove|moveUnit/);
+  assert.match(client, /const \[draggedUnitId, setDraggedUnitId\]/);
+  assert.match(client, /const valid = game\.phase === "planning" && !!draggedAlly && playerCell/);
+  assert.match(client, /event\.dataTransfer\.setData\("text\/unit-id", unit\.id\)/);
+  assert.match(client, /if \(unitId && playerCell\) handleMove\(unitId, "board", index\)/);
+  assert.match(client, /if \(unitId\) handleMove\(unitId, "bench", index\)/);
+  assert.match(client, /Click any character to inspect\. Drag allies between teal tiles and the bench/);
+  assert.match(client, /Drag an ally to a teal tile or the bench to move or swap/);
+});
+
 test("combat actions expose directional links, actor emphasis, impacts, and reduced-motion fallbacks", async () => {
   const [client, styles] = await Promise.all([
     readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),

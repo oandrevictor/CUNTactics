@@ -244,6 +244,7 @@ function UnitToken({
   previousEvent,
   draggable,
   onDragStart,
+  onDragEnd,
   loadoutDropStatus = null,
 }: {
   unit: DisplayUnit;
@@ -253,6 +254,7 @@ function UnitToken({
   previousEvent: CombatEvent | null;
   draggable: boolean;
   onDragStart?: (event: DragEvent<HTMLDivElement>) => void;
+  onDragEnd?: (event: DragEvent<HTMLDivElement>) => void;
   loadoutDropStatus?: LoadoutDropStatus;
 }) {
   const hero = HEROES[unit.heroId];
@@ -290,6 +292,7 @@ function UnitToken({
       className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${isActor ? `unit-event-actor unit-event-actor-${effectKind}` : ""} ${isActor && isSolStarfall ? "unit-event-actor-sol" : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isDamaged && isSolStarfall ? "unit-impact-starfall" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""} ${loadoutDropStatus ? `unit-loadout-drop-${loadoutDropStatus}` : ""}`}
       draggable={draggable}
       onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       data-testid={`unit-${unit.id}`}
       data-unit-id={unit.id}
       data-hero-id={unit.heroId}
@@ -419,6 +422,7 @@ export function GameClient() {
   const [forgeComponents, setForgeComponents] = useState<ItemComponentId[]>([]);
   const [selectedCraftedItemId, setSelectedCraftedItemId] = useState<string | null>(null);
   const [draggedLoadout, setDraggedLoadout] = useState<LoadoutDrag | null>(null);
+  const [draggedUnitId, setDraggedUnitId] = useState<string | null>(null);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -667,6 +671,7 @@ export function GameClient() {
   }
 
   function handleMove(unitId: string, kind: "board" | "bench", index: number) {
+    setDraggedUnitId(null);
     const result = moveUnit(game, unitId, { kind, index });
     commit(result, () => {
       if (kind === "bench" && game.units.find((unit) => unit.id === unitId)?.heroId === "boitata") {
@@ -679,35 +684,12 @@ export function GameClient() {
 
   function handleBoardCell(index: number) {
     const occupant = boardUnits.find((unit) => unit.position === index) ?? null;
-    if (game.phase !== "planning") {
-      if (occupant) setSelectedId(occupant.id);
-      return;
-    }
-    const selectedAlly = selectedId ? game.units.find((unit) => unit.id === selectedId) : null;
-    if (selectedAlly) {
-      if (occupant?.id === selectedAlly.id) {
-        setSelectedId(null);
-        return;
-      }
-      if (index >= PLAYER_START_ROW * BOARD_COLUMNS) handleMove(selectedAlly.id, "board", index);
-      else setToast("Allies can only be placed in your territory.");
-      return;
-    }
     if (occupant) setSelectedId(occupant.id);
   }
 
   function handleBenchSlot(index: number) {
     const occupant = benchUnits.find((unit) => unit.benchIndex === index) ?? null;
-    const selectedAlly = selectedId ? game.units.find((unit) => unit.id === selectedId) : null;
-    if (selectedAlly) {
-      if (occupant?.id === selectedAlly.id) {
-        setSelectedId(null);
-      } else {
-        handleMove(selectedAlly.id, "bench", index);
-      }
-    } else if (occupant) {
-      setSelectedId(occupant.id);
-    }
+    if (occupant) setSelectedId(occupant.id);
   }
 
   function handleBeginCombat() {
@@ -775,7 +757,7 @@ export function GameClient() {
       {tutorialVisible ? (
         <section className="status-banner" data-testid={`tutorial-step-${tutorialStage}`} aria-label="Tutorial">
           <span className="eyebrow">First battle · Step {tutorialStage + 1} of 3</span>
-          <strong>{tutorialStage === 0 ? "Recruit a hero from the Night Market." : tutorialStage === 1 ? "Select an ally, then choose a teal tile to move or swap." : "When your formation is ready, begin battle."}</strong>
+          <strong>{tutorialStage === 0 ? "Recruit a hero from the Night Market." : tutorialStage === 1 ? "Drag an ally to a teal tile or the bench to move or swap." : "When your formation is ready, begin battle."}</strong>
           <button className="game-button button-ghost" type="button" data-testid="tutorial-skip" onClick={finishTutorial}>Skip tutorial</button>
         </section>
       ) : null}
@@ -858,9 +840,9 @@ export function GameClient() {
                 const row = Math.floor(index / BOARD_COLUMNS);
                 const column = index % BOARD_COLUMNS;
                 const unit = boardUnits.find((candidate) => candidate.position === index) ?? null;
-                const selectedAlly = selectedId ? game.units.find((candidate) => candidate.id === selectedId) : null;
+                const draggedAlly = draggedUnitId ? game.units.find((candidate) => candidate.id === draggedUnitId) : null;
                 const playerCell = row >= PLAYER_START_ROW;
-                const valid = game.phase === "planning" && !!selectedAlly && playerCell;
+                const valid = game.phase === "planning" && !!draggedAlly && playerCell;
                 const highlighted = !!unit && !!highlightedTrait && HEROES[unit.heroId].traits.includes(highlightedTrait);
                 const loadoutDropStatus = unit ? loadoutDropStatusFor(unit) : null;
                 const aria = `Row ${row + 1}, column ${column + 1}, ${playerCell ? "player" : "enemy"} territory${unit ? `, ${HEROES[unit.heroId].name}, ${ROLE_PROFILES[HEROES[unit.heroId].role].label}, range ${unit.range}, level ${unit.level}, ${Math.round(clampPercent(unit.hp, unit.maxHp))} percent health${unit.shield > 0 ? `, ${Math.round(unit.shield)} shield` : ""}` : ", empty"}`;
@@ -904,8 +886,10 @@ export function GameClient() {
                         onDragStart={(event) => {
                           setDraggedLoadout(null);
                           event.dataTransfer.setData("text/unit-id", unit.id);
+                          setDraggedUnitId(unit.id);
                           setSelectedId(unit.id);
                         }}
+                        onDragEnd={() => setDraggedUnitId(null)}
                       />
                     ) : null}
                   </button>
@@ -933,7 +917,7 @@ export function GameClient() {
               <strong>{currentEvent.text}</strong>
             </div>
           ) : (
-            <p className="placement-hint">Tap an ally, then a teal tile to place or swap. Dragging also works with a pointer.</p>
+            <p className="placement-hint">Click any character to inspect. Drag allies between teal tiles and the bench to place or swap.</p>
           )}
           <section className="panel bench-panel board-bench-panel" aria-label="Bench" data-testid="bench">
             <div className="panel-heading"><div><span className="eyebrow">Reserve line</span><h2 className="panel-title">Bench</h2></div><span className="panel-meta">{benchUnits.length}/{BENCH_SIZE}</span></div>
@@ -968,7 +952,24 @@ export function GameClient() {
                       if (unitId) handleMove(unitId, "bench", index);
                     }}
                   >
-                    {display ? <UnitToken unit={display} selected={display.id === selectedId} highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)} currentEvent={null} previousEvent={null} draggable={game.phase === "planning"} loadoutDropStatus={loadoutDropStatus} onDragStart={(event) => { setDraggedLoadout(null); event.dataTransfer.setData("text/unit-id", display.id); setSelectedId(display.id); }} /> : <span className="empty-copy">+</span>}
+                    {display ? (
+                      <UnitToken
+                        unit={display}
+                        selected={display.id === selectedId}
+                        highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)}
+                        currentEvent={null}
+                        previousEvent={null}
+                        draggable={game.phase === "planning"}
+                        loadoutDropStatus={loadoutDropStatus}
+                        onDragStart={(event) => {
+                          setDraggedLoadout(null);
+                          event.dataTransfer.setData("text/unit-id", display.id);
+                          setDraggedUnitId(display.id);
+                          setSelectedId(display.id);
+                        }}
+                        onDragEnd={() => setDraggedUnitId(null)}
+                      />
+                    ) : <span className="empty-copy">+</span>}
                   </button>
                 );
               })}

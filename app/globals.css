@@ -611,12 +611,16 @@ button:disabled,
   border-radius: 50% 50% 43% 43%;
   box-shadow: 0 8px 17px rgb(0 0 0 / 44%);
   color: var(--ink);
-  cursor: grab;
+  cursor: pointer;
   transition: transform 160ms ease, filter 160ms ease, box-shadow 160ms ease;
   user-select: none;
 }
 
-.unit-token:active {
+.unit-token[draggable="true"] {
+  cursor: grab;
+}
+
+.unit-token[draggable="true"]:active {
   cursor: grabbing;
 }
 
