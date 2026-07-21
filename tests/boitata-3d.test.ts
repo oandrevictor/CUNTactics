@@ -244,3 +244,23 @@ test("3D creature uses a model-local visual anchor without moving its board posi
   assert.match(source, /root\.position\.set\(startX, startY,/);
   assert.doesNotMatch(source, /root\.position\.(?:x|y)[^;]*BOITATA_MODEL_VERTICAL_ANCHOR_BIAS/);
 });
+
+test("3D creature flips its visible side and leans toward the camera without disturbing tactical facing", async () => {
+  const source = await readFile(new URL("../app/boitata-3d-layer.tsx", import.meta.url), "utf8");
+  const tiltMatch = source.match(/const BOITATA_MODEL_FORWARD_TILT_RADIANS = \((\d+) \* Math\.PI\) \/ 180;/);
+
+  assert.match(source, /const BOITATA_MODEL_YAW_FLIP_RADIANS = Math\.PI;/);
+  assert.ok(tiltMatch, "the model should define a small forward tilt in degrees");
+  const tiltDegrees = Number(tiltMatch[1]);
+  assert.ok(tiltDegrees >= 5 && tiltDegrees <= 15, "the forward tilt should remain subtle");
+  assert.match(
+    source,
+    /rigTemplate\.rotation\.set\(\s*BOITATA_MODEL_FORWARD_TILT_RADIANS,\s*BOITATA_MODEL_YAW_FLIP_RADIANS,\s*0,\s*\)/s,
+  );
+  assert.ok(
+    source.indexOf("rigTemplate.rotation.set(") < source.indexOf("rigTemplate.updateMatrixWorld(true)"),
+    "the corrected orientation should be included in model bounds and centering",
+  );
+  assert.match(source, /modelPivot\.add\(model\);/);
+  assert.match(source, /entity\.root\.rotation\.z = entity\.facing \+ deathProgress \* 0\.78;/);
+});

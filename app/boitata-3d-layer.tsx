@@ -85,6 +85,8 @@ interface BoitataEntity {
 const ACTION_SECONDS = 0.68;
 const BOITATA_MODEL_URL = "/characters/boitata/boitata-rigged.glb";
 const BOITATA_MODEL_VERTICAL_ANCHOR_BIAS = 0.08;
+const BOITATA_MODEL_YAW_FLIP_RADIANS = Math.PI;
+const BOITATA_MODEL_FORWARD_TILT_RADIANS = (8 * Math.PI) / 180;
 
 function isBone(object: Object3D): object is Bone {
   return (object as Bone).isBone === true;
@@ -218,6 +220,11 @@ export function Boitata3DLayer({
 
         const rigTemplate = (await new GLTFLoader().loadAsync(BOITATA_MODEL_URL)).scene;
         if (cancelled) return;
+        rigTemplate.rotation.set(
+          BOITATA_MODEL_FORWARD_TILT_RADIANS,
+          BOITATA_MODEL_YAW_FLIP_RADIANS,
+          0,
+        );
         rigTemplate.updateMatrixWorld(true);
         const rigBounds = new THREE.Box3().setFromObject(rigTemplate);
         const rigSize = rigBounds.getSize(new THREE.Vector3());
