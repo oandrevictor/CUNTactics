@@ -1445,6 +1445,41 @@ button:disabled,
   box-shadow: 0 0 5px rgb(170 140 255 / 52%);
 }
 
+.board-grid .unit-item-pips {
+  bottom: 1px;
+  left: 50%;
+  align-items: flex-end;
+  gap: 3px;
+  transform: translateX(-50%);
+}
+
+.board-grid .unit-item-pip {
+  width: clamp(12px, 1.1vw, 15px);
+  height: clamp(12px, 1.1vw, 15px);
+  border-color: rgb(245 237 223 / 52%);
+  background: rgb(16 12 24 / 94%);
+  box-shadow:
+    0 2px 5px rgb(0 0 0 / 64%),
+    inset 0 0 0 1px rgb(241 203 109 / 12%);
+  font-size: clamp(7px, 0.64vw, 9px);
+}
+
+.board-grid .unit-item-pip-empty {
+  width: 7px;
+  height: 7px;
+  border-color: rgb(245 237 223 / 18%);
+  background: rgb(16 12 24 / 58%);
+  box-shadow: none;
+}
+
+.board-grid .unit-item-pip-enhanced {
+  border-color: #cbb7ff;
+  background: rgb(31 20 52 / 96%);
+  box-shadow:
+    0 0 8px rgb(170 140 255 / 68%),
+    0 2px 5px rgb(0 0 0 / 64%);
+}
+
 .unit-name {
   position: absolute;
   right: -18%;

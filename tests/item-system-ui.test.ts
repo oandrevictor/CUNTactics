@@ -31,7 +31,7 @@ test("every character exposes three visible item slots with equip and unequip co
   assert.match(client, /normalizeGameState\(parsed\)/);
 });
 
-test("item interface is styled for forge cards, enhanced gear, and compact slot markers", async () => {
+test("item interface is styled for forge cards, enhanced gear, and readable board icons", async () => {
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
   for (const selector of [
@@ -46,6 +46,9 @@ test("item interface is styled for forge cards, enhanced gear, and compact slot 
   ]) {
     assert.match(styles, new RegExp(selector.replace(".", "\\.")));
   }
+  assert.match(styles, /\.board-grid \.unit-item-pips\s*\{[^}]*left: 50%/s);
+  assert.match(styles, /\.board-grid \.unit-item-pip\s*\{[^}]*width: clamp\(12px, 1\.1vw, 15px\)/s);
+  assert.match(styles, /\.board-grid \.unit-item-pip-empty\s*\{[^}]*width: 7px/s);
 });
 
 test("items and components can be dragged onto board or bench champions", async () => {
