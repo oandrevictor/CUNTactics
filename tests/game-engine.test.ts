@@ -75,6 +75,48 @@ function abilityCast(
   return cast;
 }
 
+const COMBAT_ACTION_TYPES = new Set(["move", "attack", "ability"]);
+
+function roundCombatTestValue(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+function deterministicTimingDuel(
+  playerHeroId: HeroId = "nix",
+  enemyHeroId: HeroId = "bramble",
+  options: { stars?: number; level?: number } = {},
+): GameState {
+  const initial = createInitialGame(1);
+  const stars = options.stars ?? 1;
+  const level = options.level ?? 1;
+  return {
+    ...initial,
+    commanderLevel: 8,
+    units: [{
+      ...initial.units[0],
+      id: "timing-player",
+      heroId: playerHeroId,
+      stars,
+      level,
+      xp: 0,
+      position: 40,
+      benchIndex: null,
+      itemSlots: [null, null, null],
+    }],
+    enemyUnits: [{
+      ...initial.enemyUnits[0],
+      id: "timing-enemy",
+      heroId: enemyHeroId,
+      stars,
+      level,
+      xp: 0,
+      position: 32,
+      benchIndex: null,
+      itemSlots: [null, null, null],
+    }],
+  };
+}
+
 test("initial campaign is deterministic and satisfies placement invariants", () => {
   const first = createInitialGame(12345);
   const second = createInitialGame(12345);
@@ -374,8 +416,203 @@ test("combat roles define distinct ranges and every hero inherits its role range
   for (const hero of Object.values(HEROES)) {
     const stats = getUnitStats({ ...baseUnit, heroId: hero.id });
     assert.equal(stats.range, ROLE_PROFILES[hero.role].range);
+    assert.equal(stats.attackSpeed, hero.attackSpeed);
+    assert.equal(stats.manaRegen, hero.manaRegen);
+    assert.ok(Number.isFinite(stats.attackSpeed) && stats.attackSpeed > 0);
+    assert.ok(Number.isFinite(stats.manaRegen) && stats.manaRegen > 0);
   }
   assert.equal(getUnitStats({ ...baseUnit, heroId: "boitata" }).range, 1);
+});
+
+test("attack speed schedules absolute action opportunities without cadence drift", () => {
+  const combat = resolveCombat(deterministicTimingDuel());
+  assert.equal(combat.ok, true);
+  const report = combat.report!;
+  const initialPlayer = report.initialUnits.find((unit) => unit.id === "timing-player")!;
+  const initialEnemy = report.initialUnits.find((unit) => unit.id === "timing-enemy")!;
+  assert.equal(initialPlayer.attackSpeed, 1.05);
+  assert.equal(initialPlayer.manaRegen, 8.5);
+  assert.equal(initialEnemy.attackSpeed, 0.65);
+  assert.equal(initialEnemy.manaRegen, 10.5);
+
+  const actions = report.events.filter((event) => COMBAT_ACTION_TYPES.has(event.type));
+  const playerActions = actions.filter((event) => event.actorId === initialPlayer.id);
+  const enemyActions = actions.filter((event) => event.actorId === initialEnemy.id);
+  assert.deepEqual(
+    playerActions.map((event) => event.timestamp),
+    Array.from(
+      { length: 6 },
+      (_, index) => roundCombatTestValue((index + 1) / initialPlayer.attackSpeed),
+    ),
+  );
+  assert.deepEqual(
+    enemyActions.map((event) => event.timestamp),
+    Array.from(
+      { length: 3 },
+      (_, index) => roundCombatTestValue((index + 1) / initialEnemy.attackSpeed),
+    ),
+  );
+});
+
+test("living units regenerate mana continuously without attack or damage mana bonuses", () => {
+  const report = resolveCombat(deterministicTimingDuel()).report!;
+  const firstAction = report.events.find((event) => COMBAT_ACTION_TYPES.has(event.type))!;
+  assert.equal(firstAction.type, "attack");
+  assert.equal(firstAction.actorId, "timing-player");
+  assert.equal(firstAction.timestamp, 0.952);
+
+  const initialPlayer = report.initialUnits.find((unit) => unit.id === "timing-player")!;
+  const initialEnemy = report.initialUnits.find((unit) => unit.id === "timing-enemy")!;
+  const playerAfter = firstAction.snapshot.find((unit) => unit.id === initialPlayer.id)!;
+  const enemyAfter = firstAction.snapshot.find((unit) => unit.id === initialEnemy.id)!;
+  assert.equal(
+    playerAfter.mana,
+    roundCombatTestValue(initialPlayer.mana + firstAction.timestamp * initialPlayer.manaRegen),
+  );
+  assert.equal(
+    enemyAfter.mana,
+    roundCombatTestValue(initialEnemy.mana + firstAction.timestamp * initialEnemy.manaRegen),
+  );
+  assert.equal(playerAfter.mana, 33.092);
+  assert.equal(enemyAfter.mana, 29.996);
+});
+
+test("a unit's mana timeline is unchanged by unrelated allies acting between its attacks", () => {
+  const duel = deterministicTimingDuel();
+  const withExtraAlly: GameState = {
+    ...duel,
+    units: [
+      ...duel.units,
+      {
+        ...duel.units[0],
+        id: "timing-sol",
+        heroId: "sol",
+        position: 47,
+      },
+    ],
+  };
+  const manaAtSecondAttack = (state: GameState) => {
+    const report = resolveCombat(state).report!;
+    const event = report.events.find(
+      (candidate) => candidate.actorId === "timing-player" && candidate.timestamp === 1.905,
+    )!;
+    return event.snapshot.find((unit) => unit.id === "timing-player")!.mana;
+  };
+
+  assert.equal(manaAtSecondAttack(duel), 41.193);
+  assert.equal(manaAtSecondAttack(withExtraAlly), 41.193);
+});
+
+test("an ability replaces the first scheduled attack after passive mana reaches full", () => {
+  const report = resolveCombat(deterministicTimingDuel()).report!;
+  const player = report.initialUnits.find((unit) => unit.id === "timing-player")!;
+  const playerActions = report.events.filter(
+    (event) => COMBAT_ACTION_TYPES.has(event.type) && event.actorId === player.id,
+  );
+  const secondsToFullMana = (player.maxMana - player.mana) / player.manaRegen;
+  const opportunityNumber = Math.ceil(secondsToFullMana * player.attackSpeed);
+  const expectedCastTimestamp = roundCombatTestValue(opportunityNumber / player.attackSpeed);
+
+  assert.equal(opportunityNumber, 6);
+  assert.equal(expectedCastTimestamp, 5.714);
+  assert.deepEqual(playerActions.slice(0, opportunityNumber - 1).map((event) => event.type), [
+    "attack",
+    "attack",
+    "attack",
+    "attack",
+    "attack",
+  ]);
+  const cast = playerActions[opportunityNumber - 1];
+  assert.equal(cast.type, "ability");
+  assert.equal(cast.timestamp, expectedCastTimestamp);
+  assert.equal(cast.snapshot.find((unit) => unit.id === player.id)?.mana, 0);
+});
+
+test("combat timestamps and action sequence remain monotonic through simultaneous follow-ups", () => {
+  const report = resolveCombat(deterministicTimingDuel()).report!;
+  assert.equal(report.events[0].type, "start");
+  assert.equal(report.events[0].timestamp, 0);
+  assert.equal(report.events[0].turn, 0);
+
+  for (let index = 0; index < report.events.length; index += 1) {
+    const event = report.events[index];
+    assert.ok(Number.isFinite(event.timestamp));
+    assert.ok(event.timestamp >= 0 && event.timestamp <= 45);
+    if (index > 0) {
+      assert.ok(event.timestamp >= report.events[index - 1].timestamp);
+      assert.ok(event.turn >= report.events[index - 1].turn);
+    }
+  }
+
+  const actions = report.events.filter((event) => COMBAT_ACTION_TYPES.has(event.type));
+  assert.deepEqual(
+    actions.map((event) => event.turn),
+    Array.from({ length: actions.length }, (_, index) => index + 1),
+  );
+  const cast = report.events.find(
+    (event) => event.type === "ability" && event.actorId === "timing-player",
+  )!;
+  const defeat = report.events.find((event) => event.type === "defeat")!;
+  const outcome = report.events.at(-1)!;
+  assert.equal(defeat.timestamp, cast.timestamp);
+  assert.equal(defeat.turn, cast.turn);
+  assert.equal(outcome.type, "outcome");
+  assert.equal(outcome.timestamp, defeat.timestamp);
+  assert.equal(outcome.turn, defeat.turn + 1);
+});
+
+test("equal attack-speed opportunities resolve player first and then by stable side order", () => {
+  const report = resolveCombat(
+    deterministicTimingDuel("bramble", "bramble", { stars: 3, level: 5 }),
+  ).report!;
+  const actions = report.events.filter((event) => COMBAT_ACTION_TYPES.has(event.type));
+
+  assert.deepEqual(
+    actions.slice(0, 4).map((event) => [event.timestamp, event.turn, event.actorId]),
+    [
+      [1.538, 1, "timing-player"],
+      [1.538, 2, "timing-enemy"],
+      [3.077, 3, "timing-player"],
+      [3.077, 4, "timing-enemy"],
+    ],
+  );
+});
+
+test("stuns consume the target's next scheduled action while passive mana keeps regenerating", () => {
+  const report = resolveCombat(deterministicTimingDuel("vesper", "boitata")).report!;
+  const cast = report.events.find(
+    (event) => event.type === "ability" && event.actorId === "timing-player",
+  )!;
+  const nextEnemyAction = report.events.find(
+    (event) => event.timestamp > cast.timestamp && event.actorId === "timing-enemy" && COMBAT_ACTION_TYPES.has(event.type),
+  )!;
+  const targetAtCast = cast.snapshot.find((unit) => unit.id === "timing-enemy")!;
+  const targetAfterSkip = nextEnemyAction.snapshot.find((unit) => unit.id === "timing-enemy")!;
+
+  assert.equal(cast.timestamp, 4);
+  assert.equal(nextEnemyAction.timestamp, 4.412);
+  assert.match(nextEnemyAction.text, /stunned and skips the action/);
+  assert.equal(targetAfterSkip.stunned, 0);
+  assert.equal(
+    targetAfterSkip.mana,
+    roundCombatTestValue(
+      targetAtCast.mana + (nextEnemyAction.timestamp - cast.timestamp) * targetAtCast.manaRegen,
+    ),
+  );
+});
+
+test("the 45-second combat cap resolves surviving teams by health without elimination wording", () => {
+  const report = resolveCombat(
+    deterministicTimingDuel("bramble", "bramble", { stars: 3, level: 5 }),
+  ).report!;
+  const outcome = report.events.at(-1)!;
+
+  assert.equal(outcome.type, "outcome");
+  assert.equal(outcome.timestamp, 45);
+  assert.match(outcome.text, /^Time expires\./);
+  assert.doesNotMatch(outcome.text, /line breaks|formation falls/);
+  assert.ok(report.finalUnits.some((unit) => unit.side === "player" && unit.alive));
+  assert.ok(report.finalUnits.some((unit) => unit.side === "enemy" && unit.alive));
 });
 
 test("ability previews apply star rank, attack items, and active offensive bonds exactly", () => {
@@ -643,8 +880,11 @@ test("basic combat attacks only after a target enters the actor role range", () 
 
   const tankCombat = resolveCombat(duel("bramble"));
   const shooterCombat = resolveCombat(duel("piper"));
-  assert.equal(tankCombat.report?.events[1]?.type, "move");
-  assert.equal(shooterCombat.report?.events[1]?.type, "attack");
+  const firstPlayerAction = (report: NonNullable<typeof tankCombat.report>) => report.events.find(
+    (event) => event.actorId === player.id && COMBAT_ACTION_TYPES.has(event.type),
+  );
+  assert.equal(firstPlayerAction(tankCombat.report!)?.type, "move");
+  assert.equal(firstPlayerAction(shooterCombat.report!)?.type, "attack");
 });
 
 test("economy charges exact costs and never mutates a failed transaction", () => {

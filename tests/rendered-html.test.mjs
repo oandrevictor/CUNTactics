@@ -43,7 +43,7 @@ test("integrates the bench into the arena surface without panel chrome", async (
   );
   const arenaSurface = boardSection.slice(
     boardSection.indexOf('<div className="board-wrap">'),
-    boardSection.indexOf('{game.phase === "combat"'),
+    boardSection.indexOf('{game.phase === "combat" && currentEvent ? ('),
   );
 
   assert.match(arenaSurface, /className="arena-plane"/);
@@ -78,13 +78,97 @@ test("ships the bespoke social card and no starter preview dependency", async ()
   assert.match(layout, /x-forwarded-host/);
 });
 
-test("combat autoplay schedules every playback tick without a pause toggle", async () => {
+test("combat playback follows event timestamps and preserves remaining time across pause and speed changes", async () => {
   const client = await readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8");
 
+  assert.match(client, /const LEGACY_COMBAT_EVENT_SECONDS = 0\.82/);
+  assert.match(client, /const SAME_TIME_EVENT_SECONDS = 0\.24/);
+  assert.match(client, /function combatEventTimestamp\(event: CombatEvent, index: number\)/);
+  assert.match(client, /\(event as Partial<CombatEvent>\)\.timestamp/);
+  assert.match(client, /event\.turn \* LEGACY_COMBAT_EVENT_SECONDS/);
+  assert.match(client, /index \* LEGACY_COMBAT_EVENT_SECONDS/);
+  assert.match(client, /const interval = nextTimestamp - currentTimestamp/);
   assert.match(
     client,
-    /\[game\.phase, playing, atCombatEnd, combatEvents\.length, speed, combatIndex\]/,
+    /interval > 0\s*\? Math\.max\(SAME_TIME_EVENT_SECONDS, interval\)\s*: SAME_TIME_EVENT_SECONDS/,
   );
+  assert.match(
+    client,
+    /combatEvents\.map\(\(event, index\) => combatEventTimestamp\(event, index\)\)/,
+  );
+  assert.match(
+    client,
+    /combatEventInterval\(currentCombatTime, combatTimestamps\[combatIndex \+ 1\]\)/,
+  );
+
+  assert.match(client, /playbackEventIdRef = useRef<string \| null>\(null\)/);
+  assert.match(client, /playbackRemainingSecondsRef = useRef<number \| null>\(null\)/);
+  assert.match(
+    client,
+    /const remainingSeconds = playbackRemainingSecondsRef\.current \?\? currentEventInterval/,
+  );
+  assert.match(client, /const startedAt = performance\.now\(\)/);
+  assert.match(client, /Math\.round\(\(remainingSeconds \* 1000\) \/ speed\)/);
+  assert.match(
+    client,
+    /const elapsedSeconds = \(\(performance\.now\(\) - startedAt\) \/ 1000\) \* speed/,
+  );
+  assert.match(
+    client,
+    /playbackRemainingSecondsRef\.current = Math\.max\(0, remainingSeconds - elapsedSeconds\)/,
+  );
+  assert.match(client, /window\.clearTimeout\(timeout\)/);
+  assert.match(
+    client,
+    /\[game\.phase, playing, atCombatEnd, currentEvent, currentEventInterval, combatEvents\.length, speed\]/,
+  );
+  assert.doesNotMatch(client, /Math\.round\(820 \/ speed\)/);
+
+  assert.match(client, /<span>\{formatCombatTime\(currentCombatTime\)\}<\/span>/);
+  assert.match(client, /<span className="log-time">\{formatCombatTime\(combatEventTimestamp\(event, combatLogStart \+ offset\)\)\}<\/span>/);
+  assert.match(client, /<span>Combat time<\/span>/);
+  assert.match(client, />Next event<\/button>/);
+});
+
+test("unit inspector exposes effective attack cadence and passive mana regeneration", async () => {
+  const client = await readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8");
+
+  const displayUnit = client.slice(
+    client.indexOf("type DisplayUnit ="),
+    client.indexOf("type CombatEffectKind"),
+  );
+  assert.match(displayUnit, /attackSpeed: number/);
+  assert.match(displayUnit, /manaRegen: number/);
+
+  const persistentDisplay = client.slice(
+    client.indexOf("function persistentDisplay"),
+    client.indexOf("function combatDisplay"),
+  );
+  assert.match(persistentDisplay, /attackSpeed: stats\.attackSpeed/);
+  assert.match(persistentDisplay, /manaRegen: stats\.manaRegen/);
+
+  const combatDisplay = client.slice(
+    client.indexOf("function combatDisplay"),
+    client.indexOf("function phaseLabel"),
+  );
+  assert.match(combatDisplay, /const fallbackStats = getUnitStats\(persistent \?\? unit\)/);
+  assert.match(
+    combatDisplay,
+    /attackSpeed: Number\.isFinite\(unit\.attackSpeed\) \? unit\.attackSpeed : fallbackStats\.attackSpeed/,
+  );
+  assert.match(
+    combatDisplay,
+    /manaRegen: Number\.isFinite\(unit\.manaRegen\) \? unit\.manaRegen : fallbackStats\.manaRegen/,
+  );
+
+  const inspector = client.slice(
+    client.indexOf('<section className="selected-panel"'),
+    client.indexOf('<section className="combat-log"'),
+  );
+  assert.match(inspector, /unit-attack-speed-\$\{selectedDisplay\.id\}/);
+  assert.match(inspector, /<small>Attack speed<\/small><strong>\{formatRate\(selectedDisplay\.attackSpeed\)\}\/sec<\/strong>/);
+  assert.match(inspector, /unit-mana-regen-\$\{selectedDisplay\.id\}/);
+  assert.match(inspector, /<small>Mana regen<\/small><strong>\{formatRate\(selectedDisplay\.manaRegen\)\}\/sec<\/strong>/);
 });
 
 test("character clicks inspect while formation changes require dragging", async () => {

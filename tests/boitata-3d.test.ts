@@ -27,6 +27,8 @@ function combatUnit(overrides: Partial<CombatUnit> = {}): CombatUnit {
     attack: 30,
     armor: 28,
     range: 1,
+    attackSpeed: 0.68,
+    manaRegen: 10,
     shield: 0,
     fireWallShield: 0,
     stunned: 0,
@@ -58,6 +60,7 @@ function event(
 ): CombatEvent {
   return {
     id,
+    timestamp: 1,
     turn: 1,
     type,
     text: id,

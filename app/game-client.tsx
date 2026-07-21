@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent, ReactNode } from "react";
 import { Boitata3DLayer } from "./boitata-3d-layer";
 import {
@@ -70,6 +70,9 @@ const DESKTOP_BOARD_HEIGHT_RATIO = 5.4 / 8;
 const MOBILE_BOARD_HEIGHT_RATIO = 6.3 / 8;
 const CRAFTED_ITEM_DRAG_TYPE = "application/x-hexfall-crafted-item";
 const ITEM_COMPONENT_DRAG_TYPE = "application/x-hexfall-item-component";
+const LEGACY_COMBAT_EVENT_SECONDS = 0.82;
+const SAME_TIME_EVENT_SECONDS = 0.24;
+const DEFAULT_COMBAT_BEAT_SECONDS = 0.68;
 
 type LoadoutDrag =
   | { kind: "item"; id: string }
@@ -102,6 +105,8 @@ type DisplayUnit = {
   attack: number;
   armor: number;
   range: number;
+  attackSpeed: number;
+  manaRegen: number;
   shield: number;
   fireWallShield: number;
   stunned: number;
@@ -117,6 +122,32 @@ function clampPercent(value: number, maximum: number): number {
 
 function meterStyle(value: number, maximum: number): CSSProperties {
   return { "--meter-value": `${clampPercent(value, maximum)}%` } as CSSProperties;
+}
+
+function combatEventTimestamp(event: CombatEvent, index: number): number {
+  const runtimeTimestamp = (event as Partial<CombatEvent>).timestamp;
+  if (typeof runtimeTimestamp === "number" && Number.isFinite(runtimeTimestamp)) {
+    return Math.max(0, runtimeTimestamp);
+  }
+  if (Number.isFinite(event.turn)) return Math.max(0, event.turn * LEGACY_COMBAT_EVENT_SECONDS);
+  return Math.max(0, index * LEGACY_COMBAT_EVENT_SECONDS);
+}
+
+function combatEventInterval(currentTimestamp: number, nextTimestamp: number | undefined): number {
+  if (nextTimestamp === undefined) return DEFAULT_COMBAT_BEAT_SECONDS;
+  const interval = nextTimestamp - currentTimestamp;
+  return Number.isFinite(interval) && interval > 0
+    ? Math.max(SAME_TIME_EVENT_SECONDS, interval)
+    : SAME_TIME_EVENT_SECONDS;
+}
+
+function formatCombatTime(seconds: number): string {
+  return `${Math.max(0, seconds).toFixed(1)}s`;
+}
+
+function formatRate(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  return value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
 }
 
 function combatEffectKind(event: CombatEvent | null): CombatEffectKind | null {
@@ -194,6 +225,8 @@ function persistentDisplay(unit: UnitInstance): DisplayUnit {
     attack: stats.attack,
     armor: stats.armor,
     range: stats.range,
+    attackSpeed: stats.attackSpeed,
+    manaRegen: stats.manaRegen,
     shield: 0,
     fireWallShield: 0,
     stunned: 0,
@@ -202,8 +235,11 @@ function persistentDisplay(unit: UnitInstance): DisplayUnit {
 }
 
 function combatDisplay(unit: CombatUnit, persistent?: UnitInstance): DisplayUnit {
+  const fallbackStats = getUnitStats(persistent ?? unit);
   return {
     ...unit,
+    attackSpeed: Number.isFinite(unit.attackSpeed) ? unit.attackSpeed : fallbackStats.attackSpeed,
+    manaRegen: Number.isFinite(unit.manaRegen) ? unit.manaRegen : fallbackStats.manaRegen,
     xp: persistent?.xp ?? 0,
     benchIndex: null,
     itemSlots: persistent?.itemSlots ?? [null, null, null],
@@ -303,7 +339,7 @@ function abilityMetricDefinitions(preview: AbilityPreview): AbilityMetric[] {
       label: "Stun",
       kind: "stun",
       applies: (values) => values.stunTurns > 0,
-      format: (values) => `${values.stunTurns} ${values.stunTurns === 1 ? "turn" : "turns"}`,
+      format: (values) => `${values.stunTurns} ${values.stunTurns === 1 ? "action" : "actions"}`,
     },
     {
       id: "self-heal",
@@ -520,6 +556,8 @@ export function GameClient() {
   const [selectedCraftedItemId, setSelectedCraftedItemId] = useState<string | null>(null);
   const [draggedLoadout, setDraggedLoadout] = useState<LoadoutDrag | null>(null);
   const [draggedUnitId, setDraggedUnitId] = useState<string | null>(null);
+  const playbackEventIdRef = useRef<string | null>(null);
+  const playbackRemainingSecondsRef = useRef<number | null>(null);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -559,20 +597,48 @@ export function GameClient() {
     return () => mobileBoard.removeEventListener("change", syncBoardRatio);
   }, []);
 
-  const combatEvents = game.combatReport?.events ?? [];
+  const combatEvents = useMemo(() => game.combatReport?.events ?? [], [game.combatReport]);
   const currentEvent = game.phase === "combat" ? combatEvents[Math.min(combatIndex, Math.max(0, combatEvents.length - 1))] ?? null : null;
   const previousEvent = game.phase === "combat" && combatIndex > 0 ? combatEvents[combatIndex - 1] ?? null : null;
   const atCombatEnd = game.phase === "combat" && combatEvents.length > 0 && combatIndex >= combatEvents.length - 1;
   const currentEffectKind = combatEffectKind(currentEvent);
+  const combatTimestamps = useMemo(
+    () => combatEvents.map((event, index) => combatEventTimestamp(event, index)),
+    [combatEvents],
+  );
+  const currentCombatTime = combatTimestamps[combatIndex] ?? 0;
+  const totalCombatTime = combatTimestamps.reduce((maximum, timestamp) => Math.max(maximum, timestamp), 0);
+  const currentEventInterval = combatEventInterval(currentCombatTime, combatTimestamps[combatIndex + 1]);
+  const combatLogStart = Math.max(0, combatIndex - 5);
 
   useEffect(() => {
-    if (game.phase !== "combat" || !playing || atCombatEnd) return;
-    const timeout = window.setTimeout(
-      () => setCombatIndex((index) => Math.min(index + 1, combatEvents.length - 1)),
-      Math.round(820 / speed),
-    );
-    return () => window.clearTimeout(timeout);
-  }, [game.phase, playing, atCombatEnd, combatEvents.length, speed, combatIndex]);
+    if (game.phase !== "combat" || atCombatEnd || !currentEvent) {
+      playbackEventIdRef.current = null;
+      playbackRemainingSecondsRef.current = null;
+      return;
+    }
+
+    if (playbackEventIdRef.current !== currentEvent.id) {
+      playbackEventIdRef.current = currentEvent.id;
+      playbackRemainingSecondsRef.current = currentEventInterval;
+    }
+    if (!playing) return;
+
+    const remainingSeconds = playbackRemainingSecondsRef.current ?? currentEventInterval;
+    const startedAt = performance.now();
+    const timeout = window.setTimeout(() => {
+      playbackEventIdRef.current = null;
+      playbackRemainingSecondsRef.current = null;
+      setCombatIndex((index) => Math.min(index + 1, combatEvents.length - 1));
+    }, Math.max(1, Math.round((remainingSeconds * 1000) / speed)));
+
+    return () => {
+      window.clearTimeout(timeout);
+      if (playbackEventIdRef.current !== currentEvent.id) return;
+      const elapsedSeconds = ((performance.now() - startedAt) / 1000) * speed;
+      playbackRemainingSecondsRef.current = Math.max(0, remainingSeconds - elapsedSeconds);
+    };
+  }, [game.phase, playing, atCombatEnd, currentEvent, currentEventInterval, combatEvents.length, speed]);
 
   useEffect(() => {
     const handleKey = (event: globalThis.KeyboardEvent) => {
@@ -582,7 +648,7 @@ export function GameClient() {
         setSelectedId(null);
         setHighlightedTrait(null);
       }
-      if (game.phase === "combat" && !isFormControl && event.code === "Space") {
+      if (game.phase === "combat" && !atCombatEnd && !isFormControl && event.code === "Space") {
         event.preventDefault();
         setPlaying((value) => !value);
       }
@@ -594,7 +660,7 @@ export function GameClient() {
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [game.phase, combatEvents.length]);
+  }, [game.phase, atCombatEnd, combatEvents.length]);
 
   const displayUnits = useMemo<DisplayUnit[]>(() => {
     if (game.phase === "combat" && currentEvent) {
@@ -665,7 +731,11 @@ export function GameClient() {
         boardHeightRatio,
       )
     : undefined;
-  const combatBeatStyle = { "--combat-beat": `${Math.round(680 / speed)}ms` } as CSSProperties;
+  const combatBeatMilliseconds = Math.min(
+    680,
+    Math.max(80, Math.round(currentEventInterval * 820)),
+  );
+  const combatBeatStyle = { "--combat-beat": `${Math.round(combatBeatMilliseconds / speed)}ms` } as CSSProperties;
   const combatStatistics = useMemo(
     () => game.combatReport ? getCombatStatistics(game.combatReport) : null,
     [game.combatReport],
@@ -807,6 +877,8 @@ export function GameClient() {
   function handleBeginCombat() {
     const result = resolveCombat(game);
     commit(result, () => {
+      playbackEventIdRef.current = null;
+      playbackRemainingSecondsRef.current = null;
       setCombatIndex(0);
       setPlaying(true);
       setSelectedId(null);
@@ -826,6 +898,8 @@ export function GameClient() {
     setSelectedCraftedItemId(null);
     setForgeComponents([]);
     setBoitata3DReady(false);
+    playbackEventIdRef.current = null;
+    playbackRemainingSecondsRef.current = null;
     setCombatIndex(0);
     setPlaying(false);
     setToast("A new campaign begins.");
@@ -916,7 +990,7 @@ export function GameClient() {
           <div className="board-wrap">
             <div className="territory-label territory-enemy">Enemy territory</div>
             <div className="arena-plane">
-              <div className={`board-grid ${boitata3DReady ? "boitata-3d-ready" : ""}`} role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
+              <div className={`board-grid ${boitata3DReady ? "boitata-3d-ready" : ""} ${game.phase === "combat" && !playing ? "combat-paused" : ""}`} role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
               {currentEffectKind && combatLinks.length && !isSolStarfall ? (
                 <div className="combat-links" aria-hidden="true" data-testid="combat-links">
                   {combatLinks.map((link) => (
@@ -1086,7 +1160,7 @@ export function GameClient() {
           </div>
           {game.phase === "combat" && currentEvent ? (
             <div className="combat-caption" aria-live="polite">
-              <span>{String(combatIndex + 1).padStart(2, "0")}/{String(combatEvents.length).padStart(2, "0")}</span>
+              <span>{formatCombatTime(currentCombatTime)}</span>
               <strong>{currentEvent.text}</strong>
             </div>
           ) : (
@@ -1114,6 +1188,8 @@ export function GameClient() {
                 <span className="stat-cell"><small>Mana</small><strong>{Math.round(selectedDisplay.mana)}/{selectedDisplay.maxMana}</strong></span>
                 <span className="stat-cell"><small>Damage</small><strong>{selectedDisplay.attack}</strong></span>
                 <span className="stat-cell"><small>Armor</small><strong>{selectedDisplay.armor}</strong></span>
+                <span className="stat-cell stat-cell-rate stat-cell-attack-speed" data-testid={`unit-attack-speed-${selectedDisplay.id}`}><small>Attack speed</small><strong>{formatRate(selectedDisplay.attackSpeed)}/sec</strong></span>
+                <span className="stat-cell stat-cell-rate stat-cell-mana-regen" data-testid={`unit-mana-regen-${selectedDisplay.id}`}><small>Mana regen</small><strong>{formatRate(selectedDisplay.manaRegen)}/sec</strong></span>
                 {selectedHero.id === "boitata" ? (
                   <>
                     <span className="stat-cell stat-cell-shield" data-testid={`unit-fire-wall-shield-${selectedDisplay.id}`}><small>Wall of Fire</small><strong>{Math.round(selectedDisplay.fireWallShield)}</strong></span>
@@ -1262,8 +1338,8 @@ export function GameClient() {
             <section className="combat-log" data-testid="combat-log">
               <div className="panel-heading"><div><span className="eyebrow">Live chronicle</span><h2 className="panel-title">Combat log</h2></div></div>
               <div className="log-list">
-                {combatEvents.slice(Math.max(0, combatIndex - 5), combatIndex + 1).map((event) => (
-                  <p className={`log-entry log-${event.type}`} key={event.id} data-testid={`combat-event-${event.id}`}><span className="log-time">T{event.turn}</span>{event.text}</p>
+                {combatEvents.slice(combatLogStart, combatIndex + 1).map((event, offset) => (
+                  <p className={`log-entry log-${event.type}`} key={event.id} data-testid={`combat-event-${event.id}`}><span className="log-time">{formatCombatTime(combatEventTimestamp(event, combatLogStart + offset))}</span>{event.text}</p>
                 ))}
               </div>
             </section>
@@ -1443,11 +1519,11 @@ export function GameClient() {
             </>
           ) : game.phase === "combat" ? (
             <div className="combat-controls" data-testid="combat-controls">
-              <div className="income-line"><span>Combat turn</span><strong>{combatIndex + 1}/{combatEvents.length}</strong><small>{atCombatEnd ? "Outcome ready" : `${speed}× playback`}</small></div>
+              <div className="income-line"><span>Combat time</span><strong>{formatCombatTime(currentCombatTime)} / {formatCombatTime(totalCombatTime)}</strong><small>{atCombatEnd ? `Outcome ready · Event ${combatIndex + 1}/${combatEvents.length}` : `Event ${combatIndex + 1}/${combatEvents.length} · ${speed}× playback`}</small></div>
               <button className="game-button button-secondary" type="button" data-testid="combat-play-pause" disabled={atCombatEnd} onClick={() => setPlaying((value) => !value)}>{atCombatEnd ? "Complete" : playing ? "Pause" : "Play"}</button>
-              <button className="game-button button-secondary" type="button" data-testid="combat-step" disabled={atCombatEnd} onClick={() => { setPlaying(false); setCombatIndex((index) => Math.min(index + 1, combatEvents.length - 1)); }}>Step</button>
+              <button className="game-button button-secondary" type="button" data-testid="combat-step" disabled={atCombatEnd} onClick={() => { playbackEventIdRef.current = null; playbackRemainingSecondsRef.current = null; setPlaying(false); setCombatIndex((index) => Math.min(index + 1, combatEvents.length - 1)); }}>Next event</button>
               <label className="speed-control">Speed<select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} data-testid="combat-speed"><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option></select></label>
-              {!atCombatEnd ? <button className="game-button button-ghost" type="button" data-testid="combat-skip" onClick={() => { setPlaying(false); setCombatIndex(combatEvents.length - 1); }}>Skip to result</button> : <button className="game-button button-primary" type="button" onClick={() => commit(applyCombatResult(game))}>Claim result</button>}
+              {!atCombatEnd ? <button className="game-button button-ghost" type="button" data-testid="combat-skip" onClick={() => { playbackEventIdRef.current = null; playbackRemainingSecondsRef.current = null; setPlaying(false); setCombatIndex(combatEvents.length - 1); }}>Skip to result</button> : <button className="game-button button-primary" type="button" onClick={() => commit(applyCombatResult(game))}>Claim result</button>}
             </div>
           ) : (
             <div className="income-line"><span>Round resolved</span><strong>{game.roundResult?.outcome === "victory" ? "Victory" : "Defeat"}</strong><small>Review the result to continue</small></div>

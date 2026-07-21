@@ -13,6 +13,11 @@ export const MAX_STARS = 3;
 export const FINAL_ROUND = 10;
 export const ITEM_SLOTS_PER_UNIT = 3;
 
+const COMBAT_DURATION_SECONDS = 45;
+const MAX_COMBAT_ACTIONS = 1024;
+const COMBAT_DECIMAL_PRECISION = 1000;
+const COMBAT_EPSILON = 1e-9;
+
 export type Side = "player" | "enemy";
 export type GamePhase = "planning" | "combat" | "resolution" | "gameover";
 export type Outcome = "victory" | "defeat";
@@ -128,6 +133,10 @@ export interface HeroDefinition {
   maxHp: number;
   attack: number;
   armor: number;
+  /** Basic-attack/action opportunities per second. */
+  attackSpeed: number;
+  /** Mana restored per second while the unit is alive. */
+  manaRegen: number;
   startingMana: number;
   ability: AbilityDefinition;
 }
@@ -179,6 +188,8 @@ export interface CombatUnit {
   attack: number;
   armor: number;
   range: number;
+  attackSpeed: number;
+  manaRegen: number;
   shield: number;
   fireWallShield: number;
   stunned: number;
@@ -197,6 +208,9 @@ export type CombatEventType =
 
 export interface CombatEvent {
   id: string;
+  /** Elapsed combat time in seconds. */
+  timestamp: number;
+  /** Monotonic action sequence retained for playback compatibility. */
   turn: number;
   type: CombatEventType;
   actorId?: string;
@@ -305,6 +319,8 @@ export interface UnitStats {
   attack: number;
   armor: number;
   range: number;
+  attackSpeed: number;
+  manaRegen: number;
   maxMana: number;
   startingMana: number;
 }
@@ -420,6 +436,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 190,
     attack: 18,
     armor: 24,
+    attackSpeed: 0.65,
+    manaRegen: 10.5,
     startingMana: 20,
     ability: {
       id: "thornwall",
@@ -442,6 +460,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 216,
     attack: 20,
     armor: 28,
+    attackSpeed: 0.68,
+    manaRegen: 10,
     startingMana: 35,
     ability: {
       id: "wall-of-fire",
@@ -463,6 +483,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 118,
     attack: 24,
     armor: 8,
+    attackSpeed: 0.72,
+    manaRegen: 12,
     startingMana: 35,
     ability: {
       id: "starfall",
@@ -484,6 +506,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 130,
     attack: 31,
     armor: 11,
+    attackSpeed: 1.05,
+    manaRegen: 8.5,
     startingMana: 25,
     ability: {
       id: "shadowstep",
@@ -505,6 +529,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 150,
     attack: 38,
     armor: 15,
+    attackSpeed: 0.95,
+    manaRegen: 8,
     startingMana: 10,
     ability: {
       id: "radiant-lunge",
@@ -526,6 +552,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 164,
     attack: 35,
     armor: 14,
+    attackSpeed: 0.7,
+    manaRegen: 11.5,
     startingMana: 30,
     ability: {
       id: "soulbind",
@@ -547,6 +575,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 176,
     attack: 17,
     armor: 20,
+    attackSpeed: 0.66,
+    manaRegen: 11,
     startingMana: 40,
     ability: {
       id: "tidal-ward",
@@ -568,6 +598,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 122,
     attack: 28,
     armor: 9,
+    attackSpeed: 0.75,
+    manaRegen: 12.5,
     startingMana: 45,
     ability: {
       id: "hush",
@@ -589,6 +621,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 126,
     attack: 27,
     armor: 10,
+    attackSpeed: 0.92,
+    manaRegen: 9,
     startingMana: 20,
     ability: {
       id: "briar-volley",
@@ -858,6 +892,8 @@ export function getUnitStats(
     attack: Math.round(hero.attack * starScale * levelScale) + itemBonuses.attack,
     armor: Math.round(hero.armor * (1 + (unit.level - 1) * 0.08)) + itemBonuses.armor,
     range: ROLE_PROFILES[hero.role].range,
+    attackSpeed: hero.attackSpeed,
+    manaRegen: hero.manaRegen,
     maxMana,
     startingMana: Math.min(maxMana, hero.startingMana + itemBonuses.startingMana),
   };
@@ -1256,6 +1292,7 @@ function adjacent(a: number, b: number): boolean {
 function snapshot(units: CombatUnit[]): CombatUnit[] {
   return units.map((unit) => ({
     ...unit,
+    mana: roundCombatDecimal(unit.mana),
     itemSlots: unit.itemSlots ? cloneItemSlots(unit.itemSlots) : undefined,
   }));
 }
@@ -1469,7 +1506,7 @@ function abilityScalingDescription(byStar: AbilityPreview["byStar"]): string {
     return `Heals ${triplet((value) => value.maxTargets)} ally for ${triplet((value) => value.healing)} Life and grants ${triplet((value) => value.shield)} Shield at 1★/2★/3★.`;
   }
   if (heroId === "vesper") {
-    return `Hits ${triplet((value) => value.maxTargets)} enemy for ${triplet((value) => value.damage)} raw damage, drains ${triplet((value) => value.manaDrain)} Mana, and stuns for ${triplet((value) => value.stunTurns)} turn at 1★/2★/3★.`;
+    return `Hits ${triplet((value) => value.maxTargets)} enemy for ${triplet((value) => value.damage)} raw damage, drains ${triplet((value) => value.manaDrain)} Mana, and skips ${triplet((value) => value.stunTurns)} action at 1★/2★/3★.`;
   }
   return `Fires ${triplet((value) => value.projectiles)} projectiles into up to ${triplet((value) => value.maxTargets)} enemies for ${triplet((value) => value.damage)} raw damage each at 1★/2★/3★.`;
 }
@@ -1578,6 +1615,8 @@ function makeCombatUnits(state: GameState): CombatUnit[] {
       attack: stats.attack,
       armor: stats.armor,
       range: stats.range,
+      attackSpeed: stats.attackSpeed,
+      manaRegen: stats.manaRegen,
       shield: 0,
       fireWallShield: 0,
       stunned: 0,
@@ -1645,6 +1684,7 @@ function addEvent(
   events: CombatEvent[],
   units: CombatUnit[],
   turn: number,
+  timestamp: number,
   type: CombatEventType,
   text: string,
   options: Pick<CombatEvent, "actorId" | "targetIds" | "amount" | "amounts"> = {},
@@ -1652,6 +1692,7 @@ function addEvent(
   events.push({
     id: `event-${events.length + 1}`,
     turn,
+    timestamp,
     type,
     text,
     snapshot: snapshot(units),
@@ -1668,7 +1709,13 @@ function strongestClusterTarget(actor: CombatUnit, units: CombatUnit[]): CombatU
   );
 }
 
-function castAbility(actor: CombatUnit, units: CombatUnit[], events: CombatEvent[], turn: number): void {
+function castAbility(
+  actor: CombatUnit,
+  units: CombatUnit[],
+  events: CombatEvent[],
+  turn: number,
+  timestamp: number,
+): void {
   const hero = HEROES[actor.heroId];
   const allies = units.filter((unit) => unit.side === actor.side && unit.alive);
   const enemies = units.filter((unit) => unit.side !== actor.side && unit.alive);
@@ -1773,6 +1820,7 @@ function castAbility(actor: CombatUnit, units: CombatUnit[], events: CombatEvent
     events,
     units,
     turn,
+    timestamp,
     "ability",
     abilityText,
     { actorId: actor.id, targetIds: targets.map((target) => target.id), amount, amounts },
@@ -1782,7 +1830,7 @@ function castAbility(actor: CombatUnit, units: CombatUnit[], events: CombatEvent
     actor.mana = Math.min(actor.maxMana, actor.mana + values.takedownMana * defeatedEnemies.length);
   }
   for (const target of defeatedEnemies) {
-    addEvent(events, units, turn, "defeat", `${combatName(target)} is defeated.`, {
+    addEvent(events, units, turn, timestamp, "defeat", `${combatName(target)} is defeated.`, {
       actorId: actor.id,
       targetIds: [target.id],
     });
@@ -1805,6 +1853,25 @@ function projectedIncome(state: GameState, outcome: Outcome): IncomeBreakdown {
   return { base, interest, streak, victory, total: base + interest + streak + victory };
 }
 
+function roundCombatDecimal(value: number): number {
+  return Math.round(value * COMBAT_DECIMAL_PRECISION) / COMBAT_DECIMAL_PRECISION;
+}
+
+function regenerateMana(units: CombatUnit[], elapsedSeconds: number): void {
+  if (elapsedSeconds <= 0) return;
+  for (const unit of units) {
+    if (!unit.alive || unit.mana >= unit.maxMana) continue;
+    const regeneratedMana = unit.mana + elapsedSeconds * unit.manaRegen;
+    unit.mana = regeneratedMana >= unit.maxMana - COMBAT_EPSILON
+      ? unit.maxMana
+      : regeneratedMana;
+  }
+}
+
+function nextOpportunityTime(unit: CombatUnit, completedOpportunities: number): number {
+  return roundCombatDecimal((completedOpportunities + 1) / unit.attackSpeed);
+}
+
 export function resolveCombat(state: GameState): GameActionResult {
   if (state.phase !== "planning") return fail(state, "This round is already in progress.");
   const deployed = state.units.filter((unit) => unit.position !== null);
@@ -1814,28 +1881,66 @@ export function resolveCombat(state: GameState): GameActionResult {
   const units = makeCombatUnits(state);
   const initialUnits = snapshot(units);
   const events: CombatEvent[] = [];
-  addEvent(events, units, 0, "start", `Round ${state.round} begins. ${deployed.length} allies face ${state.enemyUnits.length} enemies.`);
+  addEvent(
+    events,
+    units,
+    0,
+    0,
+    "start",
+    `Round ${state.round} begins. ${deployed.length} allies face ${state.enemyUnits.length} enemies.`,
+  );
   let turn = 0;
-  let cursor = 0;
-  const maxTurns = 160;
+  let elapsedTime = 0;
+  let reachedTimeLimit = false;
+  const completedOpportunities = new Map(units.map((unit) => [unit.id, 0]));
+  const nextActionAt = new Map(
+    units.map((unit) => [unit.id, nextOpportunityTime(unit, 0)]),
+  );
 
-  while (turn < maxTurns && units.some((unit) => unit.side === "player" && unit.alive) && units.some((unit) => unit.side === "enemy" && unit.alive)) {
-    const order = units
+  while (
+    turn < MAX_COMBAT_ACTIONS &&
+    units.some((unit) => unit.side === "player" && unit.alive) &&
+    units.some((unit) => unit.side === "enemy" && unit.alive)
+  ) {
+    const actor = units
       .filter((unit) => unit.alive)
-      .sort((a, b) => (a.side === b.side ? a.id.localeCompare(b.id) : a.side === "player" ? -1 : 1));
-    if (!order.length) break;
-    const actor = order[cursor % order.length];
-    cursor += 1;
-    if (!actor.alive) continue;
+      .sort((a, b) => {
+        const timeDelta = (nextActionAt.get(a.id) ?? Infinity) - (nextActionAt.get(b.id) ?? Infinity);
+        if (timeDelta !== 0) return timeDelta;
+        if (a.side !== b.side) return a.side === "player" ? -1 : 1;
+        return a.id.localeCompare(b.id);
+      })[0];
+    if (!actor) break;
+
+    const actionTime = nextActionAt.get(actor.id) ?? Infinity;
+    if (actionTime > COMBAT_DURATION_SECONDS) {
+      regenerateMana(units, COMBAT_DURATION_SECONDS - elapsedTime);
+      elapsedTime = COMBAT_DURATION_SECONDS;
+      reachedTimeLimit = true;
+      break;
+    }
+    regenerateMana(units, actionTime - elapsedTime);
+    elapsedTime = actionTime;
     turn += 1;
+    const actorOpportunities = (completedOpportunities.get(actor.id) ?? 0) + 1;
+    completedOpportunities.set(actor.id, actorOpportunities);
+    nextActionAt.set(actor.id, nextOpportunityTime(actor, actorOpportunities));
 
     if (actor.stunned > 0) {
       actor.stunned -= 1;
-      addEvent(events, units, turn, "move", `${combatName(actor)} is silenced and loses the turn.`, { actorId: actor.id });
+      addEvent(
+        events,
+        units,
+        turn,
+        elapsedTime,
+        "move",
+        `${combatName(actor)} is stunned and skips the action.`,
+        { actorId: actor.id },
+      );
       continue;
     }
     if (actor.mana >= actor.maxMana) {
-      castAbility(actor, units, events, turn);
+      castAbility(actor, units, events, turn, elapsedTime);
       continue;
     }
     const target = nearestEnemy(actor, units);
@@ -1844,30 +1949,36 @@ export function resolveCombat(state: GameState): GameActionResult {
       const step = openStepToward(actor, target, units);
       if (step !== null) {
         actor.position = step;
-        actor.mana = Math.min(actor.maxMana, actor.mana + 4);
-        addEvent(events, units, turn, "move", `${combatName(actor)} advances.`, {
+        addEvent(events, units, turn, elapsedTime, "move", `${combatName(actor)} advances.`, {
           actorId: actor.id,
           targetIds: [target.id],
         });
       } else {
-        actor.mana = Math.min(actor.maxMana, actor.mana + 8);
-        addEvent(events, units, turn, "move", `${combatName(actor)} holds position and gathers mana.`, { actorId: actor.id });
+        addEvent(events, units, turn, elapsedTime, "move", `${combatName(actor)} holds position.`, {
+          actorId: actor.id,
+        });
       }
       continue;
     }
 
     const damage = damageUnit(target, actor.attack);
-    actor.mana = Math.min(actor.maxMana, actor.mana + 18);
-    target.mana = Math.min(target.maxMana, target.mana + 10);
-    addEvent(events, units, turn, "attack", `${combatName(actor)} strikes ${combatName(target)} for ${damage} damage.`, {
-      actorId: actor.id,
-      targetIds: [target.id],
-      amount: damage,
-    });
+    addEvent(
+      events,
+      units,
+      turn,
+      elapsedTime,
+      "attack",
+      `${combatName(actor)} strikes ${combatName(target)} for ${damage} damage.`,
+      {
+        actorId: actor.id,
+        targetIds: [target.id],
+        amount: damage,
+      },
+    );
     if (!target.alive) {
       const counts = traitCountsForSide(units, actor.side);
       actor.mana = Math.min(actor.maxMana, actor.mana + tierValue("nightbound", counts.nightbound, [20, 35]));
-      addEvent(events, units, turn, "defeat", `${combatName(target)} is defeated.`, {
+      addEvent(events, units, turn, elapsedTime, "defeat", `${combatName(target)} is defeated.`, {
         actorId: actor.id,
         targetIds: [target.id],
       });
@@ -1879,16 +1990,26 @@ export function resolveCombat(state: GameState): GameActionResult {
   const playerHealth = playerAlive.reduce((total, unit) => total + unit.hp, 0);
   const enemyHealth = enemyAlive.reduce((total, unit) => total + unit.hp, 0);
   const outcome: Outcome = playerAlive.length > 0 && (enemyAlive.length === 0 || playerHealth >= enemyHealth) ? "victory" : "defeat";
+  const reachedActionLimit = turn >= MAX_COMBAT_ACTIONS && playerAlive.length > 0 && enemyAlive.length > 0;
+  const reachedCombatLimit = reachedTimeLimit || reachedActionLimit;
   const playerDamage =
     outcome === "defeat" ? Math.max(3, enemyAlive.reduce((total, unit) => total + unit.stars * 2 + 1, 0)) : 0;
   const income = projectedIncome(state, outcome);
   const unitXp = Object.fromEntries(deployed.map((unit) => [unit.id, outcome === "victory" ? 3 : 2]));
+  const outcomeText = reachedCombatLimit
+    ? outcome === "victory"
+      ? `${reachedTimeLimit ? "Time expires" : "The clash reaches its limit"}. Your formation holds the advantage. Victory.`
+      : `${reachedTimeLimit ? "Time expires" : "The clash reaches its limit"} with the enemy ahead. Commander loses ${playerDamage} life.`
+    : outcome === "victory"
+      ? "The enemy line breaks. Victory."
+      : `Your formation falls. Commander loses ${playerDamage} life.`;
   addEvent(
     events,
     units,
     turn + 1,
+    elapsedTime,
     "outcome",
-    outcome === "victory" ? "The enemy line breaks. Victory." : `Your formation falls. Commander loses ${playerDamage} life.`,
+    outcomeText,
   );
 
   const report: CombatReport = {
