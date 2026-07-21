@@ -227,3 +227,17 @@ test("3D layer is decorative and exposes stable fallback hooks", async () => {
   assert.match(source, /navigator\.connection/);
   assert.match(source, /webglcontextlost/);
 });
+
+test("3D creature uses a model-local visual anchor without moving its board position", async () => {
+  const source = await readFile(new URL("../app/boitata-3d-layer.tsx", import.meta.url), "utf8");
+  const biasMatch = source.match(/const BOITATA_MODEL_VERTICAL_ANCHOR_BIAS = ([\d.]+);/);
+  assert.ok(biasMatch, "the updated rig should define an explicit visual anchor bias");
+  const bias = Number(biasMatch[1]);
+  assert.ok(bias >= 0.07 && bias <= 0.09, "the visual anchor should lift the lower-weighted model by about 8% of its height");
+  assert.match(
+    source,
+    /\(-rigCenter\.y \+ rigSize\.y \* BOITATA_MODEL_VERTICAL_ANCHOR_BIAS\) \* rigNormalizationScale/,
+  );
+  assert.match(source, /root\.position\.set\(startX, startY,/);
+  assert.doesNotMatch(source, /root\.position\.(?:x|y)[^;]*BOITATA_MODEL_VERTICAL_ANCHOR_BIAS/);
+});

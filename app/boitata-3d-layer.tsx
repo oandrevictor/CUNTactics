@@ -84,6 +84,7 @@ interface BoitataEntity {
 
 const ACTION_SECONDS = 0.68;
 const BOITATA_MODEL_URL = "/characters/boitata/boitata-rigged.glb";
+const BOITATA_MODEL_VERTICAL_ANCHOR_BIAS = 0.08;
 
 function isBone(object: Object3D): object is Bone {
   return (object as Bone).isBone === true;
@@ -282,7 +283,7 @@ export function Boitata3DLayer({
           model.scale.setScalar(rigNormalizationScale);
           model.position.set(
             -rigCenter.x * rigNormalizationScale,
-            -rigCenter.y * rigNormalizationScale,
+            (-rigCenter.y + rigSize.y * BOITATA_MODEL_VERTICAL_ANCHOR_BIAS) * rigNormalizationScale,
             -rigCenter.z * rigNormalizationScale,
           );
 
