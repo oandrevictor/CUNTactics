@@ -31,7 +31,7 @@ test("server-renders the complete HEXFALL game surface", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site|react-loading-skeleton/i);
 });
 
-test("places the bench directly beneath the battle board", async () => {
+test("integrates the bench into the arena surface without panel chrome", async () => {
   const [client, styles] = await Promise.all([
     readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -41,14 +41,27 @@ test("places the bench directly beneath the battle board", async () => {
     client.indexOf('<section className="board-section"'),
     client.indexOf('<aside className="panel enemy-panel"'),
   );
-  const dockSection = client.slice(
-    client.indexOf('<section className="dock">'),
-    client.indexOf('{game.phase === "resolution"'),
+  const arenaSurface = boardSection.slice(
+    boardSection.indexOf('<div className="board-wrap">'),
+    boardSection.indexOf('{game.phase === "combat"'),
   );
 
-  assert.match(boardSection, /className="panel bench-panel board-bench-panel"/);
-  assert.doesNotMatch(dockSection, /data-testid="bench"/);
-  assert.match(styles, /\.board-bench-panel\s*\{/);
+  assert.match(arenaSurface, /className="arena-plane"/);
+  assert.match(arenaSurface, /className="arena-bench" aria-labelledby="bench-title" data-testid="bench"/);
+  assert.match(arenaSurface, /<h2 id="bench-title">Bench<\/h2>/);
+  assert.ok(
+    arenaSurface.indexOf('data-testid="game-board"') < arenaSurface.indexOf('data-testid="bench"'),
+    "the reserve bays should follow the battle grid inside the shared arena",
+  );
+  assert.doesNotMatch(arenaSurface, /bench-panel|board-bench-panel|className="panel[^\"]*bench/);
+  assert.match(styles, /\.arena-plane\s*\{[^}]*rotateX\(var\(--board-tilt\)\)/s);
+  assert.match(styles, /\.arena-bench\s*\{/);
+  assert.match(styles, /\.bench-slot\s*\{[^}]*border:\s*1px solid/s);
+  assert.match(
+    styles,
+    /@media \(max-width: 600px\)[\s\S]*?\.bench-grid\s*\{[^}]*overflow-x:\s*auto/s,
+  );
+  assert.match(styles, /@media print\s*\{[\s\S]*?\.arena-bench/);
 });
 
 test("ships the bespoke social card and no starter preview dependency", async () => {
@@ -174,7 +187,7 @@ test("ships Boitata's portrait and fire-wall shield animation states", async () 
   assert.match(styles, /@keyframes fire-wall-break/);
 });
 
-test("tilts the battle board with a reduced perspective angle on mobile", async () => {
+test("tilts the full arena surface with a reduced perspective angle on mobile", async () => {
   const [client, styles] = await Promise.all([
     readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -188,7 +201,7 @@ test("tilts the battle board with a reduced perspective angle on mobile", async 
   assert.ok(desktopTilt, "the board wrapper should define a static perspective angle");
   assert.match(
     styles,
-    /\.board-grid\s*\{[^}]*\btransform\s*:[^;}]*rotateX\(\s*var\(--board-tilt\)\s*\)/s,
+    /\.arena-plane\s*\{[^}]*\btransform\s*:[^;}]*rotateX\(\s*var\(--board-tilt\)\s*\)/s,
   );
 
   const mobileTilt = styles.match(

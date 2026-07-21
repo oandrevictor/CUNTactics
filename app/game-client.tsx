@@ -803,7 +803,8 @@ export function GameClient() {
           </div>
           <div className="board-wrap">
             <div className="territory-label territory-enemy">Enemy territory</div>
-            <div className={`board-grid ${boitata3DReady ? "boitata-3d-ready" : ""}`} role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
+            <div className="arena-plane">
+              <div className={`board-grid ${boitata3DReady ? "boitata-3d-ready" : ""}`} role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
               {currentEffectKind && combatLinks.length && !isSolStarfall ? (
                 <div className="combat-links" aria-hidden="true" data-testid="combat-links">
                   {combatLinks.map((link) => (
@@ -895,21 +896,81 @@ export function GameClient() {
                   </button>
                 );
               })}
-              {boitataBoardUnits.length > 0 ? (
-                <Boitata3DLayer
-                  units={boitataBoardUnits}
-                  currentEvent={currentEvent}
-                  previousEvent={previousEvent}
-                  phase={game.phase}
-                  playing={playing}
-                  speed={speed}
-                  boardHeightRatio={boardHeightRatio}
-                  onReady={() => setBoitata3DReady(true)}
-                  onFallback={() => setBoitata3DReady(false)}
-                />
-              ) : null}
+                {boitataBoardUnits.length > 0 ? (
+                  <Boitata3DLayer
+                    units={boitataBoardUnits}
+                    currentEvent={currentEvent}
+                    previousEvent={previousEvent}
+                    phase={game.phase}
+                    playing={playing}
+                    speed={speed}
+                    boardHeightRatio={boardHeightRatio}
+                    onReady={() => setBoitata3DReady(true)}
+                    onFallback={() => setBoitata3DReady(false)}
+                  />
+                ) : null}
+              </div>
+              <section className="arena-bench" aria-labelledby="bench-title" data-testid="bench">
+                <div className="arena-bench-rail">
+                  <span className="arena-bench-territory">Your territory · {deployedCount}/{commanderCap} deployed</span>
+                  <h2 id="bench-title">Bench</h2>
+                  <span className="arena-bench-count">{benchUnits.length}/{BENCH_SIZE} reserves</span>
+                </div>
+                <div className="bench-grid">
+                  {Array.from({ length: BENCH_SIZE }, (_, index) => {
+                    const unit = benchUnits.find((candidate) => candidate.benchIndex === index);
+                    const display = unit ? persistentDisplay(unit) : null;
+                    const loadoutDropStatus = display ? loadoutDropStatusFor(display) : null;
+                    return (
+                      <button
+                        className={`bench-slot ${unit?.id === selectedId ? "board-cell-selected" : ""} ${loadoutDropStatus ? `loadout-cell-${loadoutDropStatus}` : ""}`}
+                        type="button"
+                        key={index}
+                        data-testid={`bench-slot-${index}`}
+                        aria-label={display ? `Bench slot ${index + 1}, ${HEROES[display.heroId].name}, ${ROLE_PROFILES[HEROES[display.heroId].role].label}, range ${display.range}` : `Bench slot ${index + 1}, empty`}
+                        disabled={game.phase !== "planning"}
+                        onClick={() => handleBenchSlot(index)}
+                        onDragOver={(event) => {
+                          if (draggedLoadout) {
+                            if (display && game.phase === "planning") {
+                              event.preventDefault();
+                              event.dataTransfer.dropEffect = "move";
+                            }
+                            return;
+                          }
+                          if (game.phase === "planning") event.preventDefault();
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          if (display && handleChampionLoadoutDrop(event, display.id)) return;
+                          const unitId = event.dataTransfer.getData("text/unit-id");
+                          if (unitId) handleMove(unitId, "bench", index);
+                        }}
+                      >
+                        {display ? (
+                          <UnitToken
+                            unit={display}
+                            selected={display.id === selectedId}
+                            highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)}
+                            currentEvent={null}
+                            previousEvent={null}
+                            draggable={game.phase === "planning"}
+                            loadoutDropStatus={loadoutDropStatus}
+                            onDragStart={(event) => {
+                              setDraggedLoadout(null);
+                              event.dataTransfer.setData("text/unit-id", display.id);
+                              setDraggedUnitId(display.id);
+                              setSelectedId(display.id);
+                            }}
+                            onDragEnd={() => setDraggedUnitId(null)}
+                          />
+                        ) : <span className="empty-copy">+</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
             </div>
-            <div className="territory-label territory-player">Your territory · {deployedCount}/{commanderCap} deployed</div>
           </div>
           {game.phase === "combat" && currentEvent ? (
             <div className="combat-caption" aria-live="polite">
@@ -919,62 +980,6 @@ export function GameClient() {
           ) : (
             <p className="placement-hint">Click any character to inspect. Drag allies between teal tiles and the bench to place or swap.</p>
           )}
-          <section className="panel bench-panel board-bench-panel" aria-label="Bench" data-testid="bench">
-            <div className="panel-heading"><div><span className="eyebrow">Reserve line</span><h2 className="panel-title">Bench</h2></div><span className="panel-meta">{benchUnits.length}/{BENCH_SIZE}</span></div>
-            <div className="bench-grid">
-              {Array.from({ length: BENCH_SIZE }, (_, index) => {
-                const unit = benchUnits.find((candidate) => candidate.benchIndex === index);
-                const display = unit ? persistentDisplay(unit) : null;
-                const loadoutDropStatus = display ? loadoutDropStatusFor(display) : null;
-                return (
-                  <button
-                    className={`bench-slot ${unit?.id === selectedId ? "board-cell-selected" : ""} ${loadoutDropStatus ? `loadout-cell-${loadoutDropStatus}` : ""}`}
-                    type="button"
-                    key={index}
-                    data-testid={`bench-slot-${index}`}
-                    aria-label={display ? `Bench slot ${index + 1}, ${HEROES[display.heroId].name}, ${ROLE_PROFILES[HEROES[display.heroId].role].label}, range ${display.range}` : `Bench slot ${index + 1}, empty`}
-                    disabled={game.phase !== "planning"}
-                    onClick={() => handleBenchSlot(index)}
-                    onDragOver={(event) => {
-                      if (draggedLoadout) {
-                        if (display && game.phase === "planning") {
-                          event.preventDefault();
-                          event.dataTransfer.dropEffect = "move";
-                        }
-                        return;
-                      }
-                      if (game.phase === "planning") event.preventDefault();
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      if (display && handleChampionLoadoutDrop(event, display.id)) return;
-                      const unitId = event.dataTransfer.getData("text/unit-id");
-                      if (unitId) handleMove(unitId, "bench", index);
-                    }}
-                  >
-                    {display ? (
-                      <UnitToken
-                        unit={display}
-                        selected={display.id === selectedId}
-                        highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)}
-                        currentEvent={null}
-                        previousEvent={null}
-                        draggable={game.phase === "planning"}
-                        loadoutDropStatus={loadoutDropStatus}
-                        onDragStart={(event) => {
-                          setDraggedLoadout(null);
-                          event.dataTransfer.setData("text/unit-id", display.id);
-                          setDraggedUnitId(display.id);
-                          setSelectedId(display.id);
-                        }}
-                        onDragEnd={() => setDraggedUnitId(null)}
-                      />
-                    ) : <span className="empty-copy">+</span>}
-                  </button>
-                );
-              })}
-            </div>
-          </section>
         </section>
 
         <aside className="panel enemy-panel" aria-label={selectedDisplay ? "Unit inspector" : "Enemy scout report"}>
