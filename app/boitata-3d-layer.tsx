@@ -2,12 +2,16 @@
 
 import { useEffect, useRef } from "react";
 import type {
+  Bone,
   BufferGeometry,
   Group,
-  Material,
   Mesh,
   MeshBasicMaterial,
+  MeshStandardMaterial,
+  Object3D,
   OrthographicCamera,
+  Quaternion,
+  SkinnedMesh,
   Vector2,
   WebGLRenderer,
 } from "three";
@@ -44,29 +48,19 @@ export interface Boitata3DLayerProps {
 type LatestProps = Omit<Boitata3DLayerProps, "onReady" | "onFallback" | "onReducedMotionChange">;
 
 interface SharedAssets {
-  segmentGeometry: BufferGeometry;
-  headGeometry: BufferGeometry;
-  snoutGeometry: BufferGeometry;
-  eyeGeometry: BufferGeometry;
-  fangGeometry: BufferGeometry;
-  crestGeometry: BufferGeometry;
   ringGeometry: BufferGeometry;
   innerRingGeometry: BufferGeometry;
   flameGeometry: BufferGeometry;
   groundGeometry: BufferGeometry;
-  bodyMaterial: Material;
-  headMaterial: Material;
-  snoutMaterial: Material;
-  eyeMaterial: Material;
-  fangMaterial: Material;
-  crestMaterial: Material;
 }
 
 interface BoitataEntity {
   root: Group;
-  body: Mesh[];
-  head: Group;
-  crest: Mesh[];
+  modelPivot: Group;
+  model: Group;
+  bones: Bone[];
+  baseBoneQuaternions: Quaternion[];
+  bodyMaterial: MeshStandardMaterial;
   wall: Group;
   wallRings: Mesh[];
   flames: Mesh[];
@@ -88,7 +82,15 @@ interface BoitataEntity {
 }
 
 const ACTION_SECONDS = 0.68;
-const BODY_SEGMENTS = 19;
+const BOITATA_MODEL_URL = "/characters/boitata/boitata-rigged.glb";
+
+function isBone(object: Object3D): object is Bone {
+  return (object as Bone).isBone === true;
+}
+
+function isSkinnedMesh(object: Object3D): object is SkinnedMesh {
+  return (object as SkinnedMesh).isSkinnedMesh === true;
+}
 
 function smoothStep(value: number): number {
   const clamped = Math.min(1, Math.max(0, value));
@@ -155,8 +157,10 @@ export function Boitata3DLayer({
   });
   const callbacksRef = useRef({ onReady, onFallback, onReducedMotionChange });
 
-  latestRef.current = { units, currentEvent, previousEvent, phase, playing, speed, boardHeightRatio };
-  callbacksRef.current = { onReady, onFallback, onReducedMotionChange };
+  useEffect(() => {
+    latestRef.current = { units, currentEvent, previousEvent, phase, playing, speed, boardHeightRatio };
+    callbacksRef.current = { onReady, onFallback, onReducedMotionChange };
+  });
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -199,8 +203,33 @@ export function Boitata3DLayer({
       }
 
       try {
-        const THREE = await import("three");
+        const [THREE, { GLTFLoader }, SkeletonUtils] = await Promise.all([
+          import("three"),
+          import("three/examples/jsm/loaders/GLTFLoader.js"),
+          import("three/examples/jsm/utils/SkeletonUtils.js"),
+        ]);
         if (cancelled) return;
+
+        const rigTemplate = (await new GLTFLoader().loadAsync(BOITATA_MODEL_URL)).scene;
+        if (cancelled) return;
+        rigTemplate.updateMatrixWorld(true);
+        const rigBounds = new THREE.Box3().setFromObject(rigTemplate);
+        const rigSize = rigBounds.getSize(new THREE.Vector3());
+        const rigCenter = rigBounds.getCenter(new THREE.Vector3());
+        const rigLongestSide = Math.max(rigSize.x, rigSize.y, rigSize.z);
+        if (!Number.isFinite(rigLongestSide) || rigLongestSide <= 0) {
+          throw new Error("Boitata rig has invalid bounds");
+        }
+        const templateBones: Bone[] = [];
+        let templateHasSkinnedMesh = false;
+        rigTemplate.traverse((object) => {
+          if (isBone(object)) templateBones.push(object);
+          if (isSkinnedMesh(object)) templateHasSkinnedMesh = true;
+        });
+        if (!templateHasSkinnedMesh || templateBones.length < 2) {
+          throw new Error("Boitata rig has no usable skinned bone chain");
+        }
+        const rigNormalizationScale = 3.2 / rigLongestSide;
 
         renderer = new THREE.WebGLRenderer({
           canvas,
@@ -229,45 +258,10 @@ export function Boitata3DLayer({
         scene.add(rimLight);
 
         const assets: SharedAssets = {
-          segmentGeometry: new THREE.SphereGeometry(1, 14, 10),
-          headGeometry: new THREE.SphereGeometry(1, 18, 12),
-          snoutGeometry: new THREE.SphereGeometry(1, 14, 9),
-          eyeGeometry: new THREE.SphereGeometry(1, 10, 8),
-          fangGeometry: new THREE.ConeGeometry(0.07, 0.3, 7),
-          crestGeometry: new THREE.ConeGeometry(0.13, 0.56, 7),
           ringGeometry: new THREE.TorusGeometry(1.7, 0.075, 7, 52),
           innerRingGeometry: new THREE.TorusGeometry(1.45, 0.035, 6, 42),
           flameGeometry: new THREE.ConeGeometry(0.11, 0.46, 6),
           groundGeometry: new THREE.RingGeometry(1.25, 1.62, 48),
-          bodyMaterial: new THREE.MeshStandardMaterial({
-            color: 0x671b12,
-            emissive: 0x280500,
-            emissiveIntensity: 0.72,
-            roughness: 0.46,
-            metalness: 0.08,
-          }),
-          headMaterial: new THREE.MeshStandardMaterial({
-            color: 0x9f321d,
-            emissive: 0x3d0900,
-            emissiveIntensity: 0.9,
-            roughness: 0.4,
-            metalness: 0.1,
-          }),
-          snoutMaterial: new THREE.MeshStandardMaterial({
-            color: 0xd85b28,
-            emissive: 0x4a1203,
-            emissiveIntensity: 0.78,
-            roughness: 0.5,
-          }),
-          eyeMaterial: new THREE.MeshBasicMaterial({ color: 0xfff1a8 }),
-          fangMaterial: new THREE.MeshStandardMaterial({ color: 0xffe8c8, roughness: 0.32 }),
-          crestMaterial: new THREE.MeshBasicMaterial({
-            color: 0xff8b2e,
-            transparent: true,
-            opacity: 0.92,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-          }),
         };
 
         const entities = new Map<string, BoitataEntity>();
@@ -276,53 +270,55 @@ export function Boitata3DLayer({
           const root = new THREE.Group();
           root.name = `boitata-${unit.id}`;
           const seed = [...unit.id].reduce((total, character) => total + character.charCodeAt(0), 0) * 0.017;
-          const body: Mesh[] = [];
+          const bodyMaterial = new THREE.MeshStandardMaterial({
+            color: 0x7d2113,
+            emissive: 0xff2a00,
+            emissiveIntensity: 0.82,
+            roughness: 0.48,
+            metalness: 0.06,
+          });
+          const modelPivot = new THREE.Group();
+          modelPivot.name = `boitata-rig-${unit.id}`;
+          const model = SkeletonUtils.clone(rigTemplate) as Group;
+          model.name = `boitata-model-${unit.id}`;
+          model.scale.setScalar(rigNormalizationScale);
+          model.position.set(
+            -rigCenter.x * rigNormalizationScale,
+            -rigCenter.y * rigNormalizationScale,
+            -rigCenter.z * rigNormalizationScale,
+          );
 
-          for (let index = 0; index < BODY_SEGMENTS; index += 1) {
-            const segment = new THREE.Mesh(assets.segmentGeometry, assets.bodyMaterial);
-            segment.renderOrder = 2 + index * 0.001;
-            body.push(segment);
-            root.add(segment);
-          }
+          const allBones: Bone[] = [];
+          model.traverse((object) => {
+            if (isBone(object)) allBones.push(object);
+            if (isSkinnedMesh(object)) {
+              object.material = bodyMaterial;
+              object.frustumCulled = false;
+              object.renderOrder = 3;
+            }
+          });
+          const boneSet = new Set(allBones);
+          const rootBones = allBones.filter((bone) => !bone.parent || !boneSet.has(bone.parent as Bone));
+          const bones: Bone[] = [];
+          const collectBoneChain = (bone: Bone) => {
+            bones.push(bone);
+            for (const child of bone.children) {
+              if (isBone(child)) collectBoneChain(child);
+            }
+          };
+          for (const bone of rootBones) collectBoneChain(bone);
+          if (bones.length < 2) throw new Error("Boitata clone has no usable bone chain");
+          const baseBoneQuaternions = bones.map((bone) => bone.quaternion.clone());
 
-          const head = new THREE.Group();
-          const skull = new THREE.Mesh(assets.headGeometry, assets.headMaterial);
-          skull.scale.set(0.53, 0.62, 0.46);
-          head.add(skull);
-
-          const snout = new THREE.Mesh(assets.snoutGeometry, assets.snoutMaterial);
-          snout.position.set(0, 0.39, 0.11);
-          snout.scale.set(0.37, 0.3, 0.35);
-          head.add(snout);
-
-          for (const x of [-0.27, 0.27]) {
-            const eye = new THREE.Mesh(assets.eyeGeometry, assets.eyeMaterial);
-            eye.position.set(x, 0.2, 0.4);
-            eye.scale.setScalar(0.105);
-            head.add(eye);
-
-            const fang = new THREE.Mesh(assets.fangGeometry, assets.fangMaterial);
-            fang.position.set(x * 0.55, 0.61, 0.16);
-            fang.rotation.z = Math.PI;
-            head.add(fang);
-          }
-
-          const crest: Mesh[] = [];
-          for (let index = 0; index < 5; index += 1) {
-            const flame = new THREE.Mesh(assets.crestGeometry, assets.crestMaterial);
-            flame.position.set((index - 2) * 0.15, -0.25 + Math.abs(index - 2) * 0.04, -0.2);
-            flame.rotation.z = (index - 2) * -0.13;
-            flame.scale.setScalar(1 - Math.abs(index - 2) * 0.09);
-            crest.push(flame);
-            head.add(flame);
-          }
-          root.add(head);
+          modelPivot.add(model);
+          root.add(modelPivot);
 
           const wallMaterial = new THREE.MeshBasicMaterial({
             color: 0xff6b21,
             transparent: true,
             opacity: 0,
             blending: THREE.AdditiveBlending,
+            depthTest: false,
             depthWrite: false,
             side: THREE.DoubleSide,
           });
@@ -361,7 +357,7 @@ export function Boitata3DLayer({
             side: THREE.DoubleSide,
           });
           const ground = new THREE.Mesh(assets.groundGeometry, groundMaterial);
-          ground.position.z = -0.42;
+          ground.position.z = -1.72;
           ground.renderOrder = 1;
           root.add(ground);
 
@@ -376,9 +372,11 @@ export function Boitata3DLayer({
 
           return {
             root,
-            body,
-            head,
-            crest,
+            modelPivot,
+            model,
+            bones,
+            baseBoneQuaternions,
+            bodyMaterial,
             wall,
             wallRings,
             flames,
@@ -402,6 +400,7 @@ export function Boitata3DLayer({
 
         const disposeEntity = (entity: BoitataEntity) => {
           scene.remove(entity.root);
+          entity.bodyMaterial.dispose();
           entity.wallMaterial.dispose();
           entity.flameMaterial.dispose();
           entity.groundMaterial.dispose();
@@ -429,6 +428,8 @@ export function Boitata3DLayer({
           entity.side = unit.side;
         };
 
+        const boneEuler = new THREE.Euler();
+        const boneDelta = new THREE.Quaternion();
         const updateBody = (
           entity: BoitataEntity,
           elapsed: number,
@@ -436,78 +437,69 @@ export function Boitata3DLayer({
           motionScale: number,
         ) => {
           const motion = entity.visual.motion;
-          const idleWave = reducedMotion ? 0 : Math.sin(elapsed * 2.1 + entity.seed) * 0.045;
           const attackStretch = motion === "attack" ? Math.sin(actionProgress * Math.PI) : 0;
           const castLift = motion === "cast" ? Math.sin(actionProgress * Math.PI) : 0;
           const hitShake = motion === "hit"
             ? Math.sin(actionProgress * Math.PI * 7) * (1 - actionProgress) * 0.17
             : 0;
           const deathProgress = motion === "death" ? smoothStep(actionProgress) : 0;
+          const waveSpeed = motion === "move" ? 5.8 : 2.5;
+          const waveAmplitude = reducedMotion ? 0 : motion === "move" ? 0.038 : 0.018;
+          const lastBoneIndex = Math.max(1, entity.bones.length - 1);
 
-          let headX = 0;
-          let headY = 1.16;
-          let headZ = 0.34;
-          for (let index = 0; index < BODY_SEGMENTS; index += 1) {
-            const unitProgress = index / (BODY_SEGMENTS - 1);
-            let x: number;
-            let y: number;
-            let z: number;
-            if (unitProgress < 0.72) {
-              const coilProgress = unitProgress / 0.72;
-              const angle = coilProgress * Math.PI * 2.18 + Math.PI * 0.68;
-              const radius = 1.72 - coilProgress * 0.54;
-              const ripple = reducedMotion ? 0 : Math.sin(elapsed * 2.7 + index * 0.58 + entity.seed) * 0.035;
-              x = Math.cos(angle) * (radius + ripple);
-              y = Math.sin(angle) * (radius * 0.43 + ripple) - 0.18;
-              z = Math.sin(angle * 1.12) * 0.15;
-            } else {
-              const neckProgress = (unitProgress - 0.72) / 0.28;
-              const joinAngle = Math.PI * 2.18 + Math.PI * 0.68;
-              const joinX = Math.cos(joinAngle) * 1.18;
-              const joinY = Math.sin(joinAngle) * (1.18 * 0.43) - 0.18;
-              const curve = Math.sin(neckProgress * Math.PI);
-              x = joinX * (1 - neckProgress) + curve * 0.18;
-              y = joinY * (1 - neckProgress) + neckProgress * (1.16 + idleWave + castLift * 0.38);
-              z = 0.15 * (1 - neckProgress) + neckProgress * (0.34 + attackStretch * 0.1);
-              x += hitShake * neckProgress;
-              y += attackStretch * neckProgress * 0.52;
+          entity.bones.forEach((bone, index) => {
+            const chainProgress = index / lastBoneIndex;
+            const tailWeight = 0.3 + chainProgress * 0.7;
+            let bendX = Math.cos(elapsed * waveSpeed * 0.72 + index * 0.57 + entity.seed) * waveAmplitude * 0.42 * tailWeight;
+            let bendY = 0;
+            let bendZ = Math.sin(elapsed * waveSpeed + index * 0.72 + entity.seed) * waveAmplitude * tailWeight;
+
+            if (motion === "attack") {
+              const headWeight = (1 - chainProgress) ** 2;
+              bendX -= attackStretch * headWeight * 0.045;
+              bendZ += attackStretch * Math.sin(chainProgress * Math.PI) * 0.055;
+            } else if (motion === "cast") {
+              bendX += castLift * Math.cos(index * 0.9) * 0.035 * tailWeight;
+              bendY += castLift * Math.sin(index * 0.84) * 0.042 * tailWeight;
+              bendZ += castLift * Math.sin(index * 1.08) * 0.052 * tailWeight;
+            } else if (motion === "hit") {
+              bendX += Math.abs(hitShake) * chainProgress * 0.22;
+              bendZ += hitShake * chainProgress * 0.52;
+            } else if (motion === "death") {
+              bendX += deathProgress * chainProgress * 0.075;
+              bendY += deathProgress * chainProgress * 0.055;
+              bendZ += deathProgress * chainProgress * 0.105;
             }
 
-            y -= deathProgress * unitProgress * 0.86;
-            const thickness = index === 0
-              ? 0.16
-              : 0.31 + Math.sin(Math.min(1, unitProgress * 1.8) * Math.PI) * 0.08;
-            const segment = entity.body[index];
-            segment.position.set(x, y, z);
-            segment.scale.set(thickness * 1.08, thickness, thickness * 0.96);
-            if (index === BODY_SEGMENTS - 1) {
-              headX = x;
-              headY = y;
-              headZ = z;
-            }
-          }
-
-          entity.head.position.set(headX + hitShake * 0.35, headY, headZ + 0.04);
-          entity.head.rotation.z = hitShake * 0.5 + Math.sin(elapsed * 1.7 + entity.seed) * (reducedMotion ? 0 : 0.025);
-          entity.head.scale.setScalar(1 + castLift * 0.07);
-          entity.crest.forEach((flame, index) => {
-            const flutter = reducedMotion ? 1 : 0.8 + Math.sin(elapsed * 8 + index * 1.7 + entity.seed) * 0.2;
-            flame.scale.y = flutter * (1 + castLift * 0.55);
-            flame.scale.x = 0.92 + castLift * 0.18;
+            boneEuler.set(bendX, bendY, bendZ);
+            boneDelta.setFromEuler(boneEuler);
+            bone.quaternion.copy(entity.baseBoneQuaternions[index]).multiply(boneDelta);
           });
 
-          const lunge = attackStretch * 0.18;
-          entity.root.position.x = entity.currentPosition.x + hitShake * 0.035;
-          entity.root.position.y = entity.currentPosition.y + lunge;
+          const breathing = reducedMotion ? 0 : Math.sin(elapsed * 2.1 + entity.seed) * 0.012;
+          entity.modelPivot.position.set(0, attackStretch * 0.56, castLift * 0.18);
+          entity.modelPivot.rotation.set(
+            -attackStretch * 0.07 + deathProgress * 0.46,
+            hitShake * 0.48,
+            hitShake * 0.8,
+          );
+          entity.modelPivot.scale.set(
+            1 + breathing + castLift * 0.08,
+            1 - breathing * 0.42 + castLift * 0.05 - deathProgress * 0.28,
+            1 + breathing * 0.35 + castLift * 0.08,
+          );
+          entity.bodyMaterial.emissiveIntensity = 0.82 + castLift * 0.68 + Math.abs(hitShake) * 0.62;
+
+          entity.root.position.x = entity.currentPosition.x + Math.cos(entity.facing) * hitShake * 0.1;
+          entity.root.position.y = entity.currentPosition.y + Math.sin(entity.facing) * hitShake * 0.1;
           entity.root.rotation.x = deathProgress * 0.28;
           entity.root.rotation.y = deathProgress * -0.22;
           entity.root.rotation.z = entity.facing + deathProgress * 0.78;
           const baseScale = 0.22 + Math.min(0.025, Math.max(0, entity.level - 1) * 0.005);
-          const castScale = 1 + castLift * 0.07;
-          entity.root.scale.set(baseScale * castScale, baseScale * castScale * (1 - deathProgress * 0.3), baseScale);
+          entity.root.scale.setScalar(baseScale);
 
           if (motionScale === 0 && motion !== "idle" && !reducedMotion) {
-            entity.head.rotation.z += motion === "hit" ? 0.08 : 0;
+            entity.modelPivot.rotation.z += motion === "hit" ? 0.08 : 0;
           }
         };
 
@@ -670,27 +662,18 @@ export function Boitata3DLayer({
           for (const entity of entities.values()) disposeEntity(entity);
           entities.clear();
           const sharedGeometries = [
-            assets.segmentGeometry,
-            assets.headGeometry,
-            assets.snoutGeometry,
-            assets.eyeGeometry,
-            assets.fangGeometry,
-            assets.crestGeometry,
             assets.ringGeometry,
             assets.innerRingGeometry,
             assets.flameGeometry,
             assets.groundGeometry,
           ];
           sharedGeometries.forEach((geometry) => geometry.dispose());
-          const sharedMaterials = [
-            assets.bodyMaterial,
-            assets.headMaterial,
-            assets.snoutMaterial,
-            assets.eyeMaterial,
-            assets.fangMaterial,
-            assets.crestMaterial,
-          ];
-          sharedMaterials.forEach((material) => material.dispose());
+          rigTemplate.traverse((object) => {
+            if (!isSkinnedMesh(object)) return;
+            object.geometry.dispose();
+            const materials = Array.isArray(object.material) ? object.material : [object.material];
+            materials.forEach((material) => material.dispose());
+          });
           renderer?.dispose();
         };
       } catch {
