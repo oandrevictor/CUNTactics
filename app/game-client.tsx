@@ -10,6 +10,7 @@ import {
   MAX_COMMANDER_LEVEL,
   PLAYER_START_ROW,
   REFRESH_COST,
+  ROLE_PROFILES,
   TRAITS,
   XP_BUY_AMOUNT,
   XP_BUY_COST,
@@ -291,6 +292,7 @@ export function GameClient() {
   const selectedDisplay = selectedId ? displayUnits.find((unit) => unit.id === selectedId) ?? null : null;
   const selectedPersistent = selectedId ? game.units.find((unit) => unit.id === selectedId) ?? game.enemyUnits.find((unit) => unit.id === selectedId) ?? null : null;
   const selectedHero = selectedDisplay ? HEROES[selectedDisplay.heroId] : null;
+  const selectedRole = selectedHero ? ROLE_PROFILES[selectedHero.role] : null;
   const traits = getActiveTraits(game.units);
   const deployedCount = game.units.filter((unit) => unit.position !== null).length;
   const commanderXpMaximum = commanderXpToNext(game.commanderLevel);
@@ -492,7 +494,7 @@ export function GameClient() {
                 const playerCell = row >= PLAYER_START_ROW;
                 const valid = game.phase === "planning" && !!selectedAlly && playerCell;
                 const highlighted = !!unit && !!highlightedTrait && HEROES[unit.heroId].traits.includes(highlightedTrait);
-                const aria = `Row ${row + 1}, column ${column + 1}, ${playerCell ? "player" : "enemy"} territory${unit ? `, ${HEROES[unit.heroId].name}, level ${unit.level}, ${Math.round(clampPercent(unit.hp, unit.maxHp))} percent health` : ", empty"}`;
+                const aria = `Row ${row + 1}, column ${column + 1}, ${playerCell ? "player" : "enemy"} territory${unit ? `, ${HEROES[unit.heroId].name}, ${ROLE_PROFILES[HEROES[unit.heroId].role].label}, range ${unit.range}, level ${unit.level}, ${Math.round(clampPercent(unit.hp, unit.maxHp))} percent health` : ", empty"}`;
                 return (
                   <button
                     className={`board-cell ${playerCell ? "board-cell-player" : "board-cell-enemy"} ${valid ? "board-cell-valid" : ""} ${unit?.id === selectedId ? "board-cell-selected" : ""}`}
@@ -561,6 +563,19 @@ export function GameClient() {
                 <span className="stat-cell"><small>Damage</small><strong>{selectedDisplay.attack}</strong></span>
                 <span className="stat-cell"><small>Armor</small><strong>{selectedDisplay.armor}</strong></span>
               </div>
+              {selectedRole ? (
+                <div className={`role-range-card role-${selectedRole.id}`} data-testid={`unit-role-range-${selectedDisplay.id}`}>
+                  <span className="role-range-copy">
+                    <small>Combat role · Basic attack range</small>
+                    <strong>{selectedRole.label}</strong>
+                    <p>{selectedRole.description}</p>
+                  </span>
+                  <span className="range-readout">
+                    <strong>{selectedDisplay.range}</strong>
+                    <small>{selectedDisplay.range === 1 ? "tile" : "tiles"}</small>
+                  </span>
+                </div>
+              ) : null}
               <div className="ability-box" data-testid={`ability-${selectedHero.ability.id}`}>
                 <span className="eyebrow">Ability · {selectedHero.ability.manaCost} mana</span>
                 <strong>{selectedHero.ability.name}</strong>
@@ -594,7 +609,7 @@ export function GameClient() {
                   return (
                     <button className="enemy-card" type="button" key={unit.id} onClick={() => setSelectedId(unit.id)}>
                       <span className="enemy-portrait">{hero.glyph}</span>
-                      <span className="enemy-copy"><strong>{hero.name}</strong><small>{TRAITS[hero.traits[0]].name} · L{unit.level} · {starsLabel(unit.stars)}</small></span>
+                      <span className="enemy-copy"><strong>{hero.name}</strong><small>{ROLE_PROFILES[hero.role].label} · Range {stats.range} · L{unit.level} · {starsLabel(unit.stars)}</small></span>
                       <span className="enemy-threat">HP {stats.maxHp}</span>
                     </button>
                   );
@@ -619,7 +634,7 @@ export function GameClient() {
                   type="button"
                   key={index}
                   data-testid={`bench-slot-${index}`}
-                  aria-label={display ? `Bench slot ${index + 1}, ${HEROES[display.heroId].name}` : `Bench slot ${index + 1}, empty`}
+                  aria-label={display ? `Bench slot ${index + 1}, ${HEROES[display.heroId].name}, ${ROLE_PROFILES[HEROES[display.heroId].role].label}, range ${display.range}` : `Bench slot ${index + 1}, empty`}
                   disabled={game.phase !== "planning"}
                   onClick={() => handleBenchSlot(index)}
                   onDragOver={(event) => { if (game.phase === "planning") event.preventDefault(); }}
@@ -653,7 +668,7 @@ export function GameClient() {
                   onClick={() => handleBuy(offer.id)}
                 >
                   <span className={`shop-art rarity-${hero.rarity}`}><span>{hero.glyph}</span><small className="shop-rarity">{hero.rarity}</small></span>
-                  <span className="shop-meta"><strong className="shop-name">{hero.name}</strong><span className="shop-traits">{hero.traits.map((trait) => TRAITS[trait].name).join(" · ")}</span><small>Copies {copies}/3</small></span>
+                  <span className="shop-meta"><strong className="shop-name">{hero.name}</strong><span className="shop-traits">{hero.traits.map((trait) => TRAITS[trait].name).join(" · ")}</span><small>{ROLE_PROFILES[hero.role].label} · Range {ROLE_PROFILES[hero.role].range} · Copies {copies}/3</small></span>
                   <span className="price">{offer.cost} gold</span>
                 </button>
               );

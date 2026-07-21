@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   HEROES,
   REFRESH_COST,
+  ROLE_PROFILES,
   XP_BUY_COST,
   applyCombatResult,
   buyPlayerXp,
@@ -36,6 +37,36 @@ test("roster exposes eight distinct heroes, abilities, and real trait hooks", ()
   assert.equal(new Set(heroes.map((hero) => hero.name)).size, 8);
   assert.equal(new Set(heroes.map((hero) => hero.ability.name)).size, 8);
   assert.ok(heroes.every((hero) => hero.traits.length >= 2));
+});
+
+test("combat roles define distinct ranges and every hero inherits its role range", () => {
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(ROLE_PROFILES).map(([role, profile]) => [role, profile.range])),
+    { tank: 1, carry: 2, mage: 3, shooter: 4 },
+  );
+  assert.deepEqual(new Set(Object.values(HEROES).map((hero) => hero.role)), new Set(["tank", "carry", "mage", "shooter"]));
+
+  const baseUnit = createInitialGame(71).units[0];
+  for (const hero of Object.values(HEROES)) {
+    const stats = getUnitStats({ ...baseUnit, heroId: hero.id });
+    assert.equal(stats.range, ROLE_PROFILES[hero.role].range);
+  }
+});
+
+test("basic combat attacks only after a target enters the actor role range", () => {
+  const initial = createInitialGame(72);
+  const player = initial.units[0];
+  const enemy = initial.enemyUnits[0];
+  const duel = (heroId: "bramble" | "piper"): GameState => ({
+    ...initial,
+    units: [{ ...player, heroId, position: 40, benchIndex: null }],
+    enemyUnits: [{ ...enemy, heroId: "bramble", position: 8, benchIndex: null }],
+  });
+
+  const tankCombat = resolveCombat(duel("bramble"));
+  const shooterCombat = resolveCombat(duel("piper"));
+  assert.equal(tankCombat.report?.events[1]?.type, "move");
+  assert.equal(shooterCombat.report?.events[1]?.type, "attack");
 });
 
 test("economy charges exact costs and never mutates a failed transaction", () => {

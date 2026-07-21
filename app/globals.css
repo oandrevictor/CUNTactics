@@ -1035,6 +1035,73 @@ button:disabled,
   font-weight: 400;
 }
 
+.role-range-card {
+  --role-color: var(--gold);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  border: 1px solid color-mix(in srgb, var(--role-color) 38%, transparent);
+  border-left: 3px solid var(--role-color);
+  background: color-mix(in srgb, var(--role-color) 7%, transparent);
+}
+
+.role-range-card.role-tank { --role-color: #78d8ce; }
+.role-range-card.role-carry { --role-color: #f0bf65; }
+.role-range-card.role-mage { --role-color: #aa8cff; }
+.role-range-card.role-shooter { --role-color: #ff8d9b; }
+
+.role-range-copy {
+  min-width: 0;
+  padding: 10px 11px;
+}
+
+.role-range-copy small,
+.range-readout small {
+  display: block;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.role-range-copy strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--role-color);
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 400;
+}
+
+.role-range-copy p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.range-readout {
+  display: grid;
+  min-width: 64px;
+  place-content: center;
+  padding: 8px 11px;
+  border-left: 1px solid color-mix(in srgb, var(--role-color) 28%, transparent);
+  text-align: center;
+}
+
+.range-readout strong {
+  color: var(--role-color);
+  font-family: var(--display);
+  font-size: 30px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.range-readout small {
+  margin-top: 4px;
+}
+
 .ability-box {
   padding: 12px;
   border: 1px solid rgb(101 169 255 / 26%);

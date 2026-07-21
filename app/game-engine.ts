@@ -15,6 +15,7 @@ export const FINAL_ROUND = 10;
 export type Side = "player" | "enemy";
 export type GamePhase = "planning" | "combat" | "resolution" | "gameover";
 export type Outcome = "victory" | "defeat";
+export type HeroRole = "tank" | "carry" | "mage" | "shooter";
 export type HeroId =
   | "bramble"
   | "sol"
@@ -48,13 +49,20 @@ export interface HeroDefinition {
   glyph: string;
   cost: number;
   rarity: "common" | "uncommon" | "rare" | "mythic";
+  role: HeroRole;
   traits: TraitId[];
   maxHp: number;
   attack: number;
   armor: number;
-  range: number;
   startingMana: number;
   ability: AbilityDefinition;
+}
+
+export interface RoleProfile {
+  id: HeroRole;
+  label: string;
+  range: number;
+  description: string;
 }
 
 export interface TraitDefinition {
@@ -202,6 +210,33 @@ export interface UnitStats {
   startingMana: number;
 }
 
+export const ROLE_PROFILES: Record<HeroRole, RoleProfile> = {
+  tank: {
+    id: "tank",
+    label: "Tank",
+    range: 1,
+    description: "Frontline protector that attacks adjacent targets.",
+  },
+  carry: {
+    id: "carry",
+    label: "Carry",
+    range: 2,
+    description: "Midline damage dealer that attacks up to two tiles away.",
+  },
+  mage: {
+    id: "mage",
+    label: "Mage",
+    range: 3,
+    description: "Backline caster that attacks up to three tiles away.",
+  },
+  shooter: {
+    id: "shooter",
+    label: "Shooter",
+    range: 4,
+    description: "Long-range marksman that attacks up to four tiles away.",
+  },
+};
+
 export const HEROES: Record<HeroId, HeroDefinition> = {
   bramble: {
     id: "bramble",
@@ -210,11 +245,11 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     glyph: "B",
     cost: 1,
     rarity: "common",
+    role: "tank",
     traits: ["vanguard", "verdant"],
     maxHp: 190,
     attack: 18,
     armor: 24,
-    range: 1,
     startingMana: 20,
     ability: {
       id: "thornwall",
@@ -231,11 +266,11 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     glyph: "S",
     cost: 2,
     rarity: "uncommon",
+    role: "mage",
     traits: ["invoker", "starborn"],
     maxHp: 118,
     attack: 24,
     armor: 8,
-    range: 3,
     startingMana: 35,
     ability: {
       id: "starfall",
@@ -252,11 +287,11 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     glyph: "N",
     cost: 2,
     rarity: "uncommon",
+    role: "carry",
     traits: ["nightbound", "duelist"],
     maxHp: 130,
     attack: 31,
     armor: 11,
-    range: 1,
     startingMana: 25,
     ability: {
       id: "shadowstep",
@@ -273,11 +308,11 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     glyph: "A",
     cost: 3,
     rarity: "rare",
+    role: "carry",
     traits: ["duelist", "starborn"],
     maxHp: 150,
     attack: 38,
     armor: 15,
-    range: 1,
     startingMana: 10,
     ability: {
       id: "radiant-lunge",
@@ -294,11 +329,11 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     glyph: "M",
     cost: 4,
     rarity: "mythic",
+    role: "mage",
     traits: ["hexer", "nightbound"],
     maxHp: 164,
     attack: 35,
     armor: 14,
-    range: 2,
     startingMana: 30,
     ability: {
       id: "soulbind",
@@ -315,11 +350,11 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     glyph: "T",
     cost: 1,
     rarity: "common",
+    role: "tank",
     traits: ["vanguard", "invoker"],
     maxHp: 176,
     attack: 17,
     armor: 20,
-    range: 2,
     startingMana: 40,
     ability: {
       id: "tidal-ward",
@@ -336,11 +371,11 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     glyph: "V",
     cost: 3,
     rarity: "rare",
+    role: "mage",
     traits: ["hexer", "invoker"],
     maxHp: 122,
     attack: 28,
     armor: 9,
-    range: 3,
     startingMana: 45,
     ability: {
       id: "hush",
@@ -357,11 +392,11 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     glyph: "P",
     cost: 2,
     rarity: "uncommon",
+    role: "shooter",
     traits: ["verdant", "duelist"],
     maxHp: 126,
     attack: 27,
     armor: 10,
-    range: 3,
     startingMana: 20,
     ability: {
       id: "briar-volley",
@@ -560,7 +595,7 @@ export function getUnitStats(unit: Pick<UnitInstance, "heroId" | "stars" | "leve
     maxHp: Math.round(hero.maxHp * starScale * levelScale),
     attack: Math.round(hero.attack * starScale * levelScale),
     armor: Math.round(hero.armor * (1 + (unit.level - 1) * 0.08)),
-    range: hero.range,
+    range: ROLE_PROFILES[hero.role].range,
     maxMana: hero.ability.manaCost,
     startingMana: Math.min(hero.ability.manaCost, hero.startingMana),
   };

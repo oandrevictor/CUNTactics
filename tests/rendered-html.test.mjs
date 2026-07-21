@@ -67,3 +67,16 @@ test("combat actions expose directional links, actor emphasis, impacts, and redu
   assert.match(styles, /@keyframes combat-impact/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
 });
+
+test("character inspector presents combat role and exact basic-attack range", async () => {
+  const [client, engine] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/game-engine.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(client, /unit-role-range-/);
+  assert.match(client, /Basic attack range/);
+  assert.match(client, /Range \{ROLE_PROFILES\[hero\.role\]\.range\}/);
+  assert.match(engine, /tank:[\s\S]*?range: 1/);
+  assert.match(engine, /shooter:[\s\S]*?range: 4/);
+});
