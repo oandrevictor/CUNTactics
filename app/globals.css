@@ -790,6 +790,309 @@ button:disabled,
   transform: translateY(-50%) rotate(45deg);
 }
 
+.sol-starfall-layer {
+  position: absolute;
+  z-index: 7;
+  inset: 5px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.sol-starfall-sky {
+  position: absolute;
+  inset: -5px;
+  background:
+    radial-gradient(circle at var(--starfall-center-left) var(--starfall-center-top), rgb(255 244 184 / 30%), transparent 12%),
+    radial-gradient(circle at var(--starfall-center-left) var(--starfall-center-top), rgb(170 140 255 / 22%), transparent 30%);
+  mix-blend-mode: screen;
+  opacity: 0;
+  animation: sol-starfall-sky var(--combat-beat, 680ms) ease-out both;
+}
+
+.sol-starfall-trail {
+  position: absolute;
+  top: var(--starfall-caster-top);
+  left: var(--starfall-caster-left);
+  width: var(--starfall-trail-length);
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgb(241 203 109 / 12%), #f1cb6d 34%, #fff4b8 82%, #aa8cff);
+  box-shadow:
+    0 0 7px #fff4b8,
+    0 0 18px rgb(241 203 109 / 78%),
+    0 0 30px rgb(170 140 255 / 45%);
+  opacity: 0;
+  transform: translateY(-50%) rotate(var(--starfall-trail-angle)) scaleX(0.04);
+  transform-origin: left center;
+  animation: sol-starfall-comet-trail var(--combat-beat, 680ms) cubic-bezier(0.18, 0.78, 0.24, 1) both;
+}
+
+.sol-starfall-trail::before,
+.sol-starfall-trail::after {
+  position: absolute;
+  top: 50%;
+  right: -5px;
+  border-radius: 50%;
+  content: "";
+  transform: translate(50%, -50%);
+}
+
+.sol-starfall-trail::before {
+  width: 22px;
+  height: 22px;
+  background: radial-gradient(circle, #fff 0 12%, #fff4b8 22%, #f1cb6d 44%, rgb(170 140 255 / 40%) 68%, transparent 72%);
+  filter: drop-shadow(0 0 7px #fff4b8);
+}
+
+.sol-starfall-trail::after {
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgb(255 244 184 / 72%);
+  box-shadow: inset 0 0 13px rgb(170 140 255 / 58%), 0 0 17px rgb(241 203 109 / 58%);
+}
+
+.sol-starfall-trail i {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #fff4b8;
+  box-shadow: 0 0 9px #fff4b8, 0 0 19px #f1cb6d;
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  animation: sol-starfall-comet var(--combat-beat, 680ms) cubic-bezier(0.28, 0.7, 0.2, 1) both;
+}
+
+.sol-starfall-sigil {
+  position: absolute;
+  top: var(--starfall-center-top);
+  left: var(--starfall-center-left);
+  width: 0;
+  height: 0;
+  color: #fff4b8;
+}
+
+.sol-starfall-sigil-core,
+.sol-starfall-sigil-ring,
+.sol-starfall-sigil-rays {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.sol-starfall-sigil-core {
+  z-index: 2;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff 0 14%, #fff4b8 32%, #f1cb6d 55%, rgb(170 140 255 / 36%) 72%, transparent 74%);
+  filter: drop-shadow(0 0 7px #fff4b8) drop-shadow(0 0 15px #aa8cff);
+  font-size: 17px;
+  opacity: 0;
+  animation: sol-starfall-core var(--combat-beat, 680ms) cubic-bezier(0.18, 0.86, 0.22, 1) both;
+}
+
+.sol-starfall-sigil-ring {
+  z-index: 1;
+  width: 64px;
+  height: 64px;
+  border: 2px solid rgb(255 244 184 / 88%);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, transparent 42%, rgb(241 203 109 / 22%) 44% 48%, transparent 50%),
+    conic-gradient(from 22.5deg, transparent 0 8%, rgb(170 140 255 / 66%) 8% 11%, transparent 11% 20%, rgb(241 203 109 / 72%) 20% 23%, transparent 23% 100%);
+  box-shadow: inset 0 0 14px rgb(170 140 255 / 55%), 0 0 20px rgb(241 203 109 / 62%);
+  opacity: 0;
+  animation: sol-starfall-sigil var(--combat-beat, 680ms) cubic-bezier(0.16, 0.84, 0.28, 1) both;
+}
+
+.sol-starfall-sigil-rays {
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  background: repeating-conic-gradient(from 0deg, rgb(255 244 184 / 72%) 0 2deg, transparent 2deg 45deg);
+  opacity: 0;
+  -webkit-mask: radial-gradient(circle, transparent 0 31%, #000 32% 54%, transparent 55%);
+  mask: radial-gradient(circle, transparent 0 31%, #000 32% 54%, transparent 55%);
+  animation: sol-starfall-rays var(--combat-beat, 680ms) ease-out both;
+}
+
+.sol-starfall-hit {
+  position: absolute;
+  top: var(--starfall-top);
+  left: var(--starfall-left);
+  width: 0;
+  height: 0;
+}
+
+.sol-starfall-hit::before {
+  position: absolute;
+  bottom: -5px;
+  left: -2px;
+  width: 4px;
+  height: 66px;
+  border-radius: 999px;
+  background: linear-gradient(to bottom, transparent, #aa8cff 28%, #fff4b8 72%, #fff);
+  box-shadow: 0 0 8px #fff4b8, 0 0 18px #f1cb6d, 0 0 28px rgb(170 140 255 / 70%);
+  content: "";
+  opacity: 0;
+  transform: translateY(-38px) scaleY(0.18);
+  transform-origin: bottom;
+  animation: sol-starfall-impact var(--combat-beat, 680ms) cubic-bezier(0.2, 0.82, 0.22, 1) var(--starfall-delay) both;
+}
+
+.sol-starfall-hit::after {
+  position: absolute;
+  top: -19px;
+  left: -28px;
+  width: 56px;
+  height: 38px;
+  border: 2px solid rgb(255 244 184 / 88%);
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgb(255 255 255 / 84%) 0 5%, rgb(241 203 109 / 46%) 12%, rgb(170 140 255 / 20%) 38%, transparent 68%);
+  box-shadow: 0 0 14px rgb(241 203 109 / 76%), inset 0 0 12px rgb(170 140 255 / 56%);
+  content: "";
+  opacity: 0;
+  transform: scale(0.25);
+  animation: sol-starfall-ground-burst var(--combat-beat, 680ms) ease-out var(--starfall-delay) both;
+}
+
+.sol-starfall-hit-star {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 50%;
+  color: #fff4b8;
+  filter: drop-shadow(0 0 7px #fff) drop-shadow(0 0 13px #aa8cff);
+  font-size: 18px;
+  line-height: 1;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.2) rotate(-22deg);
+  animation: sol-starfall-hit-star var(--combat-beat, 680ms) ease-out var(--starfall-delay) both;
+}
+
+.unit-event-actor-sol {
+  --combat-accent: #f1cb6d;
+  animation: sol-starfall-caster var(--combat-beat, 680ms) cubic-bezier(0.2, 0.85, 0.25, 1) both;
+}
+
+.unit-event-actor-sol::after {
+  position: absolute;
+  z-index: -1;
+  inset: -15px;
+  border-radius: 50%;
+  background: repeating-conic-gradient(from 0deg, rgb(255 244 184 / 72%) 0 3deg, transparent 3deg 45deg);
+  box-shadow: 0 0 24px rgb(241 203 109 / 68%);
+  content: "";
+  opacity: 0;
+  -webkit-mask: radial-gradient(circle, transparent 0 42%, #000 44% 49%, transparent 51%);
+  mask: radial-gradient(circle, transparent 0 42%, #000 44% 49%, transparent 51%);
+  animation: sol-starfall-caster-rays var(--combat-beat, 680ms) ease-out both;
+}
+
+.unit-impact-starfall {
+  animation: sol-starfall-target var(--combat-beat, 680ms) ease-out both;
+}
+
+.floating-starfall {
+  border: 1px solid rgb(255 244 184 / 76%);
+  background: rgb(35 18 56 / 90%);
+  box-shadow: 0 0 14px rgb(241 203 109 / 60%), 0 0 24px rgb(170 140 255 / 34%);
+  color: #fff4b8;
+}
+
+@keyframes sol-starfall-sky {
+  0%, 18% { opacity: 0; }
+  48% { opacity: 1; }
+  78% { opacity: 0.48; }
+  100% { opacity: 0; }
+}
+
+@keyframes sol-starfall-comet-trail {
+  0%, 14% { opacity: 0; transform: translateY(-50%) rotate(var(--starfall-trail-angle)) scaleX(0.04); }
+  22% { opacity: 1; }
+  58% { opacity: 1; transform: translateY(-50%) rotate(var(--starfall-trail-angle)) scaleX(1); }
+  78% { opacity: 0.7; transform: translateY(-50%) rotate(var(--starfall-trail-angle)) scaleX(1); }
+  100% { opacity: 0; transform: translateY(-50%) rotate(var(--starfall-trail-angle)) scaleX(1); }
+}
+
+@keyframes sol-starfall-comet {
+  0%, 18% { left: 0; opacity: 0; transform: translate(-50%, -50%) scale(0.55); }
+  28% { opacity: 1; }
+  58% { left: 100%; opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
+  74%, 100% { left: 100%; opacity: 0; transform: translate(-50%, -50%) scale(1.7); }
+}
+
+@keyframes sol-starfall-core {
+  0%, 42% { opacity: 0; transform: translate(-50%, -50%) scale(0.18) rotate(-28deg); }
+  58% { opacity: 1; transform: translate(-50%, -50%) scale(1.28) rotate(8deg); }
+  78% { opacity: 0.9; transform: translate(-50%, -50%) scale(0.92) rotate(20deg); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.2) rotate(32deg); }
+}
+
+@keyframes sol-starfall-sigil {
+  0%, 40% { opacity: 0; transform: translate(-50%, -50%) scale(0.24) rotate(-34deg); }
+  58% { opacity: 1; transform: translate(-50%, -50%) scale(1.05) rotate(0); }
+  82% { opacity: 0.78; transform: translate(-50%, -50%) scale(1.28) rotate(18deg); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.55) rotate(28deg); }
+}
+
+@keyframes sol-starfall-rays {
+  0%, 42% { opacity: 0; transform: translate(-50%, -50%) scale(0.25) rotate(-18deg); }
+  62% { opacity: 0.9; transform: translate(-50%, -50%) scale(1.1) rotate(6deg); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.65) rotate(28deg); }
+}
+
+@keyframes sol-starfall-impact {
+  0%, 37% { opacity: 0; transform: translateY(-38px) scaleY(0.18); }
+  48% { opacity: 1; transform: translateY(-8px) scaleY(1); }
+  65% { opacity: 0.94; transform: translateY(0) scaleY(1); }
+  100% { opacity: 0; transform: translateY(12px) scaleY(0.35); }
+}
+
+@keyframes sol-starfall-ground-burst {
+  0%, 44% { opacity: 0; transform: scale(0.2); }
+  56% { opacity: 1; transform: scale(0.72); }
+  78% { opacity: 0.72; transform: scale(1.18); }
+  100% { opacity: 0; transform: scale(1.58); }
+}
+
+@keyframes sol-starfall-hit-star {
+  0%, 44% { opacity: 0; transform: translate(-50%, -50%) scale(0.2) rotate(-22deg); }
+  58% { opacity: 1; transform: translate(-50%, -50%) scale(1.42) rotate(8deg); }
+  82% { opacity: 0.82; transform: translate(-50%, -50%) scale(0.9) rotate(24deg); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.25) rotate(38deg); }
+}
+
+@keyframes sol-starfall-caster {
+  0% { filter: brightness(1); transform: scale(1); }
+  20% { filter: brightness(1.55) saturate(1.24); transform: scale(1.18); }
+  42% { filter: brightness(1.32) saturate(1.2); transform: scale(1.1); }
+  74% { filter: brightness(1.12); transform: scale(1.04); }
+  100% { filter: brightness(1.04); transform: scale(1.02); }
+}
+
+@keyframes sol-starfall-caster-rays {
+  0% { opacity: 0; transform: rotate(-22deg) scale(0.45); }
+  22% { opacity: 0.92; transform: rotate(0) scale(1); }
+  52% { opacity: 0.48; transform: rotate(24deg) scale(1.26); }
+  100% { opacity: 0; transform: rotate(48deg) scale(1.5); }
+}
+
+@keyframes sol-starfall-target {
+  0%, 42%, 100% { filter: brightness(1); transform: translateX(0) scale(1); }
+  51% { filter: brightness(2.05) saturate(0.5); box-shadow: 0 0 0 6px rgb(255 244 184 / 52%), 0 0 28px rgb(170 140 255 / 58%); transform: translateY(-4px) scale(1.12); }
+  62% { filter: brightness(1.45) saturate(1.3); transform: translateX(4px) scale(0.97); }
+  72% { transform: translateX(-3px) scale(1.03); }
+  84% { transform: translateX(1px) scale(1); }
+}
+
 @keyframes combat-attacker {
   0% { filter: brightness(1); transform: scale(1); }
   24% { filter: brightness(1.38) saturate(1.2); transform: scale(1.16); }
@@ -2963,7 +3266,17 @@ button:disabled,
   }
 
   .combat-link::before,
-  .unit-event-actor::before {
+  .unit-event-actor::before,
+  .unit-event-actor-sol::after,
+  .sol-starfall-sky,
+  .sol-starfall-trail,
+  .sol-starfall-trail i,
+  .sol-starfall-sigil-core,
+  .sol-starfall-sigil-ring,
+  .sol-starfall-sigil-rays,
+  .sol-starfall-hit::before,
+  .sol-starfall-hit::after,
+  .sol-starfall-hit-star {
     animation: none !important;
   }
 
@@ -2985,6 +3298,65 @@ button:disabled,
 
   .unit-impact-damage {
     box-shadow: 0 0 0 4px rgb(229 104 121 / 52%), 0 0 20px rgb(229 104 121 / 34%);
+  }
+
+  .unit-event-actor-sol {
+    box-shadow: 0 0 0 4px rgb(241 203 109 / 62%), 0 0 24px rgb(255 244 184 / 44%);
+    filter: brightness(1.18) saturate(1.12);
+  }
+
+  .unit-event-actor-sol::after {
+    opacity: 0.72;
+    transform: rotate(18deg) scale(1.08);
+  }
+
+  .unit-impact-starfall {
+    box-shadow: 0 0 0 4px rgb(255 244 184 / 58%), 0 0 24px rgb(170 140 255 / 52%);
+    filter: brightness(1.24) saturate(1.1);
+  }
+
+  .sol-starfall-sky {
+    opacity: 0.34;
+  }
+
+  .sol-starfall-trail {
+    opacity: 0.76;
+    transform: translateY(-50%) rotate(var(--starfall-trail-angle)) scaleX(1);
+  }
+
+  .sol-starfall-trail i {
+    left: 100%;
+    opacity: 0.9;
+  }
+
+  .sol-starfall-sigil-core {
+    opacity: 0.92;
+    transform: translate(-50%, -50%) scale(1);
+  }
+
+  .sol-starfall-sigil-ring {
+    opacity: 0.86;
+    transform: translate(-50%, -50%) scale(1.08) rotate(10deg);
+  }
+
+  .sol-starfall-sigil-rays {
+    opacity: 0.62;
+    transform: translate(-50%, -50%) scale(1.15) rotate(18deg);
+  }
+
+  .sol-starfall-hit::before {
+    opacity: 0.78;
+    transform: translateY(0) scaleY(1);
+  }
+
+  .sol-starfall-hit::after {
+    opacity: 0.72;
+    transform: scale(1);
+  }
+
+  .sol-starfall-hit-star {
+    opacity: 0.94;
+    transform: translate(-50%, -50%) scale(1);
   }
 
   .unit-impact-heal {

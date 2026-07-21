@@ -135,6 +135,43 @@ function combatLinkStyle(actorPosition: number, targetPosition: number, boardHei
   } as CSSProperties;
 }
 
+function starfallImpactStyle(position: number, index: number, speed: number): CSSProperties {
+  const rowCount = BOARD_SIZE / BOARD_COLUMNS;
+  const column = position % BOARD_COLUMNS;
+  const row = Math.floor(position / BOARD_COLUMNS);
+  return {
+    "--starfall-left": `${((column + 0.5) / BOARD_COLUMNS) * 100}%`,
+    "--starfall-top": `${((row + 0.5) / rowCount) * 100}%`,
+    "--starfall-delay": `${Math.round((index * 28) / speed)}ms`,
+  } as CSSProperties;
+}
+
+function starfallClusterStyle(
+  actorPosition: number,
+  targetPositions: readonly number[],
+  boardHeightRatio: number,
+): CSSProperties {
+  const rowCount = BOARD_SIZE / BOARD_COLUMNS;
+  const startX = (((actorPosition % BOARD_COLUMNS) + 0.5) / BOARD_COLUMNS) * 100;
+  const startY = ((Math.floor(actorPosition / BOARD_COLUMNS) + 0.5) / rowCount) * 100;
+  const points = targetPositions.map((position) => ({
+    x: (((position % BOARD_COLUMNS) + 0.5) / BOARD_COLUMNS) * 100,
+    y: ((Math.floor(position / BOARD_COLUMNS) + 0.5) / rowCount) * 100,
+  }));
+  const endX = points.reduce((total, point) => total + point.x, 0) / points.length;
+  const endY = points.reduce((total, point) => total + point.y, 0) / points.length;
+  const deltaX = endX - startX;
+  const deltaY = (endY - startY) * boardHeightRatio;
+  return {
+    "--starfall-caster-left": `${startX}%`,
+    "--starfall-caster-top": `${startY}%`,
+    "--starfall-center-left": `${endX}%`,
+    "--starfall-center-top": `${endY}%`,
+    "--starfall-trail-length": `${Math.hypot(deltaX, deltaY)}%`,
+    "--starfall-trail-angle": `${Math.atan2(deltaY, deltaX) * 180 / Math.PI}deg`,
+  } as CSSProperties;
+}
+
 function persistentDisplay(unit: UnitInstance): DisplayUnit {
   const stats = getUnitStats(unit);
   return {
@@ -222,6 +259,10 @@ function UnitToken({
   const isCreatureToken = unit.heroId === "boitata";
   const isTarget = currentEvent?.targetIds?.includes(unit.id) ?? false;
   const effectKind = combatEffectKind(currentEvent);
+  const eventActor = currentEvent?.actorId
+    ? currentEvent.snapshot.find((candidate) => candidate.id === currentEvent.actorId) ?? null
+    : null;
+  const isSolStarfall = currentEvent?.type === "ability" && eventActor?.heroId === "sol";
   const isActor = !!effectKind && currentEvent?.actorId === unit.id;
   const isHealingAbility = effectKind === "heal";
   const isDamaged = isTarget && (effectKind === "attack" || effectKind === "ability");
@@ -246,7 +287,7 @@ function UnitToken({
 
   return (
     <div
-      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${isActor ? `unit-event-actor unit-event-actor-${effectKind}` : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""} ${loadoutDropStatus ? `unit-loadout-drop-${loadoutDropStatus}` : ""}`}
+      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${isActor ? `unit-event-actor unit-event-actor-${effectKind}` : ""} ${isActor && isSolStarfall ? "unit-event-actor-sol" : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isDamaged && isSolStarfall ? "unit-impact-starfall" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""} ${loadoutDropStatus ? `unit-loadout-drop-${loadoutDropStatus}` : ""}`}
       draggable={draggable}
       onDragStart={onDragStart}
       data-testid={`unit-${unit.id}`}
@@ -263,7 +304,7 @@ function UnitToken({
         ))}
       </span>
       <span className="unit-name">{hero.name}</span>
-      {isActor ? <span className="combat-role" aria-hidden="true">{effectKind === "shield" ? "WALL" : currentEvent?.type === "ability" ? "CAST" : "ATTACK"}</span> : null}
+      {isActor ? <span className="combat-role" aria-hidden="true">{isSolStarfall ? "STARFALL" : effectKind === "shield" ? "WALL" : currentEvent?.type === "ability" ? "CAST" : "ATTACK"}</span> : null}
       <span className="unit-bars">
         <span
           className="meter meter-life"
@@ -279,7 +320,7 @@ function UnitToken({
         ><span className="meter-fill" /></span>
       </span>
       {unit.stunned > 0 ? <span className="status-mark" aria-label="Silenced">×</span> : null}
-      {feedback ? <span className={`floating-text ${isHealingAbility ? "floating-heal" : isShielded ? "floating-shield" : "floating-damage"}`}>{feedback}</span> : null}
+      {feedback ? <span className={`floating-text ${isHealingAbility ? "floating-heal" : isShielded ? "floating-shield" : "floating-damage"} ${isDamaged && isSolStarfall ? "floating-starfall" : ""}`}>{feedback}</span> : null}
       {blockFeedback ? <span className="floating-text floating-block">{blockFeedback}</span> : null}
     </div>
   );
@@ -494,6 +535,20 @@ export function GameClient() {
         return [{ targetId, style: combatLinkStyle(currentActor.position, target.position, boardHeightRatio) }];
       })
     : [];
+  const isSolStarfall = currentEvent?.type === "ability" && currentActor?.heroId === "sol";
+  const solStarfallTargets = isSolStarfall && currentEvent?.targetIds
+    ? currentEvent.targetIds.flatMap((targetId) => {
+        const target = currentEvent.snapshot.find((unit) => unit.id === targetId);
+        return target ? [target] : [];
+      })
+    : [];
+  const solStarfallStyle = isSolStarfall && currentActor && solStarfallTargets.length
+    ? starfallClusterStyle(
+        currentActor.position,
+        solStarfallTargets.map((target) => target.position),
+        boardHeightRatio,
+      )
+    : undefined;
   const combatBeatStyle = { "--combat-beat": `${Math.round(680 / speed)}ms` } as CSSProperties;
   const combatStatistics = useMemo(
     () => game.combatReport ? getCombatStatistics(game.combatReport) : null,
@@ -767,7 +822,7 @@ export function GameClient() {
           <div className="board-wrap">
             <div className="territory-label territory-enemy">Enemy territory</div>
             <div className={`board-grid ${boitata3DReady ? "boitata-3d-ready" : ""}`} role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
-              {currentEffectKind && combatLinks.length ? (
+              {currentEffectKind && combatLinks.length && !isSolStarfall ? (
                 <div className="combat-links" aria-hidden="true" data-testid="combat-links">
                   {combatLinks.map((link) => (
                     <span
@@ -775,6 +830,27 @@ export function GameClient() {
                       key={`${currentEvent?.id}-${link.targetId}`}
                       style={link.style}
                     />
+                  ))}
+                </div>
+              ) : null}
+              {isSolStarfall && solStarfallTargets.length ? (
+                <div className="sol-starfall-layer" aria-hidden="true" data-testid="sol-starfall-layer" key={currentEvent?.id} style={solStarfallStyle}>
+                  <span className="sol-starfall-sky" />
+                  <span className="sol-starfall-trail"><i /></span>
+                  <span className="sol-starfall-sigil">
+                    <span className="sol-starfall-sigil-core">✦</span>
+                    <span className="sol-starfall-sigil-ring" />
+                    <span className="sol-starfall-sigil-rays" />
+                  </span>
+                  {solStarfallTargets.map((target, index) => (
+                    <span
+                      className="sol-starfall-hit"
+                      data-testid={`sol-starfall-target-${target.id}`}
+                      key={target.id}
+                      style={starfallImpactStyle(target.position, index, speed)}
+                    >
+                      <span className="sol-starfall-hit-star">✦</span>
+                    </span>
                   ))}
                 </div>
               ) : null}

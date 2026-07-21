@@ -88,6 +88,31 @@ test("combat actions expose directional links, actor emphasis, impacts, and redu
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
+test("Sol's Starfall traces the cluster and marks every damaged character", async () => {
+  const [client, styles] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(client, /currentEvent\?\.type === "ability" && currentActor\?\.heroId === "sol"/);
+  assert.match(client, /combatLinks\.length && !isSolStarfall/);
+  assert.match(client, /data-testid="sol-starfall-layer"/);
+  assert.match(client, /data-testid=\{`sol-starfall-target-\$\{target\.id\}`\}/);
+  assert.match(client, /"STARFALL"/);
+  assert.match(styles, /\.sol-starfall-layer\s*\{/);
+  assert.match(styles, /\.sol-starfall-trail\s*\{/);
+  assert.match(styles, /\.sol-starfall-sigil\s*\{/);
+  assert.match(styles, /\.sol-starfall-hit\s*\{/);
+  assert.match(styles, /\.unit-event-actor-sol\s*\{/);
+  assert.match(styles, /\.unit-impact-starfall\s*\{/);
+  assert.match(styles, /@keyframes sol-starfall-comet/);
+  assert.match(styles, /@keyframes sol-starfall-impact/);
+  assert.match(
+    styles,
+    /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.sol-starfall-trail[\s\S]*?animation: none !important/,
+  );
+});
+
 test("character inspector presents combat role and exact basic-attack range", async () => {
   const [client, engine] = await Promise.all([
     readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
