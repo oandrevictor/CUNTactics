@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { CSSProperties, DragEvent } from "react";
+import type { CSSProperties, DragEvent, ReactNode } from "react";
 import {
   BENCH_SIZE,
   BOARD_COLUMNS,
@@ -63,11 +63,12 @@ type DisplayUnit = {
   armor: number;
   range: number;
   shield: number;
+  fireWallShield: number;
   stunned: number;
   alive: boolean;
 };
 
-type CombatEffectKind = "attack" | "ability" | "heal";
+type CombatEffectKind = "attack" | "ability" | "heal" | "shield";
 
 function clampPercent(value: number, maximum: number): number {
   if (!Number.isFinite(value) || !Number.isFinite(maximum) || maximum <= 0) return 0;
@@ -82,6 +83,7 @@ function combatEffectKind(event: CombatEvent | null): CombatEffectKind | null {
   if (event?.type === "attack") return "attack";
   if (event?.type !== "ability") return null;
   const actor = event.actorId ? event.snapshot.find((unit) => unit.id === event.actorId) : null;
+  if (actor?.heroId === "boitata") return "shield";
   return actor?.heroId === "tide" || actor?.heroId === "bramble" ? "heal" : "ability";
 }
 
@@ -116,6 +118,7 @@ function persistentDisplay(unit: UnitInstance): DisplayUnit {
     armor: stats.armor,
     range: stats.range,
     shield: 0,
+    fireWallShield: 0,
     stunned: 0,
     alive: true,
   };
@@ -140,11 +143,23 @@ function starsLabel(stars: number): string {
   return `${"★".repeat(stars)}${"☆".repeat(Math.max(0, 3 - stars))}`;
 }
 
+function HeroArt({ heroId, className, children }: { heroId: HeroId; className: string; children?: ReactNode }) {
+  const hero = HEROES[heroId];
+  const style = hero.portrait ? { "--hero-art": `url("${hero.portrait}")` } as CSSProperties : undefined;
+  return (
+    <span className={`${className} ${hero.portrait ? "hero-art-image" : ""}`} style={style} aria-hidden="true">
+      {hero.portrait ? null : hero.glyph}
+      {children}
+    </span>
+  );
+}
+
 function UnitToken({
   unit,
   selected,
   highlighted,
   currentEvent,
+  previousEvent,
   draggable,
   onDragStart,
 }: {
@@ -152,6 +167,7 @@ function UnitToken({
   selected: boolean;
   highlighted: boolean;
   currentEvent: CombatEvent | null;
+  previousEvent: CombatEvent | null;
   draggable: boolean;
   onDragStart?: (event: DragEvent<HTMLDivElement>) => void;
 }) {
@@ -162,26 +178,38 @@ function UnitToken({
   const isHealingAbility = effectKind === "heal";
   const isDamaged = isTarget && (effectKind === "attack" || effectKind === "ability");
   const isHealed = isTarget && effectKind === "heal";
+  const isShielded = isTarget && effectKind === "shield";
+  const previousUnit = previousEvent?.snapshot.find((candidate) => candidate.id === unit.id) ?? null;
+  const shieldLost = Math.max(0, (previousUnit?.shield ?? 0) - unit.shield);
+  const fireWallShieldLost = Math.max(0, (previousUnit?.fireWallShield ?? 0) - unit.fireWallShield);
+  const healthLost = Math.max(0, (previousUnit?.hp ?? unit.hp) - unit.hp);
+  const fireWallBroke = !!previousUnit && previousUnit.fireWallShield > 0 && unit.fireWallShield === 0;
+  const hasFireWall = unit.heroId === "boitata" && (unit.fireWallShield > 0 || fireWallBroke || isShielded);
   const targetAmount = currentEvent?.amounts?.[unit.id] ?? currentEvent?.amount;
-  const feedback = isTarget && targetAmount
-    ? currentEvent?.type === "attack" || (currentEvent?.type === "ability" && !isHealingAbility)
-      ? `−${targetAmount}`
-      : `+${targetAmount}`
-    : null;
+  const visibleDamage = previousUnit ? healthLost : targetAmount ?? 0;
+  const feedback = isShielded && targetAmount
+    ? `+${targetAmount} SHIELD`
+    : isHealed && targetAmount
+      ? `+${targetAmount}`
+      : isDamaged && visibleDamage > 0
+        ? `−${visibleDamage}`
+        : null;
+  const blockFeedback = shieldLost > 0 ? `BLOCK ${shieldLost}` : null;
 
   return (
     <div
-      className={`unit-token ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${isActor ? `unit-event-actor unit-event-actor-${effectKind}` : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isHealed ? "unit-impact-heal" : ""}`}
+      className={`unit-token ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${isActor ? `unit-event-actor unit-event-actor-${effectKind}` : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""}`}
       draggable={draggable}
       onDragStart={onDragStart}
       data-testid={`unit-${unit.id}`}
       data-unit-id={unit.id}
     >
       <span className="unit-stars" data-testid={`unit-stars-${unit.id}`} aria-label={`${unit.stars} star`}>{starsLabel(unit.stars)}</span>
-      <span className="unit-avatar" aria-hidden="true">{hero.glyph}</span>
+      <HeroArt heroId={unit.heroId} className="unit-avatar" />
+      {hasFireWall ? <span className={`fire-wall ${isShielded ? "fire-wall-cast" : ""} ${fireWallShieldLost > 0 ? "fire-wall-absorb" : ""} ${fireWallBroke ? "fire-wall-break" : ""}`} aria-hidden="true" /> : null}
       <span className="unit-level">L{unit.level}</span>
       <span className="unit-name">{hero.name}</span>
-      {isActor ? <span className="combat-role" aria-hidden="true">{currentEvent?.type === "ability" ? "CAST" : "ATTACK"}</span> : null}
+      {isActor ? <span className="combat-role" aria-hidden="true">{effectKind === "shield" ? "WALL" : currentEvent?.type === "ability" ? "CAST" : "ATTACK"}</span> : null}
       <span className="unit-bars">
         <span
           className="meter meter-life"
@@ -197,7 +225,8 @@ function UnitToken({
         ><span className="meter-fill" /></span>
       </span>
       {unit.stunned > 0 ? <span className="status-mark" aria-label="Silenced">×</span> : null}
-      {feedback ? <span className={`floating-text ${isHealingAbility ? "floating-heal" : "floating-damage"}`}>{feedback}</span> : null}
+      {feedback ? <span className={`floating-text ${isHealingAbility ? "floating-heal" : isShielded ? "floating-shield" : "floating-damage"}`}>{feedback}</span> : null}
+      {blockFeedback ? <span className="floating-text floating-block">{blockFeedback}</span> : null}
     </div>
   );
 }
@@ -245,6 +274,7 @@ export function GameClient() {
 
   const combatEvents = game.combatReport?.events ?? [];
   const currentEvent = game.phase === "combat" ? combatEvents[Math.min(combatIndex, Math.max(0, combatEvents.length - 1))] ?? null : null;
+  const previousEvent = game.phase === "combat" && combatIndex > 0 ? combatEvents[combatIndex - 1] ?? null : null;
   const atCombatEnd = game.phase === "combat" && combatEvents.length > 0 && combatIndex >= combatEvents.length - 1;
   const currentEffectKind = combatEffectKind(currentEvent);
 
@@ -494,7 +524,7 @@ export function GameClient() {
                 const playerCell = row >= PLAYER_START_ROW;
                 const valid = game.phase === "planning" && !!selectedAlly && playerCell;
                 const highlighted = !!unit && !!highlightedTrait && HEROES[unit.heroId].traits.includes(highlightedTrait);
-                const aria = `Row ${row + 1}, column ${column + 1}, ${playerCell ? "player" : "enemy"} territory${unit ? `, ${HEROES[unit.heroId].name}, ${ROLE_PROFILES[HEROES[unit.heroId].role].label}, range ${unit.range}, level ${unit.level}, ${Math.round(clampPercent(unit.hp, unit.maxHp))} percent health` : ", empty"}`;
+                const aria = `Row ${row + 1}, column ${column + 1}, ${playerCell ? "player" : "enemy"} territory${unit ? `, ${HEROES[unit.heroId].name}, ${ROLE_PROFILES[HEROES[unit.heroId].role].label}, range ${unit.range}, level ${unit.level}, ${Math.round(clampPercent(unit.hp, unit.maxHp))} percent health${unit.shield > 0 ? `, ${Math.round(unit.shield)} shield` : ""}` : ", empty"}`;
                 return (
                   <button
                     className={`board-cell ${playerCell ? "board-cell-player" : "board-cell-enemy"} ${valid ? "board-cell-valid" : ""} ${unit?.id === selectedId ? "board-cell-selected" : ""}`}
@@ -519,6 +549,7 @@ export function GameClient() {
                         selected={unit.id === selectedId}
                         highlighted={highlighted}
                         currentEvent={currentEvent}
+                        previousEvent={previousEvent}
                         draggable={game.phase === "planning" && unit.side === "player"}
                         onDragStart={(event) => {
                           event.dataTransfer.setData("text/unit-id", unit.id);
@@ -546,7 +577,7 @@ export function GameClient() {
           {selectedDisplay && selectedHero ? (
             <section className="selected-panel" data-testid="unit-inspector">
               <div className="selected-head">
-                <span className={`enemy-portrait ${selectedDisplay.side === "player" ? "portrait-ally" : ""}`}>{selectedHero.glyph}</span>
+                <HeroArt heroId={selectedHero.id} className={`enemy-portrait ${selectedDisplay.side === "player" ? "portrait-ally" : ""}`} />
                 <div><span className="eyebrow">{selectedDisplay.side === "player" ? "Your champion" : "Enemy champion"}</span><h2 className="panel-title">{selectedHero.name}</h2><p>{selectedHero.title}</p></div>
               </div>
               <div className="rank-line">
@@ -562,6 +593,16 @@ export function GameClient() {
                 <span className="stat-cell"><small>Mana</small><strong>{Math.round(selectedDisplay.mana)}/{selectedDisplay.maxMana}</strong></span>
                 <span className="stat-cell"><small>Damage</small><strong>{selectedDisplay.attack}</strong></span>
                 <span className="stat-cell"><small>Armor</small><strong>{selectedDisplay.armor}</strong></span>
+                {selectedHero.id === "boitata" ? (
+                  <>
+                    <span className="stat-cell stat-cell-shield" data-testid={`unit-fire-wall-shield-${selectedDisplay.id}`}><small>Wall of Fire</small><strong>{Math.round(selectedDisplay.fireWallShield)}</strong></span>
+                    {selectedDisplay.shield > selectedDisplay.fireWallShield ? (
+                      <span className="stat-cell stat-cell-shield"><small>Other shields</small><strong>{Math.round(selectedDisplay.shield - selectedDisplay.fireWallShield)}</strong></span>
+                    ) : null}
+                  </>
+                ) : selectedDisplay.shield > 0 ? (
+                  <span className="stat-cell stat-cell-shield" data-testid={`unit-shield-${selectedDisplay.id}`}><small>Shield</small><strong>{Math.round(selectedDisplay.shield)}</strong></span>
+                ) : null}
               </div>
               {selectedRole ? (
                 <div className={`role-range-card role-${selectedRole.id}`} data-testid={`unit-role-range-${selectedDisplay.id}`}>
@@ -608,7 +649,7 @@ export function GameClient() {
                   const stats = getUnitStats(unit);
                   return (
                     <button className="enemy-card" type="button" key={unit.id} onClick={() => setSelectedId(unit.id)}>
-                      <span className="enemy-portrait">{hero.glyph}</span>
+                      <HeroArt heroId={hero.id} className="enemy-portrait" />
                       <span className="enemy-copy"><strong>{hero.name}</strong><small>{ROLE_PROFILES[hero.role].label} · Range {stats.range} · L{unit.level} · {starsLabel(unit.stars)}</small></span>
                       <span className="enemy-threat">HP {stats.maxHp}</span>
                     </button>
@@ -644,7 +685,7 @@ export function GameClient() {
                     if (unitId) handleMove(unitId, "bench", index);
                   }}
                 >
-                  {display ? <UnitToken unit={display} selected={display.id === selectedId} highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)} currentEvent={null} draggable onDragStart={(event) => { event.dataTransfer.setData("text/unit-id", display.id); setSelectedId(display.id); }} /> : <span className="empty-copy">+</span>}
+                  {display ? <UnitToken unit={display} selected={display.id === selectedId} highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)} currentEvent={null} previousEvent={null} draggable onDragStart={(event) => { event.dataTransfer.setData("text/unit-id", display.id); setSelectedId(display.id); }} /> : <span className="empty-copy">+</span>}
                 </button>
               );
             })}
@@ -664,10 +705,11 @@ export function GameClient() {
                   type="button"
                   key={offer.id}
                   data-testid={`buy-offer-${offer.id}`}
+                  aria-label={`Recruit ${hero.name}, ${hero.rarity} ${ROLE_PROFILES[hero.role].label}, ${hero.traits.map((trait) => TRAITS[trait].name).join(" and ")}, range ${ROLE_PROFILES[hero.role].range}, copies ${copies} of 3, ${offer.cost} gold`}
                   disabled={game.phase !== "planning" || game.gold < offer.cost}
                   onClick={() => handleBuy(offer.id)}
                 >
-                  <span className={`shop-art rarity-${hero.rarity}`}><span>{hero.glyph}</span><small className="shop-rarity">{hero.rarity}</small></span>
+                  <HeroArt heroId={hero.id} className={`shop-art rarity-${hero.rarity}`}><small className="shop-rarity">{hero.rarity}</small></HeroArt>
                   <span className="shop-meta"><strong className="shop-name">{hero.name}</strong><span className="shop-traits">{hero.traits.map((trait) => TRAITS[trait].name).join(" · ")}</span><small>{ROLE_PROFILES[hero.role].label} · Range {ROLE_PROFILES[hero.role].range} · Copies {copies}/3</small></span>
                   <span className="price">{offer.cost} gold</span>
                 </button>

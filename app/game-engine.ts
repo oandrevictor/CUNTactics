@@ -18,6 +18,7 @@ export type Outcome = "victory" | "defeat";
 export type HeroRole = "tank" | "carry" | "mage" | "shooter";
 export type HeroId =
   | "bramble"
+  | "boitata"
   | "sol"
   | "nix"
   | "aster"
@@ -47,6 +48,7 @@ export interface HeroDefinition {
   name: string;
   title: string;
   glyph: string;
+  portrait?: string;
   cost: number;
   rarity: "common" | "uncommon" | "rare" | "mythic";
   role: HeroRole;
@@ -105,6 +107,7 @@ export interface CombatUnit {
   armor: number;
   range: number;
   shield: number;
+  fireWallShield: number;
   stunned: number;
   alive: boolean;
 }
@@ -257,6 +260,28 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Gains a shield and restores life to the most wounded adjacent ally.",
       manaCost: 80,
       targetRule: "Self and lowest-life adjacent ally",
+    },
+  },
+  boitata: {
+    id: "boitata",
+    name: "Boitatá",
+    title: "The Embercoil",
+    glyph: "O",
+    portrait: "/characters/boitata.png",
+    cost: 3,
+    rarity: "rare",
+    role: "tank",
+    traits: ["vanguard", "verdant"],
+    maxHp: 216,
+    attack: 20,
+    armor: 28,
+    startingMana: 35,
+    ability: {
+      id: "wall-of-fire",
+      name: "Wall of Fire",
+      description: "Coils into a wall of fire, gaining a shield equal to 20 + 7 per level + 18% max Life + 105% Armor.",
+      manaCost: 90,
+      targetRule: "Self",
     },
   },
   sol: {
@@ -554,7 +579,7 @@ function enemyCountForRound(round: number): number {
 
 function generateEnemyMutable(state: GameState): UnitInstance[] {
   const count = enemyCountForRound(state.round);
-  const preferred = ["tide", "nix", "vesper", "aster", "morrow", "piper", "sol", "bramble"] as HeroId[];
+  const preferred = ["tide", "boitata", "nix", "vesper", "aster", "morrow", "piper", "sol", "bramble"] as HeroId[];
   const openPositions = [2, 5, 10, 13, 17, 20, 22, 7];
   return Array.from({ length: count }, (_, index) => {
     const variance = randomStep(state.seed);
@@ -599,6 +624,10 @@ export function getUnitStats(unit: Pick<UnitInstance, "heroId" | "stars" | "leve
     maxMana: hero.ability.manaCost,
     startingMana: Math.min(hero.ability.manaCost, hero.startingMana),
   };
+}
+
+export function calculateWallOfFireShield(unit: Pick<CombatUnit, "level" | "maxHp" | "armor">): number {
+  return Math.max(0, Math.round(20 + unit.level * 7 + unit.maxHp * 0.18 + unit.armor * 1.05));
 }
 
 function traitTier(id: TraitId, count: number): number {
@@ -894,6 +923,7 @@ function makeCombatUnits(state: GameState): CombatUnit[] {
       armor: stats.armor,
       range: stats.range,
       shield: 0,
+      fireWallShield: 0,
       stunned: 0,
       alive: true,
     } satisfies CombatUnit;
@@ -916,6 +946,7 @@ function damageUnit(target: CombatUnit, rawDamage: number, ignoreArmor = false):
   const mitigated = ignoreArmor ? rawDamage : Math.max(1, Math.round((rawDamage * 100) / (100 + target.armor)));
   const shieldDamage = Math.min(target.shield, mitigated);
   target.shield -= shieldDamage;
+  target.fireWallShield = Math.max(0, target.fireWallShield - shieldDamage);
   const healthDamage = Math.min(target.hp, mitigated - shieldDamage);
   target.hp -= healthDamage;
   if (target.hp <= 0) {
@@ -1008,6 +1039,11 @@ function castAbility(actor: CombatUnit, units: CombatUnit[], events: CombatEvent
     if (ally) {
       addTarget(ally, healUnit(ally, 28 + actor.level * 6));
     }
+  } else if (actor.heroId === "boitata") {
+    const gainedShield = calculateWallOfFireShield(actor);
+    actor.shield += gainedShield;
+    actor.fireWallShield += gainedShield;
+    addTarget(actor, gainedShield);
   } else if (actor.heroId === "sol") {
     const center = strongestClusterTarget(actor, units);
     if (center) {
@@ -1068,12 +1104,15 @@ function castAbility(actor: CombatUnit, units: CombatUnit[], events: CombatEvent
   if (verdantHeal > 0) {
     for (const ally of allies) healUnit(ally, verdantHeal);
   }
+  const abilityText = actor.heroId === "boitata"
+    ? `${combatName(actor)} coils into ${hero.ability.name} and gains ${Math.round(amount)} shield.`
+    : `${combatName(actor)} casts ${hero.ability.name}${targets.length ? ` on ${targets.map(combatName).join(" and ")}` : ""}${amount ? ` for ${Math.round(amount)} impact` : ""}.`;
   addEvent(
     events,
     units,
     turn,
     "ability",
-    `${combatName(actor)} casts ${hero.ability.name}${targets.length ? ` on ${targets.map(combatName).join(" and ")}` : ""}${amount ? ` for ${Math.round(amount)} impact` : ""}.`,
+    abilityText,
     { actorId: actor.id, targetIds: targets.map((target) => target.id), amount, amounts },
   );
   const defeatedEnemies = targets.filter((unit) => unit.side !== actor.side && !unit.alive);

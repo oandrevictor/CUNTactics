@@ -8,6 +8,7 @@ import {
   applyCombatResult,
   buyPlayerXp,
   buyShopUnit,
+  calculateWallOfFireShield,
   createInitialGame,
   getInterest,
   getUnitStats,
@@ -31,12 +32,14 @@ test("initial campaign is deterministic and satisfies placement invariants", () 
   assert.deepEqual(validateState(first), []);
 });
 
-test("roster exposes eight distinct heroes, abilities, and real trait hooks", () => {
+test("roster exposes nine distinct heroes, abilities, and real trait hooks", () => {
   const heroes = Object.values(HEROES);
-  assert.equal(heroes.length, 8);
-  assert.equal(new Set(heroes.map((hero) => hero.name)).size, 8);
-  assert.equal(new Set(heroes.map((hero) => hero.ability.name)).size, 8);
+  assert.equal(heroes.length, 9);
+  assert.equal(new Set(heroes.map((hero) => hero.name)).size, 9);
+  assert.equal(new Set(heroes.map((hero) => hero.ability.name)).size, 9);
   assert.ok(heroes.every((hero) => hero.traits.length >= 2));
+  assert.equal(HEROES.boitata.portrait, "/characters/boitata.png");
+  assert.equal(HEROES.boitata.ability.id, "wall-of-fire");
 });
 
 test("combat roles define distinct ranges and every hero inherits its role range", () => {
@@ -45,12 +48,106 @@ test("combat roles define distinct ranges and every hero inherits its role range
     { tank: 1, carry: 2, mage: 3, shooter: 4 },
   );
   assert.deepEqual(new Set(Object.values(HEROES).map((hero) => hero.role)), new Set(["tank", "carry", "mage", "shooter"]));
+  assert.equal(HEROES.boitata.role, "tank");
 
   const baseUnit = createInitialGame(71).units[0];
   for (const hero of Object.values(HEROES)) {
     const stats = getUnitStats({ ...baseUnit, heroId: hero.id });
     assert.equal(stats.range, ROLE_PROFILES[hero.role].range);
   }
+  assert.equal(getUnitStats({ ...baseUnit, heroId: "boitata" }).range, 1);
+});
+
+test("Boitata's Wall of Fire shield scales with level, max life, and armor", () => {
+  const baseline = calculateWallOfFireShield({ level: 1, maxHp: 216, armor: 28 });
+  const higherLevel = calculateWallOfFireShield({ level: 5, maxHp: 216, armor: 28 });
+  const higherLife = calculateWallOfFireShield({ level: 1, maxHp: 432, armor: 28 });
+  const higherArmor = calculateWallOfFireShield({ level: 1, maxHp: 216, armor: 56 });
+
+  assert.equal(baseline, 95);
+  assert.equal(higherLevel, 123);
+  assert.equal(higherLife, 134);
+  assert.equal(higherArmor, 125);
+  assert.ok(higherLevel > baseline);
+  assert.ok(higherLife > baseline);
+  assert.ok(higherArmor > baseline);
+});
+
+test("Boitata casts Wall of Fire on itself and the shield absorbs the next hit", () => {
+  const initial = createInitialGame(73);
+  const player = {
+    ...initial.units[0],
+    id: "boitata-player-test",
+    heroId: "boitata" as const,
+    side: "player" as const,
+    position: 40,
+    benchIndex: null,
+    stars: 1,
+    level: 1,
+    xp: 0,
+  };
+  const enemy = {
+    ...initial.enemyUnits[0],
+    id: "bramble-enemy-test",
+    heroId: "bramble" as const,
+    side: "enemy" as const,
+    position: 32,
+    benchIndex: null,
+    stars: 1,
+    level: 1,
+    xp: 0,
+  };
+  const combat = resolveCombat({ ...initial, units: [player], enemyUnits: [enemy] });
+
+  assert.equal(combat.ok, true);
+  const events = combat.report!.events;
+  const castIndex = events.findIndex(
+    (event) => event.type === "ability" && event.actorId === player.id,
+  );
+  assert.ok(castIndex > 0);
+
+  const cast = events[castIndex];
+  const shielded = cast.snapshot.find((unit) => unit.id === player.id)!;
+  const expectedShield = calculateWallOfFireShield(shielded);
+  assert.deepEqual(cast.targetIds, [player.id]);
+  assert.equal(cast.amount, expectedShield);
+  assert.equal(cast.amounts?.[player.id], expectedShield);
+  assert.equal(shielded.shield, expectedShield);
+  assert.equal(shielded.fireWallShield, expectedShield);
+  assert.match(cast.text, /Wall of Fire.*shield/i);
+
+  const absorption = events.slice(castIndex + 1).find(
+    (event) => event.type === "attack" && event.targetIds?.includes(player.id),
+  );
+  assert.ok(absorption);
+  const afterHit = absorption.snapshot.find((unit) => unit.id === player.id)!;
+  assert.equal(afterHit.hp, shielded.hp);
+  assert.equal(afterHit.shield, shielded.shield - absorption.amount!);
+  assert.equal(afterHit.fireWallShield, shielded.fireWallShield - absorption.amount!);
+});
+
+test("Boitata's fire wall stays distinct from an ally's ordinary ward", () => {
+  const initial = createInitialGame(79);
+  const playerBase = initial.units[0];
+  const enemyBase = initial.enemyUnits[0];
+  const boitata = { ...playerBase, id: "mixed-shield-boitata", heroId: "boitata" as const, side: "player" as const, position: 40, benchIndex: null, stars: 1, level: 1, xp: 0 };
+  const tide = { ...playerBase, id: "mixed-shield-tide", heroId: "tide" as const, side: "player" as const, position: 47, benchIndex: null, stars: 1, level: 1, xp: 0 };
+  const enemy = { ...enemyBase, id: "mixed-shield-enemy", heroId: "bramble" as const, side: "enemy" as const, position: 32, benchIndex: null, stars: 3, level: 5, xp: 0 };
+  const combat = resolveCombat({ ...initial, units: [boitata, tide], enemyUnits: [enemy] });
+
+  const events = combat.report!.events;
+  const wardIndex = events.findIndex(
+    (event) => event.type === "ability" && event.actorId === tide.id && event.targetIds?.includes(boitata.id),
+  );
+  assert.ok(wardIndex > 0);
+  const afterWard = events[wardIndex].snapshot.find((unit) => unit.id === boitata.id)!;
+  assert.equal(afterWard.shield - afterWard.fireWallShield, 29);
+
+  const wallBreakWithWardRemaining = events.slice(wardIndex + 1).find((event) => {
+    const unit = event.snapshot.find((candidate) => candidate.id === boitata.id);
+    return unit && unit.fireWallShield === 0 && unit.shield > 0;
+  });
+  assert.ok(wallBreakWithWardRemaining);
 });
 
 test("basic combat attacks only after a target enters the actor role range", () => {

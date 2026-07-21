@@ -80,3 +80,27 @@ test("character inspector presents combat role and exact basic-attack range", as
   assert.match(engine, /tank:[\s\S]*?range: 1/);
   assert.match(engine, /shooter:[\s\S]*?range: 4/);
 });
+
+test("ships Boitata's portrait and fire-wall shield animation states", async () => {
+  const [client, engine, styles] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/game-engine.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  await access(new URL("../public/characters/boitata.png", import.meta.url));
+  assert.match(engine, /id: "boitata"/);
+  assert.match(engine, /portrait: "\/characters\/boitata\.png"/);
+  assert.match(engine, /id: "wall-of-fire"/);
+  assert.match(client, /function HeroArt/);
+  assert.match(client, /unit-impact-shield/);
+  assert.match(client, /unit-shield-absorbed/);
+  assert.match(client, /fire-wall-cast/);
+  assert.match(client, /fire-wall-absorb/);
+  assert.match(client, /fire-wall-break/);
+  assert.match(client, /floating-shield/);
+  assert.match(client, /floating-block/);
+  assert.match(styles, /@keyframes fire-wall-cast/);
+  assert.match(styles, /@keyframes fire-wall-absorb/);
+  assert.match(styles, /@keyframes fire-wall-break/);
+});

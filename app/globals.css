@@ -592,7 +592,9 @@ button:disabled,
 
 .unit-event-actor,
 .unit-impact-damage,
-.unit-impact-heal {
+.unit-impact-heal,
+.unit-impact-shield,
+.unit-shield-absorbed {
   z-index: 8;
 }
 
@@ -607,6 +609,10 @@ button:disabled,
 
 .unit-event-actor-heal {
   --combat-accent: var(--life);
+}
+
+.unit-event-actor-shield {
+  --combat-accent: #ff9d42;
 }
 
 .unit-event-actor::before {
@@ -626,6 +632,14 @@ button:disabled,
 
 .unit-impact-heal {
   animation: combat-heal-impact var(--combat-beat, 680ms) ease-out both;
+}
+
+.unit-impact-shield {
+  animation: combat-shield-cast var(--combat-beat, 680ms) cubic-bezier(0.18, 0.86, 0.3, 1) both;
+}
+
+.unit-shield-absorbed {
+  animation: combat-shield-absorb var(--combat-beat, 680ms) ease-out both;
 }
 
 .combat-role {
@@ -733,6 +747,21 @@ button:disabled,
   100% { filter: brightness(1.08); transform: scale(1.02); }
 }
 
+@keyframes combat-shield-cast {
+  0% { filter: brightness(1); transform: scale(0.94); }
+  34% { filter: brightness(1.52) saturate(1.36); box-shadow: 0 0 0 8px rgb(255 157 66 / 22%), 0 0 30px rgb(255 98 32 / 48%); transform: scale(1.15); }
+  68% { filter: brightness(1.2) saturate(1.18); transform: scale(1.05); }
+  100% { filter: brightness(1.06); transform: scale(1.03); }
+}
+
+@keyframes combat-shield-absorb {
+  0%, 100% { filter: brightness(1); transform: translateX(0) scale(1); }
+  18% { filter: brightness(1.75) saturate(1.55); box-shadow: 0 0 0 6px rgb(255 157 66 / 30%), 0 0 30px rgb(255 82 25 / 48%); transform: translateX(-3px) scale(1.08); }
+  36% { filter: brightness(1.28) saturate(1.35); transform: translateX(4px) scale(0.98); }
+  54% { transform: translateX(-2px) scale(1.03); }
+  72% { transform: translateX(1px) scale(1); }
+}
+
 @keyframes combat-strike-line {
   0% { opacity: 0; transform: translateY(-50%) rotate(var(--strike-angle)) scaleX(0.08); }
   18% { opacity: 0.95; }
@@ -756,6 +785,106 @@ button:disabled,
   font-family: var(--display);
   font-size: clamp(13px, 1.5vw, 22px);
   font-weight: 700;
+}
+
+.hero-art-image {
+  background-image: var(--hero-art);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.unit-avatar.hero-art-image {
+  position: relative;
+  z-index: 2;
+  display: block;
+  width: 88%;
+  height: 88%;
+  filter: drop-shadow(0 4px 5px rgb(0 0 0 / 48%));
+  pointer-events: none;
+}
+
+.fire-wall {
+  position: absolute;
+  z-index: 3;
+  inset: -15px;
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      from -18deg,
+      transparent 0 3%,
+      #ff6a25 5% 9%,
+      #ffd06a 11% 15%,
+      transparent 18% 22%,
+      #ff8c32 25% 31%,
+      #ffe095 34% 38%,
+      transparent 41% 47%,
+      #ff5c22 50% 56%,
+      #ffbd4d 59% 65%,
+      transparent 68% 73%,
+      #ff7a2c 76% 82%,
+      #ffe095 85% 90%,
+      transparent 93% 100%
+    );
+  filter: drop-shadow(0 0 5px rgb(255 91 28 / 92%)) drop-shadow(0 0 12px rgb(255 152 49 / 62%));
+  opacity: 0.94;
+  pointer-events: none;
+  transform: rotate(-8deg);
+  -webkit-mask: radial-gradient(circle, transparent 0 55%, #000 59% 72%, transparent 76%);
+  mask: radial-gradient(circle, transparent 0 55%, #000 59% 72%, transparent 76%);
+}
+
+.fire-wall::before,
+.fire-wall::after {
+  position: absolute;
+  border-radius: inherit;
+  content: "";
+}
+
+.fire-wall::before {
+  inset: 12px;
+  border: 2px solid rgb(255 209 105 / 84%);
+  box-shadow: inset 0 0 8px rgb(255 84 24 / 58%), 0 0 9px rgb(255 111 30 / 76%);
+}
+
+.fire-wall::after {
+  inset: 4px;
+  background: conic-gradient(from 34deg, transparent 0 8%, #fff0ad 10% 12%, transparent 14% 31%, #ffc85c 33% 36%, transparent 38% 57%, #fff0ad 59% 62%, transparent 64% 82%, #ffc85c 84% 87%, transparent 89% 100%);
+  transform: rotate(16deg);
+  -webkit-mask: radial-gradient(circle, transparent 0 59%, #000 62% 67%, transparent 70%);
+  mask: radial-gradient(circle, transparent 0 59%, #000 62% 67%, transparent 70%);
+}
+
+.fire-wall-cast {
+  animation: fire-wall-cast var(--combat-beat, 680ms) cubic-bezier(0.18, 0.88, 0.32, 1) both;
+}
+
+.fire-wall-absorb {
+  animation: fire-wall-absorb var(--combat-beat, 680ms) ease-out both;
+}
+
+.fire-wall-break {
+  animation: fire-wall-break var(--combat-beat, 680ms) ease-out both;
+}
+
+@keyframes fire-wall-cast {
+  0% { filter: drop-shadow(0 0 0 transparent); opacity: 0; transform: rotate(-22deg) scale(0.45); }
+  36% { filter: drop-shadow(0 0 9px rgb(255 228 139 / 100%)) drop-shadow(0 0 22px rgb(255 84 24 / 88%)); opacity: 1; transform: rotate(5deg) scale(1.18); }
+  70% { transform: rotate(-11deg) scale(0.98); }
+  100% { filter: drop-shadow(0 0 5px rgb(255 91 28 / 92%)) drop-shadow(0 0 12px rgb(255 152 49 / 62%)); opacity: 0.94; transform: rotate(-8deg) scale(1); }
+}
+
+@keyframes fire-wall-absorb {
+  0%, 100% { filter: drop-shadow(0 0 5px rgb(255 91 28 / 92%)) drop-shadow(0 0 12px rgb(255 152 49 / 62%)); opacity: 0.94; transform: rotate(-8deg) scale(1); }
+  22% { filter: drop-shadow(0 0 12px rgb(255 239 175 / 100%)) drop-shadow(0 0 27px rgb(255 82 24 / 95%)); opacity: 1; transform: rotate(-3deg) scale(1.16); }
+  46% { transform: rotate(-13deg) scale(0.94); }
+  68% { transform: rotate(-6deg) scale(1.04); }
+}
+
+@keyframes fire-wall-break {
+  0% { filter: drop-shadow(0 0 8px rgb(255 109 28 / 100%)) drop-shadow(0 0 18px rgb(255 178 59 / 72%)); opacity: 1; transform: rotate(-8deg) scale(1); }
+  34% { filter: drop-shadow(0 0 15px rgb(255 236 164 / 100%)) drop-shadow(0 0 30px rgb(255 67 20 / 96%)); opacity: 1; transform: rotate(4deg) scale(1.24); }
+  100% { filter: drop-shadow(0 0 0 transparent); opacity: 0; transform: rotate(24deg) scale(1.52); }
 }
 
 .unit-stars {
@@ -856,6 +985,26 @@ button:disabled,
   box-shadow: 0 0 12px rgb(229 104 121 / 36%);
 }
 
+.floating-shield,
+.floating-block {
+  padding: 2px 5px;
+  border: 1px solid rgb(255 188 86 / 68%);
+  border-radius: 3px;
+  background: rgb(46 20 10 / 86%);
+  box-shadow: 0 0 14px rgb(255 118 31 / 48%);
+  color: #ffd06a;
+  font-family: var(--font-geist-mono, monospace);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.floating-block {
+  top: -44px;
+  border-color: rgb(255 221 137 / 72%);
+  color: #fff0ad;
+}
+
 @keyframes float-impact {
   from { opacity: 0; transform: translate(-50%, 8px) scale(0.8); }
   35% { opacity: 1; }
@@ -927,6 +1076,12 @@ button:disabled,
   color: var(--coral);
   font-family: var(--display);
   font-size: 19px;
+}
+
+.enemy-portrait.hero-art-image {
+  background-color: rgb(26 14 34 / 88%);
+  background-image: radial-gradient(circle, rgb(255 151 56 / 18%), transparent 68%), var(--hero-art);
+  background-size: cover, 92%;
 }
 
 .portrait-ally {
@@ -1033,6 +1188,17 @@ button:disabled,
   font-family: var(--display);
   font-size: 16px;
   font-weight: 400;
+}
+
+.stat-cell-shield {
+  grid-column: 1 / -1;
+  border-color: rgb(255 157 66 / 44%);
+  background: linear-gradient(90deg, rgb(255 92 31 / 10%), rgb(255 203 93 / 5%));
+  box-shadow: inset 3px 0 0 rgb(255 157 66 / 72%);
+}
+
+.stat-cell-shield strong {
+  color: #ffd06a;
 }
 
 .role-range-card {
@@ -1276,6 +1442,12 @@ button:disabled,
   color: var(--teal);
   font-family: var(--display);
   font-size: 21px;
+}
+
+.shop-art.hero-art-image {
+  background-color: #1b1224;
+  background-image: radial-gradient(circle at 50% 44%, rgb(255 141 47 / 20%), transparent 67%), var(--hero-art);
+  background-size: cover, 96%;
 }
 
 .rarity-common { border-bottom: 2px solid #9ea1aa; }
@@ -1853,6 +2025,11 @@ button:disabled,
   .unit-event-actor,
   .unit-impact-damage,
   .unit-impact-heal,
+  .unit-impact-shield,
+  .unit-shield-absorbed,
+  .fire-wall-cast,
+  .fire-wall-absorb,
+  .fire-wall-break,
   .floating-text {
     animation: none !important;
   }
@@ -1867,6 +2044,24 @@ button:disabled,
 
   .unit-impact-heal {
     box-shadow: 0 0 0 4px rgb(97 224 124 / 46%), 0 0 20px rgb(97 224 124 / 30%);
+  }
+
+  .unit-impact-shield,
+  .unit-shield-absorbed {
+    box-shadow: 0 0 0 4px rgb(255 157 66 / 52%), 0 0 22px rgb(255 91 28 / 36%);
+  }
+
+  .fire-wall-cast,
+  .fire-wall-absorb {
+    filter: drop-shadow(0 0 5px rgb(255 91 28 / 92%)) drop-shadow(0 0 12px rgb(255 152 49 / 62%));
+    opacity: 0.94;
+    transform: rotate(-8deg) scale(1);
+  }
+
+  .fire-wall-break {
+    filter: grayscale(0.38) drop-shadow(0 0 4px rgb(255 91 28 / 62%));
+    opacity: 0.34;
+    transform: rotate(8deg) scale(1.12);
   }
 }
 
