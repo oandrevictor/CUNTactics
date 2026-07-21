@@ -66,6 +66,8 @@ type DisplayUnit = {
   alive: boolean;
 };
 
+type CombatEffectKind = "attack" | "ability" | "heal";
+
 function clampPercent(value: number, maximum: number): number {
   if (!Number.isFinite(value) || !Number.isFinite(maximum) || maximum <= 0) return 0;
   return Math.min(100, Math.max(0, (value / maximum) * 100));
@@ -73,6 +75,32 @@ function clampPercent(value: number, maximum: number): number {
 
 function meterStyle(value: number, maximum: number): CSSProperties {
   return { "--meter-value": `${clampPercent(value, maximum)}%` } as CSSProperties;
+}
+
+function combatEffectKind(event: CombatEvent | null): CombatEffectKind | null {
+  if (event?.type === "attack") return "attack";
+  if (event?.type !== "ability") return null;
+  const actor = event.actorId ? event.snapshot.find((unit) => unit.id === event.actorId) : null;
+  return actor?.heroId === "tide" || actor?.heroId === "bramble" ? "heal" : "ability";
+}
+
+function combatLinkStyle(actorPosition: number, targetPosition: number): CSSProperties {
+  const boardRows = BOARD_SIZE / BOARD_COLUMNS;
+  const startX = ((actorPosition % BOARD_COLUMNS) + 0.5) / BOARD_COLUMNS * 100;
+  const startY = (Math.floor(actorPosition / BOARD_COLUMNS) + 0.5) / boardRows * 100;
+  const endX = ((targetPosition % BOARD_COLUMNS) + 0.5) / BOARD_COLUMNS * 100;
+  const endY = (Math.floor(targetPosition / BOARD_COLUMNS) + 0.5) / boardRows * 100;
+  const deltaX = endX - startX;
+  const deltaY = (endY - startY) * (5.4 / 8);
+  const length = Math.hypot(deltaX, deltaY);
+  const angle = Math.atan2(deltaY, deltaX) * 180 / Math.PI;
+
+  return {
+    "--strike-left": `${startX}%`,
+    "--strike-top": `${startY}%`,
+    "--strike-length": `${length}%`,
+    "--strike-angle": `${angle}deg`,
+  } as CSSProperties;
 }
 
 function persistentDisplay(unit: UnitInstance): DisplayUnit {
@@ -128,8 +156,11 @@ function UnitToken({
 }) {
   const hero = HEROES[unit.heroId];
   const isTarget = currentEvent?.targetIds?.includes(unit.id) ?? false;
-  const eventActor = currentEvent?.actorId ? currentEvent.snapshot.find((candidate) => candidate.id === currentEvent.actorId) : null;
-  const isHealingAbility = eventActor?.heroId === "tide" || eventActor?.heroId === "bramble";
+  const effectKind = combatEffectKind(currentEvent);
+  const isActor = !!effectKind && currentEvent?.actorId === unit.id;
+  const isHealingAbility = effectKind === "heal";
+  const isDamaged = isTarget && (effectKind === "attack" || effectKind === "ability");
+  const isHealed = isTarget && effectKind === "heal";
   const targetAmount = currentEvent?.amounts?.[unit.id] ?? currentEvent?.amount;
   const feedback = isTarget && targetAmount
     ? currentEvent?.type === "attack" || (currentEvent?.type === "ability" && !isHealingAbility)
@@ -139,7 +170,7 @@ function UnitToken({
 
   return (
     <div
-      className={`unit-token ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""}`}
+      className={`unit-token ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${isActor ? `unit-event-actor unit-event-actor-${effectKind}` : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isHealed ? "unit-impact-heal" : ""}`}
       draggable={draggable}
       onDragStart={onDragStart}
       data-testid={`unit-${unit.id}`}
@@ -149,6 +180,7 @@ function UnitToken({
       <span className="unit-avatar" aria-hidden="true">{hero.glyph}</span>
       <span className="unit-level">L{unit.level}</span>
       <span className="unit-name">{hero.name}</span>
+      {isActor ? <span className="combat-role" aria-hidden="true">{currentEvent?.type === "ability" ? "CAST" : "ATTACK"}</span> : null}
       <span className="unit-bars">
         <span
           className="meter meter-life"
@@ -164,7 +196,7 @@ function UnitToken({
         ><span className="meter-fill" /></span>
       </span>
       {unit.stunned > 0 ? <span className="status-mark" aria-label="Silenced">×</span> : null}
-      {feedback ? <span className={`floating-text ${isHealingAbility ? "floating-heal" : ""}`}>{feedback}</span> : null}
+      {feedback ? <span className={`floating-text ${isHealingAbility ? "floating-heal" : "floating-damage"}`}>{feedback}</span> : null}
     </div>
   );
 }
@@ -213,6 +245,7 @@ export function GameClient() {
   const combatEvents = game.combatReport?.events ?? [];
   const currentEvent = game.phase === "combat" ? combatEvents[Math.min(combatIndex, Math.max(0, combatEvents.length - 1))] ?? null : null;
   const atCombatEnd = game.phase === "combat" && combatEvents.length > 0 && combatIndex >= combatEvents.length - 1;
+  const currentEffectKind = combatEffectKind(currentEvent);
 
   useEffect(() => {
     if (game.phase !== "combat" || !playing || atCombatEnd) return;
@@ -265,6 +298,17 @@ export function GameClient() {
   const interest = getInterest(game.gold);
   const projectedStreak = getStreakBonus(game.streak === 0 ? 1 : game.streak + Math.sign(game.streak));
   const projectedIncome = 5 + interest + projectedStreak;
+  const currentActor = currentEffectKind && currentEvent?.actorId
+    ? currentEvent.snapshot.find((unit) => unit.id === currentEvent.actorId) ?? null
+    : null;
+  const combatLinks = currentActor && currentEvent?.targetIds
+    ? currentEvent.targetIds.flatMap((targetId) => {
+        const target = currentEvent.snapshot.find((unit) => unit.id === targetId);
+        if (!target || target.position === currentActor.position) return [];
+        return [{ targetId, style: combatLinkStyle(currentActor.position, target.position) }];
+      })
+    : [];
+  const combatBeatStyle = { "--combat-beat": `${Math.round(680 / speed)}ms` } as CSSProperties;
 
   function commit(result: GameActionResult, onSuccess?: () => void) {
     setToast(result.message);
@@ -428,7 +472,18 @@ export function GameClient() {
           </div>
           <div className="board-wrap">
             <div className="territory-label territory-enemy">Enemy territory</div>
-            <div className="board-grid" role="grid" aria-label="Eight column by six row battle board" data-testid="game-board">
+            <div className="board-grid" role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
+              {currentEffectKind && combatLinks.length ? (
+                <div className="combat-links" aria-hidden="true" data-testid="combat-links">
+                  {combatLinks.map((link) => (
+                    <span
+                      className={`combat-link combat-link-${currentEffectKind}`}
+                      key={`${currentEvent?.id}-${link.targetId}`}
+                      style={link.style}
+                    />
+                  ))}
+                </div>
+              ) : null}
               {Array.from({ length: BOARD_SIZE }, (_, index) => {
                 const row = Math.floor(index / BOARD_COLUMNS);
                 const column = index % BOARD_COLUMNS;
@@ -457,6 +512,7 @@ export function GameClient() {
                     <span className="board-coord" aria-hidden="true">{String.fromCharCode(65 + column)}{row + 1}</span>
                     {unit ? (
                       <UnitToken
+                        key={`${unit.id}-${currentEvent?.id ?? "idle"}`}
                         unit={unit}
                         selected={unit.id === selectedId}
                         highlighted={highlighted}

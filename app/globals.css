@@ -470,6 +470,7 @@ button:disabled,
 }
 
 .board-grid {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(8, minmax(0, 1fr));
   grid-template-rows: repeat(6, minmax(0, 1fr));
@@ -589,6 +590,162 @@ button:disabled,
   box-shadow: 0 0 0 3px rgb(241 203 109 / 32%), 0 0 26px rgb(241 203 109 / 28%);
 }
 
+.unit-event-actor,
+.unit-impact-damage,
+.unit-impact-heal {
+  z-index: 8;
+}
+
+.unit-event-actor {
+  --combat-accent: var(--gold);
+  animation: combat-attacker var(--combat-beat, 680ms) cubic-bezier(0.2, 0.85, 0.25, 1) both;
+}
+
+.unit-event-actor-ability {
+  --combat-accent: #aa8cff;
+}
+
+.unit-event-actor-heal {
+  --combat-accent: var(--life);
+}
+
+.unit-event-actor::before {
+  position: absolute;
+  z-index: -1;
+  inset: -9px;
+  border: 2px solid var(--combat-accent);
+  border-radius: 50%;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--combat-accent) 70%, transparent);
+  content: "";
+  animation: combat-actor-ring var(--combat-beat, 680ms) ease-out both;
+}
+
+.unit-impact-damage {
+  animation: combat-impact var(--combat-beat, 680ms) ease-out both;
+}
+
+.unit-impact-heal {
+  animation: combat-heal-impact var(--combat-beat, 680ms) ease-out both;
+}
+
+.combat-role {
+  position: absolute;
+  z-index: 10;
+  top: -31px;
+  left: 50%;
+  padding: 2px 5px;
+  border: 1px solid var(--combat-accent);
+  background: rgb(16 12 24 / 92%);
+  box-shadow: 0 3px 10px rgb(0 0 0 / 45%);
+  color: var(--combat-accent);
+  font-family: var(--font-geist-mono, monospace);
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  transform: translateX(-50%);
+}
+
+.combat-links {
+  position: absolute;
+  z-index: 4;
+  inset: 5px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.combat-link {
+  --strike-color: var(--gold);
+  position: absolute;
+  top: var(--strike-top);
+  left: var(--strike-left);
+  width: var(--strike-length);
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--strike-color) 24%, var(--strike-color) 82%, rgb(255 255 255 / 92%));
+  box-shadow: 0 0 7px var(--strike-color), 0 0 14px color-mix(in srgb, var(--strike-color) 56%, transparent);
+  color: var(--strike-color);
+  opacity: 0;
+  transform: translateY(-50%) rotate(var(--strike-angle)) scaleX(0.08);
+  transform-origin: left center;
+  animation: combat-strike-line var(--combat-beat, 680ms) ease-out both;
+}
+
+.combat-link-ability {
+  --strike-color: #aa8cff;
+  height: 4px;
+}
+
+.combat-link-heal {
+  --strike-color: var(--life);
+}
+
+.combat-link::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 9px;
+  height: 9px;
+  border: 2px solid rgb(255 255 255 / 74%);
+  border-radius: 50%;
+  background: var(--strike-color);
+  box-shadow: 0 0 12px var(--strike-color);
+  content: "";
+  transform: translate(-50%, -50%);
+  animation: combat-projectile var(--combat-beat, 680ms) ease-in-out both;
+}
+
+.combat-link::after {
+  position: absolute;
+  top: 50%;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border-top: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  content: "";
+  transform: translateY(-50%) rotate(45deg);
+}
+
+@keyframes combat-attacker {
+  0% { filter: brightness(1); transform: scale(1); }
+  24% { filter: brightness(1.38) saturate(1.2); transform: scale(1.16); }
+  62% { filter: brightness(1.2); transform: scale(1.06); }
+  100% { filter: brightness(1.06); transform: scale(1.03); }
+}
+
+@keyframes combat-actor-ring {
+  0% { opacity: 0; transform: scale(0.6); }
+  28% { opacity: 1; }
+  100% { opacity: 0.28; transform: scale(1.22); }
+}
+
+@keyframes combat-impact {
+  0%, 100% { filter: brightness(1); transform: translateX(0) scale(1); }
+  18% { filter: brightness(1.85) saturate(0.35); transform: translateX(-5px) scale(1.08); }
+  34% { filter: brightness(1.28) saturate(1.4); transform: translateX(5px) scale(0.96); }
+  50% { transform: translateX(-3px) scale(1.02); }
+  68% { transform: translateX(2px) scale(0.99); }
+}
+
+@keyframes combat-heal-impact {
+  0% { filter: brightness(1); transform: scale(1); }
+  32% { filter: brightness(1.45) saturate(1.28); box-shadow: 0 0 0 7px rgb(97 224 124 / 22%), 0 0 26px rgb(97 224 124 / 44%); transform: scale(1.12); }
+  100% { filter: brightness(1.08); transform: scale(1.02); }
+}
+
+@keyframes combat-strike-line {
+  0% { opacity: 0; transform: translateY(-50%) rotate(var(--strike-angle)) scaleX(0.08); }
+  18% { opacity: 0.95; }
+  72% { opacity: 0.9; transform: translateY(-50%) rotate(var(--strike-angle)) scaleX(1); }
+  100% { opacity: 0.18; transform: translateY(-50%) rotate(var(--strike-angle)) scaleX(1); }
+}
+
+@keyframes combat-projectile {
+  0%, 12% { left: 0; opacity: 0; }
+  24% { opacity: 1; }
+  78%, 100% { left: 100%; opacity: 1; }
+}
+
 .unit-dead {
   filter: grayscale(0.9) brightness(0.48);
   transform: scale(0.84) rotate(8deg);
@@ -685,11 +842,18 @@ button:disabled,
   font-weight: 900;
   text-shadow: 0 2px 6px var(--ink-deep);
   transform: translateX(-50%);
-  animation: float-impact 680ms ease-out both;
+  animation: float-impact var(--combat-beat, 680ms) ease-out both;
 }
 
 .floating-heal {
   color: var(--life);
+}
+
+.floating-damage {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgb(42 8 19 / 78%);
+  box-shadow: 0 0 12px rgb(229 104 121 / 36%);
 }
 
 @keyframes float-impact {
@@ -1606,6 +1770,36 @@ button:disabled,
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .combat-link {
+    opacity: 0.72;
+    transform: translateY(-50%) rotate(var(--strike-angle)) scaleX(1);
+    animation: none !important;
+  }
+
+  .combat-link::before,
+  .unit-event-actor::before {
+    animation: none !important;
+  }
+
+  .unit-event-actor,
+  .unit-impact-damage,
+  .unit-impact-heal,
+  .floating-text {
+    animation: none !important;
+  }
+
+  .unit-event-actor {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--combat-accent) 52%, transparent), 0 8px 17px rgb(0 0 0 / 44%);
+  }
+
+  .unit-impact-damage {
+    box-shadow: 0 0 0 4px rgb(229 104 121 / 52%), 0 0 20px rgb(229 104 121 / 34%);
+  }
+
+  .unit-impact-heal {
+    box-shadow: 0 0 0 4px rgb(97 224 124 / 46%), 0 0 20px rgb(97 224 124 / 30%);
   }
 }
 

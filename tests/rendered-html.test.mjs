@@ -53,3 +53,17 @@ test("combat autoplay schedules every playback tick without a pause toggle", asy
     /\[game\.phase, playing, atCombatEnd, combatEvents\.length, speed, combatIndex\]/,
   );
 });
+
+test("combat actions expose directional links, actor emphasis, impacts, and reduced-motion fallbacks", async () => {
+  const [client, styles] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(client, /data-testid="combat-links"/);
+  assert.match(client, /unit-event-actor/);
+  assert.match(client, /unit-impact-damage/);
+  assert.match(styles, /@keyframes combat-strike-line/);
+  assert.match(styles, /@keyframes combat-impact/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
+});
