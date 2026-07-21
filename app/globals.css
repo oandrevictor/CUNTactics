@@ -442,7 +442,7 @@ button:disabled,
 
 .board-wrap {
   --board-perspective: 900px;
-  --board-tilt: 7deg;
+  --board-tilt: 10deg;
   position: relative;
   isolation: isolate;
   padding: 28px 18px 29px;
@@ -2784,7 +2784,7 @@ button:disabled,
 
   .board-wrap {
     --board-perspective: 700px;
-    --board-tilt: 4deg;
+    --board-tilt: 6deg;
     padding: 24px 5px 27px;
   }
 
