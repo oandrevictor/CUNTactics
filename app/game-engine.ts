@@ -164,6 +164,25 @@ export interface RoundResult {
   income: IncomeBreakdown;
 }
 
+export interface CombatStatTotals {
+  damageDealt: number;
+  shieldGranted: number;
+  healingDone: number;
+}
+
+export interface UnitCombatStatistics extends CombatStatTotals {
+  unitId: string;
+  heroId: HeroId;
+  side: Side;
+  stars: number;
+  level: number;
+}
+
+export interface CombatStatistics {
+  teams: Record<Side, CombatStatTotals>;
+  units: UnitCombatStatistics[];
+}
+
 export interface GameState {
   version: 1;
   seed: number;
@@ -882,6 +901,66 @@ function adjacent(a: number, b: number): boolean {
 
 function snapshot(units: CombatUnit[]): CombatUnit[] {
   return units.map((unit) => ({ ...unit }));
+}
+
+/**
+ * Summarizes effective combat contributions from chronological post-action
+ * snapshots. This deliberately uses total shield only; fireWallShield is a
+ * tracked subset and would otherwise count Boitata's protection twice.
+ */
+export function getCombatStatistics(
+  report: Pick<CombatReport, "initialUnits" | "events">,
+): CombatStatistics {
+  const units: UnitCombatStatistics[] = report.initialUnits.map((unit) => ({
+    unitId: unit.id,
+    heroId: unit.heroId,
+    side: unit.side,
+    stars: unit.stars,
+    level: unit.level,
+    damageDealt: 0,
+    shieldGranted: 0,
+    healingDone: 0,
+  }));
+  const statsById = new Map(units.map((unit) => [unit.unitId, unit]));
+  let previousSnapshot = report.initialUnits;
+
+  for (const event of report.events) {
+    const beforeById = new Map(previousSnapshot.map((unit) => [unit.id, unit]));
+    const afterById = new Map(event.snapshot.map((unit) => [unit.id, unit]));
+    const actor = event.actorId
+      ? afterById.get(event.actorId) ?? beforeById.get(event.actorId) ?? null
+      : null;
+    const actorStats = actor ? statsById.get(actor.id) ?? null : null;
+
+    if (actor && actorStats) {
+      for (const after of event.snapshot) {
+        const before = beforeById.get(after.id);
+        if (!before) continue;
+        if (after.side !== actor.side) {
+          actorStats.damageDealt +=
+            Math.max(0, before.hp - after.hp) +
+            Math.max(0, before.shield - after.shield);
+        } else {
+          actorStats.healingDone += Math.max(0, after.hp - before.hp);
+          actorStats.shieldGranted += Math.max(0, after.shield - before.shield);
+        }
+      }
+    }
+
+    previousSnapshot = event.snapshot;
+  }
+
+  const teams: Record<Side, CombatStatTotals> = {
+    player: { damageDealt: 0, shieldGranted: 0, healingDone: 0 },
+    enemy: { damageDealt: 0, shieldGranted: 0, healingDone: 0 },
+  };
+  for (const unit of units) {
+    teams[unit.side].damageDealt += unit.damageDealt;
+    teams[unit.side].shieldGranted += unit.shieldGranted;
+    teams[unit.side].healingDone += unit.healingDone;
+  }
+
+  return { teams, units };
 }
 
 function combatName(unit: CombatUnit): string {

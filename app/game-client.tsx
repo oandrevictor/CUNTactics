@@ -23,6 +23,7 @@ import {
   createInitialGame,
   getActiveTraits,
   getCopyCount,
+  getCombatStatistics,
   getInterest,
   getStreakBonus,
   getUnitStats,
@@ -36,6 +37,7 @@ import {
   unitXpToNext,
   validateState,
   type CombatEvent,
+  type CombatStatistics,
   type CombatUnit,
   type GameActionResult,
   type GameState,
@@ -236,6 +238,83 @@ function UnitToken({
   );
 }
 
+function CombatTeamReport({
+  side,
+  statistics,
+}: {
+  side: "player" | "enemy";
+  statistics: CombatStatistics;
+}) {
+  const label = side === "player" ? "Your team" : "Mooncrest";
+  const totals = statistics.teams[side];
+  const units = statistics.units.filter((unit) => unit.side === side);
+
+  return (
+    <section
+      className={`combat-team-card combat-team-${side}`}
+      data-testid={`combat-team-${side}`}
+      aria-labelledby={`combat-team-${side}-title`}
+    >
+      <div className="combat-team-heading">
+        <h4 id={`combat-team-${side}-title`}>{label}</h4>
+        <span>{units.length} {units.length === 1 ? "champion" : "champions"}</span>
+      </div>
+      <dl className="combat-team-totals">
+        <div className="combat-total combat-total-damage">
+          <dt>Damage dealt</dt>
+          <dd data-testid={`combat-total-${side}-damage`}>{totals.damageDealt}</dd>
+        </div>
+        <div className="combat-total combat-total-shield">
+          <dt>Shield granted</dt>
+          <dd data-testid={`combat-total-${side}-shield`}>{totals.shieldGranted}</dd>
+        </div>
+        <div className="combat-total combat-total-healing">
+          <dt>Effective healing</dt>
+          <dd data-testid={`combat-total-${side}-healing`}>{totals.healingDone}</dd>
+        </div>
+      </dl>
+      <div className="combat-stat-scroll">
+        <table className="combat-stat-table">
+          <caption className="sr-only">{label} character combat contributions</caption>
+          <thead>
+            <tr><th scope="col">Character</th><th scope="col">Damage</th><th scope="col">Shield</th><th scope="col">Healing</th></tr>
+          </thead>
+          <tbody>
+            {units.map((unit) => (
+              <tr key={unit.unitId} data-testid={`combat-stat-${unit.unitId}`}>
+                <th scope="row">
+                  <span className="combat-stat-unit">
+                    <HeroArt heroId={unit.heroId} className="combat-stat-portrait" />
+                    <span className="combat-stat-copy"><strong>{HEROES[unit.heroId].name}</strong><small>L{unit.level} · {starsLabel(unit.stars)}</small></span>
+                  </span>
+                </th>
+                <td className="combat-stat-value combat-stat-damage">{unit.damageDealt}</td>
+                <td className="combat-stat-value combat-stat-shield">{unit.shieldGranted}</td>
+                <td className="combat-stat-value combat-stat-healing">{unit.healingDone}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function CombatBreakdown({ statistics }: { statistics: CombatStatistics }) {
+  return (
+    <section className="combat-breakdown" data-testid="combat-breakdown" aria-labelledby="combat-breakdown-title">
+      <div className="combat-breakdown-heading">
+        <div><span className="eyebrow">Match report</span><h3 id="combat-breakdown-title">Combat breakdown</h3></div>
+        <p>Damage includes health and shields removed. Shield measures protection granted. Healing counts life actually restored.</p>
+      </div>
+      <div className="combat-team-grid">
+        <CombatTeamReport side="player" statistics={statistics} />
+        <CombatTeamReport side="enemy" statistics={statistics} />
+      </div>
+    </section>
+  );
+}
+
 export function GameClient() {
   const [game, setGame] = useState<GameState>(() => createInitialGame());
   const [hydrated, setHydrated] = useState(false);
@@ -357,6 +436,10 @@ export function GameClient() {
       })
     : [];
   const combatBeatStyle = { "--combat-beat": `${Math.round(680 / speed)}ms` } as CSSProperties;
+  const combatStatistics = useMemo(
+    () => game.combatReport ? getCombatStatistics(game.combatReport) : null,
+    [game.combatReport],
+  );
 
   useEffect(() => {
     if (boitataBoardUnits.length === 0) setBoitata3DReady(false);
@@ -776,7 +859,7 @@ export function GameClient() {
 
       {game.phase === "resolution" && game.roundResult ? (
         <div className="modal-backdrop" role="presentation">
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="round-result-title" data-testid="round-result">
+          <section className="modal modal-round-result" role="dialog" aria-modal="true" aria-labelledby="round-result-title" data-testid="round-result">
             <span className="eyebrow">Round {game.roundResult.round} complete</span>
             <h2 id="round-result-title">{game.roundResult.outcome === "victory" ? "The line holds." : "The line broke."}</h2>
             <p>{game.roundResult.outcome === "victory" ? "Your bond outlasted Mooncrest." : `The commander lost ${Math.abs(game.roundResult.lifeDelta)} life, but the campaign continues.`}</p>
@@ -787,6 +870,7 @@ export function GameClient() {
               <span><small>Streak</small><strong>{game.streak > 0 ? `+${game.streak}` : game.streak}</strong></span>
             </div>
             <p className="result-formula">Income: {game.roundResult.income.base} base + {game.roundResult.income.interest} interest + {game.roundResult.income.streak} streak + {game.roundResult.income.victory} victory.</p>
+            {combatStatistics ? <CombatBreakdown statistics={combatStatistics} /> : null}
             <div className="modal-actions"><button className="game-button button-primary" type="button" data-testid="continue-round" onClick={() => commit(advanceRound(game))}>Continue to round {game.round + 1}</button></div>
           </section>
         </div>
@@ -794,10 +878,11 @@ export function GameClient() {
 
       {game.phase === "gameover" ? (
         <div className="modal-backdrop" role="presentation">
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="game-result-title" data-testid="game-result">
+          <section className="modal modal-round-result" role="dialog" aria-modal="true" aria-labelledby="game-result-title" data-testid="game-result">
             <span className="eyebrow">Campaign complete</span>
             <h2 id="game-result-title">{game.campaignOutcome === "victory" ? "HEXFALL answered your call." : "Mooncrest claims the arena."}</h2>
             <p>{game.campaignOutcome === "victory" ? `You survived all ${game.round} rounds with ${game.life} commander life.` : `You reached round ${game.round}. Rebuild the bond and try a new formation.`}</p>
+            {combatStatistics ? <CombatBreakdown statistics={combatStatistics} /> : null}
             <div className="modal-actions"><button className="game-button button-primary" type="button" data-testid="restart-game" onClick={handleRestart}>Play again</button></div>
           </section>
         </div>
