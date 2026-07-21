@@ -5,6 +5,14 @@ import test from "node:test";
 test("Relic Forge exposes component crafting, enhancement, and inventory equipment actions", async () => {
   const client = await readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8");
 
+  assert.match(client, /data-testid="bench-forge"/);
+  assert.match(client, /data-testid=\{`bench-forge-component-\$\{componentId\}`\}/);
+  assert.match(client, /data-testid=\{`bench-forge-item-\$\{item\.id\}`\}/);
+  assert.match(client, /aria-expanded=\{forgeOpen\}/);
+  assert.match(client, /aria-controls="arena-forge-drawer"/);
+  assert.match(client, /ref=\{forgeToggleRef\}/);
+  assert.match(client, /ref=\{forgeDrawerRef\}/);
+  assert.match(client, /tabIndex=\{-1\}/);
   assert.match(client, /data-testid="item-armory"/);
   assert.match(client, /data-testid=\{`item-component-\$\{componentId\}`\}/);
   assert.match(client, /data-testid=\{`item-component-count-\$\{componentId\}`\}/);
@@ -14,6 +22,22 @@ test("Relic Forge exposes component crafting, enhancement, and inventory equipme
   assert.match(client, /craftItem\(game, forgeComponents\[0\], forgeComponents\[1\]\)/);
   assert.match(client, /enhanceItem\(game, selectedCraftedItem\.id, forgeComponents\[0\]\)/);
   assert.match(client, /equipItem\(game, selectedAllyForItems\.id, selectedCraftedItem\.id, slotIndex\)/);
+});
+
+test("the Forge occupies the first arena bay without consuming a champion bench index", async () => {
+  const client = await readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8");
+  const bench = client.slice(
+    client.indexOf('<section className="arena-bench"'),
+    client.indexOf('{forgeOpen ? ('),
+  );
+  const dock = client.slice(
+    client.indexOf('<section className="dock">'),
+    client.indexOf('{game.phase === "resolution"'),
+  );
+
+  assert.ok(bench.indexOf('data-testid="bench-forge"') < bench.indexOf("Array.from({ length: BENCH_SIZE }"));
+  assert.match(bench, /data-testid=\{`bench-slot-\$\{index\}`\}/);
+  assert.doesNotMatch(dock, /item-armory-panel|data-testid="item-armory"/);
 });
 
 test("every character exposes three visible item slots with equip and unequip controls", async () => {
@@ -36,6 +60,10 @@ test("item interface is styled for forge cards, enhanced gear, and readable boar
 
   for (const selector of [
     ".item-armory-panel",
+    ".bench-forge-slot",
+    ".bench-forge-component",
+    ".bench-forge-item",
+    ".bench-forge-drawer",
     ".item-component-card",
     ".craft-tray",
     ".crafted-item-card",

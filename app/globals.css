@@ -2351,7 +2351,7 @@ button:disabled,
 
 .dock {
   display: grid;
-  grid-template-columns: minmax(300px, 340px) minmax(460px, 1fr) 228px;
+  grid-template-columns: minmax(0, 1fr) 228px;
   align-items: stretch;
   gap: 18px;
   width: min(100%, 1600px);
@@ -2434,9 +2434,185 @@ button:disabled,
 
 .bench-grid {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: minmax(112px, 1.25fr) repeat(7, minmax(0, 1fr));
   gap: 5px;
   padding-top: 7px;
+}
+
+.bench-forge-slot {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 70px;
+  align-content: center;
+  gap: 4px;
+  padding: 5px;
+  overflow: hidden;
+  border: 1px solid rgb(241 203 109 / 44%);
+  background:
+    radial-gradient(circle at 20% 0%, rgb(255 157 66 / 16%), transparent 48%),
+    linear-gradient(180deg, rgb(241 203 109 / 9%), rgb(10 7 16 / 94%));
+  box-shadow:
+    inset 0 0 0 1px rgb(241 203 109 / 7%),
+    inset 0 -8px 12px rgb(0 0 0 / 25%);
+}
+
+.bench-forge-slot-open {
+  border-color: var(--gold);
+  box-shadow:
+    inset 0 0 0 1px rgb(241 203 109 / 18%),
+    0 0 14px rgb(241 203 109 / 16%);
+}
+
+.bench-forge-slot-reward {
+  border-color: rgb(255 157 66 / 76%);
+  box-shadow: inset 0 0 16px rgb(255 120 41 / 14%), 0 0 13px rgb(255 120 41 / 22%);
+}
+
+.bench-forge-toggle {
+  display: flex;
+  min-width: 0;
+  align-items: end;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 0 1px 3px;
+  border: 0;
+  border-bottom: 1px solid rgb(241 203 109 / 18%);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bench-forge-toggle:focus-visible,
+.bench-forge-component:focus-visible,
+.bench-forge-item:focus-visible,
+.bench-forge-empty:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: -2px;
+}
+
+.bench-forge-toggle > span {
+  display: grid;
+  min-width: 0;
+}
+
+.bench-forge-toggle small {
+  color: var(--muted);
+  font-size: 6px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bench-forge-toggle strong {
+  color: var(--gold);
+  font-family: var(--display);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bench-forge-toggle > b {
+  color: var(--ivory);
+  font-family: var(--font-geist-mono, monospace);
+  font-size: 7px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.bench-forge-components {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.bench-forge-component,
+.bench-forge-item,
+.bench-forge-empty {
+  min-width: 0;
+  border: 1px solid rgb(245 237 223 / 14%);
+  background: rgb(9 7 14 / 76%);
+  color: var(--gold);
+}
+
+.bench-forge-component {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  min-height: 24px;
+  align-items: center;
+  padding: 2px 3px;
+  cursor: grab;
+}
+
+.bench-forge-component > span {
+  font-size: 11px;
+}
+
+.bench-forge-component > b {
+  color: var(--ivory);
+  font-size: 7px;
+}
+
+.bench-forge-component:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.bench-forge-component-selected,
+.bench-forge-item-selected {
+  border-color: var(--gold);
+  background: rgb(241 203 109 / 14%);
+  box-shadow: inset 0 0 0 1px rgb(241 203 109 / 14%);
+}
+
+.bench-forge-items {
+  display: flex;
+  min-width: 0;
+  min-height: 26px;
+  gap: 3px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.bench-forge-item {
+  position: relative;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  place-items: center;
+  padding: 0;
+  border-radius: 4px;
+  font-size: 8px;
+  letter-spacing: -0.12em;
+  cursor: grab;
+}
+
+.bench-forge-item i {
+  position: absolute;
+  top: -2px;
+  right: -1px;
+  color: #d9cbff;
+  font-size: 6px;
+  font-style: normal;
+  letter-spacing: normal;
+}
+
+.bench-forge-item-enhanced {
+  border-color: rgb(190 166 255 / 68%);
+  background: rgb(63 42 101 / 72%);
+  box-shadow: 0 0 6px rgb(170 140 255 / 44%);
+}
+
+.bench-forge-empty {
+  width: 100%;
+  min-height: 26px;
+  color: var(--dim);
+  font-size: 7px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
 }
 
 .bench-slot {
@@ -2487,6 +2663,61 @@ button:disabled,
   gap: 11px;
   min-width: 0;
   padding: 16px;
+}
+
+.bench-forge-drawer {
+  position: relative;
+  z-index: 4;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(300px, 1.2fr);
+  width: calc(100% - 18px);
+  margin: 9px 9px 0;
+  border-color: rgb(241 203 109 / 38%);
+  background:
+    linear-gradient(135deg, rgb(241 203 109 / 7%), transparent 36%),
+    rgb(16 12 24 / 97%);
+  box-shadow: 0 18px 34px rgb(0 0 0 / 55%), inset 0 1px rgb(245 237 223 / 8%);
+}
+
+.bench-forge-drawer:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 3px;
+}
+
+.bench-forge-drawer > .panel-heading,
+.bench-forge-drawer > .armory-cadence,
+.bench-forge-drawer > .armory-reward,
+.bench-forge-drawer > .crafted-inventory-heading,
+.bench-forge-drawer > .crafted-item-list,
+.bench-forge-drawer > .item-action-row {
+  grid-column: 1 / -1;
+}
+
+.bench-forge-drawer .crafted-item-list {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.bench-forge-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.bench-forge-close {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: rgb(255 255 255 / 3%);
+  color: var(--ivory);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.bench-forge-close:hover {
+  border-color: var(--gold);
+  color: var(--gold);
 }
 
 .item-armory-panel .panel-heading {
@@ -3331,22 +3562,7 @@ button:disabled,
   }
 
   .dock {
-    grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
-  }
-
-  .item-armory-panel {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  .actions-panel {
-    grid-column: 1;
-    grid-row: 2;
-  }
-
-  .shop-panel {
-    grid-column: 2;
-    grid-row: 1 / span 2;
+    grid-template-columns: minmax(0, 1fr) 228px;
   }
 }
 
@@ -3420,11 +3636,14 @@ button:disabled,
     padding: 0 14px;
   }
 
-  .item-armory-panel,
   .shop-panel,
   .actions-panel {
     grid-column: auto;
     grid-row: auto;
+  }
+
+  .bench-forge-drawer {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .actions-panel {
@@ -3576,9 +3795,36 @@ button:disabled,
   }
 
   .bench-grid {
-    grid-template-columns: repeat(7, minmax(42px, 1fr));
+    grid-template-columns: minmax(104px, 1.4fr) repeat(7, minmax(42px, 1fr));
     overflow-x: auto;
     padding: 6px 0 4px;
+  }
+
+  .bench-forge-slot {
+    min-height: 58px;
+  }
+
+  .bench-forge-component {
+    min-height: 30px;
+  }
+
+  .bench-forge-items {
+    min-height: 30px;
+  }
+
+  .bench-forge-item {
+    width: 30px;
+    height: 30px;
+    flex-basis: 30px;
+  }
+
+  .bench-forge-empty {
+    min-height: 30px;
+  }
+
+  .bench-forge-drawer {
+    width: calc(100% - 8px);
+    margin: 6px 4px 0;
   }
 
   .arena-bench {

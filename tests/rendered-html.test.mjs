@@ -28,6 +28,7 @@ test("server-renders the complete HEXFALL game surface", async () => {
   assert.match(html, /role="grid"/);
   assert.match(html, /Commander life/);
   assert.match(html, /data-testid="buy-xp"/);
+  assert.match(html, /data-testid="bench-forge"/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site|react-loading-skeleton/i);
 });
 
@@ -48,15 +49,22 @@ test("integrates the bench into the arena surface without panel chrome", async (
 
   assert.match(arenaSurface, /className="arena-plane"/);
   assert.match(arenaSurface, /className="arena-bench" aria-labelledby="bench-title" data-testid="bench"/);
+  assert.match(arenaSurface, /data-testid="bench-forge"/);
   assert.match(arenaSurface, /<h2 id="bench-title">Bench<\/h2>/);
   assert.ok(
     arenaSurface.indexOf('data-testid="game-board"') < arenaSurface.indexOf('data-testid="bench"'),
     "the reserve bays should follow the battle grid inside the shared arena",
   );
-  assert.doesNotMatch(arenaSurface, /bench-panel|board-bench-panel|className="panel[^\"]*bench/);
+  assert.ok(
+    arenaSurface.indexOf('data-testid="bench-forge"') < arenaSurface.indexOf("Array.from({ length: BENCH_SIZE }"),
+    "the Forge should occupy the far-left bay before champion reserves",
+  );
+  assert.doesNotMatch(arenaSurface, /bench-panel|board-bench-panel|className="panel[^\"]*arena-bench/);
   assert.match(styles, /\.arena-plane\s*\{[^}]*rotateX\(var\(--board-tilt\)\)/s);
   assert.match(styles, /\.arena-bench\s*\{/);
   assert.match(styles, /\.bench-slot\s*\{[^}]*border:\s*1px solid/s);
+  assert.match(styles, /\.bench-grid\s*\{[^}]*grid-template-columns:\s*minmax\(112px, 1\.25fr\) repeat\(7,/s);
+  assert.match(styles, /\.bench-forge-drawer\s*\{/);
   assert.match(
     styles,
     /@media \(max-width: 600px\)[\s\S]*?\.bench-grid\s*\{[^}]*overflow-x:\s*auto/s,

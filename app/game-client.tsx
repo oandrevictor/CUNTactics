@@ -552,12 +552,15 @@ export function GameClient() {
   const [boitata3DReady, setBoitata3DReady] = useState(false);
   const [tutorialStage, setTutorialStage] = useState(0);
   const [tutorialVisible, setTutorialVisible] = useState(true);
+  const [forgeOpen, setForgeOpen] = useState(false);
   const [forgeComponents, setForgeComponents] = useState<ItemComponentId[]>([]);
   const [selectedCraftedItemId, setSelectedCraftedItemId] = useState<string | null>(null);
   const [draggedLoadout, setDraggedLoadout] = useState<LoadoutDrag | null>(null);
   const [draggedUnitId, setDraggedUnitId] = useState<string | null>(null);
   const playbackEventIdRef = useRef<string | null>(null);
   const playbackRemainingSecondsRef = useRef<number | null>(null);
+  const forgeToggleRef = useRef<HTMLButtonElement>(null);
+  const forgeDrawerRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -588,6 +591,12 @@ export function GameClient() {
     const timeout = window.setTimeout(() => setToast(""), 3400);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  useEffect(() => {
+    if (!forgeOpen) return;
+    const frame = window.requestAnimationFrame(() => forgeDrawerRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [forgeOpen]);
 
   useEffect(() => {
     const mobileBoard = window.matchMedia("(max-width: 600px)");
@@ -647,6 +656,10 @@ export function GameClient() {
       if (event.key === "Escape") {
         setSelectedId(null);
         setHighlightedTrait(null);
+        if (forgeOpen) {
+          setForgeOpen(false);
+          window.requestAnimationFrame(() => forgeToggleRef.current?.focus());
+        }
       }
       if (game.phase === "combat" && !atCombatEnd && !isFormControl && event.code === "Space") {
         event.preventDefault();
@@ -660,7 +673,7 @@ export function GameClient() {
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [game.phase, atCombatEnd, combatEvents.length]);
+  }, [game.phase, atCombatEnd, combatEvents.length, forgeOpen]);
 
   const displayUnits = useMemo<DisplayUnit[]>(() => {
     if (game.phase === "combat" && currentEvent) {
@@ -881,6 +894,7 @@ export function GameClient() {
       playbackRemainingSecondsRef.current = null;
       setCombatIndex(0);
       setPlaying(true);
+      setForgeOpen(false);
       setSelectedId(null);
       if (tutorialVisible) finishTutorial();
     });
@@ -897,6 +911,7 @@ export function GameClient() {
     setSelectedId(null);
     setSelectedCraftedItemId(null);
     setForgeComponents([]);
+    setForgeOpen(false);
     setBoitata3DReady(false);
     playbackEventIdRef.current = null;
     playbackRemainingSecondsRef.current = null;
@@ -1103,6 +1118,85 @@ export function GameClient() {
                   <span className="arena-bench-count">{benchUnits.length}/{BENCH_SIZE} reserves</span>
                 </div>
                 <div className="bench-grid">
+                  <section
+                    className={`bench-forge-slot ${forgeOpen ? "bench-forge-slot-open" : ""} ${game.roundResult?.itemComponentReward ? "bench-forge-slot-reward" : ""}`}
+                    aria-label="Relic Forge inventory"
+                    data-testid="bench-forge"
+                  >
+                    <button
+                      className="bench-forge-toggle"
+                      type="button"
+                      ref={forgeToggleRef}
+                      aria-expanded={forgeOpen}
+                      aria-controls="arena-forge-drawer"
+                      onClick={() => setForgeOpen((open) => !open)}
+                    >
+                      <span><small>Left bay</small><strong>Forge</strong></span>
+                      <b>{componentCount}<small> parts</small> · {game.craftedItemInventory.length}<small> gear</small></b>
+                    </button>
+                    <div className="bench-forge-components" aria-label="Forge components">
+                      {ITEM_COMPONENT_IDS.map((componentId) => {
+                        const component = ITEM_COMPONENTS[componentId];
+                        const selectedCount = forgeComponents.filter((id) => id === componentId).length;
+                        const available = game.componentInventory[componentId];
+                        return (
+                          <button
+                            className={`bench-forge-component ${selectedCount ? "bench-forge-component-selected" : ""} ${draggedLoadout?.kind === "component" && draggedLoadout.id === componentId ? "loadout-source-dragging" : ""}`}
+                            type="button"
+                            key={componentId}
+                            data-testid={`bench-forge-component-${componentId}`}
+                            disabled={game.phase !== "planning" || available <= 0}
+                            draggable={game.phase === "planning" && available > 0}
+                            onClick={() => {
+                              handleSelectComponent(componentId);
+                              setForgeOpen(true);
+                            }}
+                            onDragStart={(event) => {
+                              event.dataTransfer.effectAllowed = "move";
+                              event.dataTransfer.setData(ITEM_COMPONENT_DRAG_TYPE, componentId);
+                              setDraggedLoadout({ kind: "component", id: componentId });
+                            }}
+                            onDragEnd={() => setDraggedLoadout(null)}
+                            aria-label={`${component.name}, ${available} available. Add to the forge or drag onto a champion to enhance gear.`}
+                            title={`${component.name} ×${available}`}
+                          >
+                            <span aria-hidden="true">{component.glyph}</span>
+                            <b>×{available}</b>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="bench-forge-items" aria-label="Crafted gear inventory">
+                      {game.craftedItemInventory.length ? game.craftedItemInventory.map((item) => {
+                        const definition = ITEM_DEFINITIONS[item.itemId];
+                        return (
+                          <button
+                            className={`bench-forge-item ${item.id === selectedCraftedItemId ? "bench-forge-item-selected" : ""} ${item.tier === "enhanced" ? "bench-forge-item-enhanced" : ""} ${draggedLoadout?.kind === "item" && draggedLoadout.id === item.id ? "loadout-source-dragging" : ""}`}
+                            type="button"
+                            key={item.id}
+                            data-testid={`bench-forge-item-${item.id}`}
+                            aria-pressed={item.id === selectedCraftedItemId}
+                            aria-label={`${craftedItemName(item)}, ${craftedItemBonusText(item)}. Select or drag onto a champion.`}
+                            title={craftedItemName(item)}
+                            draggable={game.phase === "planning"}
+                            onDragStart={(event) => {
+                              event.dataTransfer.effectAllowed = "move";
+                              event.dataTransfer.setData(CRAFTED_ITEM_DRAG_TYPE, item.id);
+                              setDraggedLoadout({ kind: "item", id: item.id });
+                            }}
+                            onDragEnd={() => setDraggedLoadout(null)}
+                            onClick={() => {
+                              setSelectedCraftedItemId((selected) => selected === item.id ? null : item.id);
+                              setForgeOpen(true);
+                            }}
+                          >
+                            <span aria-hidden="true">{definition.recipe.map((componentId) => ITEM_COMPONENTS[componentId].glyph).join("")}</span>
+                            {item.enhancement ? <i aria-hidden="true">{ITEM_COMPONENTS[item.enhancement].glyph}</i> : null}
+                          </button>
+                        );
+                      }) : <button className="bench-forge-empty" type="button" onClick={() => setForgeOpen(true)}>Gear</button>}
+                    </div>
+                  </section>
                   {Array.from({ length: BENCH_SIZE }, (_, index) => {
                     const unit = benchUnits.find((candidate) => candidate.benchIndex === index);
                     const display = unit ? persistentDisplay(unit) : null;
@@ -1157,6 +1251,141 @@ export function GameClient() {
                 </div>
               </section>
             </div>
+            {forgeOpen ? (
+              <section
+                className="panel item-armory-panel bench-forge-drawer"
+                id="arena-forge-drawer"
+                ref={forgeDrawerRef}
+                tabIndex={-1}
+                aria-label="Relic Forge"
+                data-testid="item-armory"
+              >
+                <div className="panel-heading">
+                  <div><span className="eyebrow">Components & gear</span><h2 className="panel-title">Relic Forge</h2></div>
+                  <div className="bench-forge-drawer-actions">
+                    <span className="panel-meta">{componentCount} parts · {game.craftedItemInventory.length} gear</span>
+                    <button
+                      className="bench-forge-close"
+                      type="button"
+                      onClick={() => {
+                        setForgeOpen(false);
+                        window.requestAnimationFrame(() => forgeToggleRef.current?.focus());
+                      }}
+                      aria-label="Close Relic Forge"
+                    >×</button>
+                  </div>
+                </div>
+                <p className="armory-cadence">This Forge occupies the left arena bay. A component arrives every other round. Combine two for gear, then drag gear onto a champion to equip it or drag a component onto a champion with full gear to enhance it.</p>
+                {game.roundResult?.itemComponentReward ? (
+                  <div className="armory-reward" data-testid="round-item-reward">
+                    <span>{ITEM_COMPONENTS[game.roundResult.itemComponentReward].glyph}</span>
+                    <small>New component</small>
+                    <strong>{ITEM_COMPONENTS[game.roundResult.itemComponentReward].name}</strong>
+                  </div>
+                ) : null}
+                <div className="component-grid" aria-label="Item components">
+                  {ITEM_COMPONENT_IDS.map((componentId) => {
+                    const component = ITEM_COMPONENTS[componentId];
+                    const selectedCount = forgeComponents.filter((id) => id === componentId).length;
+                    const available = game.componentInventory[componentId];
+                    return (
+                      <button
+                        className={`item-component-card ${selectedCount ? "item-component-card-selected" : ""} ${draggedLoadout?.kind === "component" && draggedLoadout.id === componentId ? "loadout-source-dragging" : ""}`}
+                        type="button"
+                        key={componentId}
+                        data-testid={`item-component-${componentId}`}
+                        disabled={game.phase !== "planning" || available <= 0}
+                        draggable={game.phase === "planning" && available > 0}
+                        onClick={() => handleSelectComponent(componentId)}
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData(ITEM_COMPONENT_DRAG_TYPE, componentId);
+                          setDraggedLoadout({ kind: "component", id: componentId });
+                        }}
+                        onDragEnd={() => setDraggedLoadout(null)}
+                        aria-label={`Add ${component.name} to forge, or drag it onto a champion to enhance equipped full gear, ${available} available${selectedCount ? `, ${selectedCount} selected` : ""}`}
+                      >
+                        <span className="item-component-glyph" aria-hidden="true">{component.glyph}</span>
+                        <span><strong>{component.name}</strong><small>{component.description}</small></span>
+                        <b data-testid={`item-component-count-${componentId}`}>×{available}</b>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="craft-tray" aria-label="Crafting tray">
+                  {[0, 1].map((index) => {
+                    const componentId = forgeComponents[index];
+                    return (
+                      <button
+                        className={`craft-slot ${componentId ? "craft-slot-filled" : ""}`}
+                        type="button"
+                        key={index}
+                        data-testid={`item-craft-slot-${index}`}
+                        disabled={!componentId}
+                        onClick={() => setForgeComponents((components) => components.filter((_, componentIndex) => componentIndex !== index))}
+                        aria-label={componentId ? `Remove ${ITEM_COMPONENTS[componentId].name} from forge` : `Empty craft slot ${index + 1}`}
+                      >
+                        {componentId ? <><span>{ITEM_COMPONENTS[componentId].glyph}</span><small>{ITEM_COMPONENTS[componentId].name}</small></> : <><span>+</span><small>Component</small></>}
+                      </button>
+                    );
+                  })}
+                  <div className="craft-preview" data-testid="item-craft-preview">
+                    <small>{forgeRecipe ? "Recipe ready" : forgeComponents.length ? "Choose one more" : "Crafting tray"}</small>
+                    <strong>{forgeRecipe?.name ?? "2 components → full item"}</strong>
+                  </div>
+                  <button className="game-button button-secondary" type="button" data-testid="craft-item" disabled={game.phase !== "planning" || !forgeRecipe} onClick={handleCraftItem}>Craft full item</button>
+                </div>
+                <div className="crafted-inventory-heading">
+                  <span><small>Inventory</small><strong>Crafted gear</strong></span>
+                  <small>{selectedAllyForItems ? `Equipping ${HEROES[selectedAllyForItems.heroId].name}` : "Select an allied champion to equip"}</small>
+                </div>
+                <div className="crafted-item-list">
+                  {game.craftedItemInventory.length ? game.craftedItemInventory.map((item) => {
+                    const definition = ITEM_DEFINITIONS[item.itemId];
+                    return (
+                      <button
+                        className={`crafted-item-card ${item.id === selectedCraftedItemId ? "crafted-item-card-selected" : ""} ${item.tier === "enhanced" ? "crafted-item-card-enhanced" : ""} ${draggedLoadout?.kind === "item" && draggedLoadout.id === item.id ? "loadout-source-dragging" : ""}`}
+                        type="button"
+                        key={item.id}
+                        data-testid={`crafted-item-${item.id}`}
+                        aria-pressed={item.id === selectedCraftedItemId}
+                        draggable={game.phase === "planning"}
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData(CRAFTED_ITEM_DRAG_TYPE, item.id);
+                          setDraggedLoadout({ kind: "item", id: item.id });
+                        }}
+                        onDragEnd={() => setDraggedLoadout(null)}
+                        onClick={() => setSelectedCraftedItemId((selected) => selected === item.id ? null : item.id)}
+                      >
+                        <span className="item-mark" aria-hidden="true">{definition.recipe.map((componentId) => ITEM_COMPONENTS[componentId].glyph).join("")}{item.enhancement ? <i>{ITEM_COMPONENTS[item.enhancement].glyph}</i> : null}</span>
+                        <span><strong>{craftedItemName(item)}</strong><small>{craftedItemBonusText(item)}</small></span>
+                        <b className={`item-tier ${item.tier === "enhanced" ? "item-tier-enhanced" : ""}`}>{item.tier}</b>
+                      </button>
+                    );
+                  }) : <p className="armory-empty">Your first full item can be forged after collecting two components.</p>}
+                </div>
+                {selectedCraftedItem ? (
+                  <div className="item-action-row">
+                    <button className="game-button button-secondary" type="button" data-testid={`equip-item-${selectedCraftedItem.id}`} disabled={game.phase !== "planning" || !selectedAllyForItems || selectedAllyForItems.itemSlots.every(Boolean)} onClick={() => handleEquipItem()}>Equip{selectedAllyForItems ? ` to ${HEROES[selectedAllyForItems.heroId].name}` : " selected champion"}</button>
+                    <button className="game-button button-primary" type="button" data-testid={`enhance-item-${selectedCraftedItem.id}`} disabled={game.phase !== "planning" || selectedCraftedItem.tier === "enhanced" || forgeComponents.length !== 1} onClick={handleEnhanceItem}>Enhance with 1 component</button>
+                  </div>
+                ) : null}
+                {forgeComponents.length === 1 ? (
+                  <div className="item-action-row item-component-action-row">
+                    <button
+                      className="game-button button-primary"
+                      type="button"
+                      data-testid="enhance-equipped-item"
+                      disabled={game.phase !== "planning" || !selectedAllyForItems || !selectedAllyForItems.itemSlots.some((item) => item?.tier === "full")}
+                      onClick={() => selectedAllyForItems && handleEnhanceEquippedGear(selectedAllyForItems.id, forgeComponents[0])}
+                    >
+                      Enhance {selectedAllyForItems ? `${HEROES[selectedAllyForItems.heroId].name}'s full gear` : "selected champion's gear"}
+                    </button>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
           </div>
           {game.phase === "combat" && currentEvent ? (
             <div className="combat-caption" aria-live="polite">
@@ -1366,122 +1595,6 @@ export function GameClient() {
       </section>
 
       <section className="dock">
-        <section className="panel item-armory-panel" aria-label="Relic Forge" data-testid="item-armory">
-          <div className="panel-heading">
-            <div><span className="eyebrow">Components & gear</span><h2 className="panel-title">Relic Forge</h2></div>
-            <span className="panel-meta">{componentCount} parts · {game.craftedItemInventory.length} gear</span>
-          </div>
-          <p className="armory-cadence">A component arrives when rounds 2, 4, 6, 8, and 10 begin. Combine two for gear. Drag gear onto a champion to equip it, or drag a component onto a champion with full gear to enhance it.</p>
-          {game.roundResult?.itemComponentReward ? (
-            <div className="armory-reward" data-testid="round-item-reward">
-              <span>{ITEM_COMPONENTS[game.roundResult.itemComponentReward].glyph}</span>
-              <small>New component</small>
-              <strong>{ITEM_COMPONENTS[game.roundResult.itemComponentReward].name}</strong>
-            </div>
-          ) : null}
-          <div className="component-grid" aria-label="Item components">
-            {ITEM_COMPONENT_IDS.map((componentId) => {
-              const component = ITEM_COMPONENTS[componentId];
-              const selectedCount = forgeComponents.filter((id) => id === componentId).length;
-              const available = game.componentInventory[componentId];
-              return (
-                <button
-                  className={`item-component-card ${selectedCount ? "item-component-card-selected" : ""} ${draggedLoadout?.kind === "component" && draggedLoadout.id === componentId ? "loadout-source-dragging" : ""}`}
-                  type="button"
-                  key={componentId}
-                  data-testid={`item-component-${componentId}`}
-                  disabled={game.phase !== "planning" || available <= 0}
-                  draggable={game.phase === "planning" && available > 0}
-                  onClick={() => handleSelectComponent(componentId)}
-                  onDragStart={(event) => {
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData(ITEM_COMPONENT_DRAG_TYPE, componentId);
-                    setDraggedLoadout({ kind: "component", id: componentId });
-                  }}
-                  onDragEnd={() => setDraggedLoadout(null)}
-                  aria-label={`Add ${component.name} to forge, or drag it onto a champion to enhance equipped full gear, ${available} available${selectedCount ? `, ${selectedCount} selected` : ""}`}
-                >
-                  <span className="item-component-glyph" aria-hidden="true">{component.glyph}</span>
-                  <span><strong>{component.name}</strong><small>{component.description}</small></span>
-                  <b data-testid={`item-component-count-${componentId}`}>×{available}</b>
-                </button>
-              );
-            })}
-          </div>
-          <div className="craft-tray" aria-label="Crafting tray">
-            {[0, 1].map((index) => {
-              const componentId = forgeComponents[index];
-              return (
-                <button
-                  className={`craft-slot ${componentId ? "craft-slot-filled" : ""}`}
-                  type="button"
-                  key={index}
-                  data-testid={`item-craft-slot-${index}`}
-                  disabled={!componentId}
-                  onClick={() => setForgeComponents((components) => components.filter((_, componentIndex) => componentIndex !== index))}
-                  aria-label={componentId ? `Remove ${ITEM_COMPONENTS[componentId].name} from forge` : `Empty craft slot ${index + 1}`}
-                >
-                  {componentId ? <><span>{ITEM_COMPONENTS[componentId].glyph}</span><small>{ITEM_COMPONENTS[componentId].name}</small></> : <><span>+</span><small>Component</small></>}
-                </button>
-              );
-            })}
-            <div className="craft-preview" data-testid="item-craft-preview">
-              <small>{forgeRecipe ? "Recipe ready" : forgeComponents.length ? "Choose one more" : "Crafting tray"}</small>
-              <strong>{forgeRecipe?.name ?? "2 components → full item"}</strong>
-            </div>
-            <button className="game-button button-secondary" type="button" data-testid="craft-item" disabled={game.phase !== "planning" || !forgeRecipe} onClick={handleCraftItem}>Craft full item</button>
-          </div>
-          <div className="crafted-inventory-heading">
-            <span><small>Inventory</small><strong>Crafted gear</strong></span>
-            <small>{selectedAllyForItems ? `Equipping ${HEROES[selectedAllyForItems.heroId].name}` : "Select an allied champion to equip"}</small>
-          </div>
-          <div className="crafted-item-list">
-            {game.craftedItemInventory.length ? game.craftedItemInventory.map((item) => {
-              const definition = ITEM_DEFINITIONS[item.itemId];
-              return (
-                <button
-                  className={`crafted-item-card ${item.id === selectedCraftedItemId ? "crafted-item-card-selected" : ""} ${item.tier === "enhanced" ? "crafted-item-card-enhanced" : ""} ${draggedLoadout?.kind === "item" && draggedLoadout.id === item.id ? "loadout-source-dragging" : ""}`}
-                  type="button"
-                  key={item.id}
-                  data-testid={`crafted-item-${item.id}`}
-                  aria-pressed={item.id === selectedCraftedItemId}
-                  draggable={game.phase === "planning"}
-                  onDragStart={(event) => {
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData(CRAFTED_ITEM_DRAG_TYPE, item.id);
-                    setDraggedLoadout({ kind: "item", id: item.id });
-                  }}
-                  onDragEnd={() => setDraggedLoadout(null)}
-                  onClick={() => setSelectedCraftedItemId((selected) => selected === item.id ? null : item.id)}
-                >
-                  <span className="item-mark" aria-hidden="true">{definition.recipe.map((componentId) => ITEM_COMPONENTS[componentId].glyph).join("")}{item.enhancement ? <i>{ITEM_COMPONENTS[item.enhancement].glyph}</i> : null}</span>
-                  <span><strong>{craftedItemName(item)}</strong><small>{craftedItemBonusText(item)}</small></span>
-                  <b className={`item-tier ${item.tier === "enhanced" ? "item-tier-enhanced" : ""}`}>{item.tier}</b>
-                </button>
-              );
-            }) : <p className="armory-empty">Your first full item can be forged after collecting two components.</p>}
-          </div>
-          {selectedCraftedItem ? (
-            <div className="item-action-row">
-              <button className="game-button button-secondary" type="button" data-testid={`equip-item-${selectedCraftedItem.id}`} disabled={game.phase !== "planning" || !selectedAllyForItems || selectedAllyForItems.itemSlots.every(Boolean)} onClick={() => handleEquipItem()}>Equip{selectedAllyForItems ? ` to ${HEROES[selectedAllyForItems.heroId].name}` : " selected champion"}</button>
-              <button className="game-button button-primary" type="button" data-testid={`enhance-item-${selectedCraftedItem.id}`} disabled={game.phase !== "planning" || selectedCraftedItem.tier === "enhanced" || forgeComponents.length !== 1} onClick={handleEnhanceItem}>Enhance with 1 component</button>
-            </div>
-          ) : null}
-          {forgeComponents.length === 1 ? (
-            <div className="item-action-row item-component-action-row">
-              <button
-                className="game-button button-primary"
-                type="button"
-                data-testid="enhance-equipped-item"
-                disabled={game.phase !== "planning" || !selectedAllyForItems || !selectedAllyForItems.itemSlots.some((item) => item?.tier === "full")}
-                onClick={() => selectedAllyForItems && handleEnhanceEquippedGear(selectedAllyForItems.id, forgeComponents[0])}
-              >
-                Enhance {selectedAllyForItems ? `${HEROES[selectedAllyForItems.heroId].name}'s full gear` : "selected champion's gear"}
-              </button>
-            </div>
-          ) : null}
-        </section>
-
         <section className="panel shop-panel" aria-label="Night Market" data-testid="shop">
           <div className="panel-heading"><div><span className="eyebrow">Recruitment</span><h2 className="panel-title">Night Market</h2></div><span className="panel-meta">{game.shopLocked ? "Locked" : "Refreshes next round"}</span></div>
           <div className="shop-grid">
