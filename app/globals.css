@@ -440,13 +440,33 @@ button:disabled,
 }
 
 .board-wrap {
+  --board-perspective: 900px;
+  --board-tilt: 7deg;
   position: relative;
+  isolation: isolate;
   padding: 28px 18px 29px;
   border: 1px solid var(--line);
   background:
     radial-gradient(circle at 50% 50%, rgb(98 215 203 / 7%), transparent 62%),
     rgb(9 7 14 / 72%);
   box-shadow: 0 24px 70px rgb(0 0 0 / 48%);
+  perspective: var(--board-perspective);
+  perspective-origin: 50% 28%;
+}
+
+.board-wrap::before {
+  position: absolute;
+  z-index: 0;
+  right: 28px;
+  bottom: 14px;
+  left: 28px;
+  height: 34%;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 48%);
+  content: "";
+  filter: blur(15px);
+  pointer-events: none;
+  transform: translateY(9px);
 }
 
 .territory-label {
@@ -471,6 +491,7 @@ button:disabled,
 
 .board-grid {
   position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: repeat(8, minmax(0, 1fr));
   grid-template-rows: repeat(6, minmax(0, 1fr));
@@ -480,6 +501,13 @@ button:disabled,
   padding: 4px;
   border: 1px solid var(--line-strong);
   background: var(--ink-deep);
+  box-shadow:
+    0 24px 32px -22px rgb(0 0 0 / 88%),
+    inset 0 1px rgb(245 237 223 / 12%),
+    inset 0 -7px rgb(0 0 0 / 22%);
+  transform: rotateX(var(--board-tilt));
+  transform-origin: 50% 100%;
+  transform-style: preserve-3d;
 }
 
 .board-cell {
@@ -802,6 +830,104 @@ button:disabled,
   height: 88%;
   filter: drop-shadow(0 4px 5px rgb(0 0 0 / 48%));
   pointer-events: none;
+}
+
+.unit-token-creature {
+  --unit-team-color: var(--teal);
+  isolation: isolate;
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ivory);
+}
+
+.unit-token-boitata.unit-ally {
+  --unit-team-color: var(--teal);
+  background: transparent;
+  box-shadow: none;
+}
+
+.unit-token-boitata.unit-enemy {
+  --unit-team-color: var(--coral);
+  background: transparent;
+  box-shadow: none;
+}
+
+.unit-token-creature::after {
+  position: absolute;
+  z-index: 0;
+  bottom: -4%;
+  left: 50%;
+  width: 108%;
+  height: 30%;
+  border: 1px solid color-mix(in srgb, var(--unit-team-color) 28%, transparent);
+  border-radius: 50%;
+  background:
+    radial-gradient(
+      ellipse,
+      color-mix(in srgb, var(--unit-team-color) 30%, transparent),
+      rgb(0 0 0 / 48%) 52%,
+      transparent 74%
+    );
+  box-shadow: 0 7px 8px rgb(0 0 0 / 38%);
+  content: "";
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.unit-token-creature .unit-avatar.hero-art-image {
+  position: absolute;
+  z-index: 2;
+  bottom: -10%;
+  left: 50%;
+  width: 142%;
+  height: 142%;
+  background-position: center bottom;
+  filter:
+    drop-shadow(0 8px 5px rgb(0 0 0 / 56%))
+    drop-shadow(0 0 7px rgb(255 100 34 / 18%));
+  pointer-events: auto;
+  transform: translateX(-50%);
+}
+
+.unit-token-creature .fire-wall {
+  z-index: 1;
+  inset: -30%;
+}
+
+.unit-token-creature .unit-stars,
+.unit-token-creature .unit-level,
+.unit-token-creature .unit-name,
+.unit-token-creature .unit-bars,
+.unit-token-creature .status-mark {
+  z-index: 5;
+}
+
+.unit-token-creature .unit-level {
+  color: var(--ivory);
+  text-shadow: 0 1px 3px rgb(0 0 0 / 90%);
+}
+
+.unit-token-creature.unit-selected,
+.unit-token-creature.unit-trait-highlight {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.unit-token-creature.unit-selected::after {
+  border-color: var(--gold);
+  box-shadow:
+    0 0 0 3px rgb(241 203 109 / 20%),
+    0 0 18px rgb(241 203 109 / 34%),
+    0 7px 8px rgb(0 0 0 / 38%);
+}
+
+.unit-token-creature.unit-trait-highlight::after {
+  border-color: rgb(241 203 109 / 70%);
+  box-shadow:
+    0 0 16px rgb(241 203 109 / 30%),
+    0 7px 8px rgb(0 0 0 / 38%);
 }
 
 .fire-wall {
@@ -1894,7 +2020,14 @@ button:disabled,
   }
 
   .board-wrap {
+    --board-perspective: 700px;
+    --board-tilt: 4deg;
     padding: 24px 5px 27px;
+  }
+
+  .board-wrap::before {
+    right: 10px;
+    left: 10px;
   }
 
   .board-grid {

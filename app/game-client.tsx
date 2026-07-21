@@ -45,6 +45,8 @@ import {
 
 const STORAGE_KEY = "hexfall-match-v1";
 const TUTORIAL_KEY = "hexfall-tutorial-complete";
+const DESKTOP_BOARD_HEIGHT_RATIO = 5.4 / 8;
+const MOBILE_BOARD_HEIGHT_RATIO = 6.3 / 8;
 
 type DisplayUnit = {
   id: string;
@@ -87,14 +89,14 @@ function combatEffectKind(event: CombatEvent | null): CombatEffectKind | null {
   return actor?.heroId === "tide" || actor?.heroId === "bramble" ? "heal" : "ability";
 }
 
-function combatLinkStyle(actorPosition: number, targetPosition: number): CSSProperties {
+function combatLinkStyle(actorPosition: number, targetPosition: number, boardHeightRatio: number): CSSProperties {
   const boardRows = BOARD_SIZE / BOARD_COLUMNS;
   const startX = ((actorPosition % BOARD_COLUMNS) + 0.5) / BOARD_COLUMNS * 100;
   const startY = (Math.floor(actorPosition / BOARD_COLUMNS) + 0.5) / boardRows * 100;
   const endX = ((targetPosition % BOARD_COLUMNS) + 0.5) / BOARD_COLUMNS * 100;
   const endY = (Math.floor(targetPosition / BOARD_COLUMNS) + 0.5) / boardRows * 100;
   const deltaX = endX - startX;
-  const deltaY = (endY - startY) * (5.4 / 8);
+  const deltaY = (endY - startY) * boardHeightRatio;
   const length = Math.hypot(deltaX, deltaY);
   const angle = Math.atan2(deltaY, deltaX) * 180 / Math.PI;
 
@@ -172,6 +174,7 @@ function UnitToken({
   onDragStart?: (event: DragEvent<HTMLDivElement>) => void;
 }) {
   const hero = HEROES[unit.heroId];
+  const isCreatureToken = unit.heroId === "boitata";
   const isTarget = currentEvent?.targetIds?.includes(unit.id) ?? false;
   const effectKind = combatEffectKind(currentEvent);
   const isActor = !!effectKind && currentEvent?.actorId === unit.id;
@@ -198,11 +201,12 @@ function UnitToken({
 
   return (
     <div
-      className={`unit-token ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${isActor ? `unit-event-actor unit-event-actor-${effectKind}` : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""}`}
+      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${isActor ? `unit-event-actor unit-event-actor-${effectKind}` : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""}`}
       draggable={draggable}
       onDragStart={onDragStart}
       data-testid={`unit-${unit.id}`}
       data-unit-id={unit.id}
+      data-hero-id={unit.heroId}
     >
       <span className="unit-stars" data-testid={`unit-stars-${unit.id}`} aria-label={`${unit.stars} star`}>{starsLabel(unit.stars)}</span>
       <HeroArt heroId={unit.heroId} className="unit-avatar" />
@@ -240,6 +244,7 @@ export function GameClient() {
   const [combatIndex, setCombatIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [boardHeightRatio, setBoardHeightRatio] = useState(DESKTOP_BOARD_HEIGHT_RATIO);
   const [tutorialStage, setTutorialStage] = useState(0);
   const [tutorialVisible, setTutorialVisible] = useState(true);
 
@@ -271,6 +276,14 @@ export function GameClient() {
     const timeout = window.setTimeout(() => setToast(""), 3400);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  useEffect(() => {
+    const mobileBoard = window.matchMedia("(max-width: 600px)");
+    const syncBoardRatio = () => setBoardHeightRatio(mobileBoard.matches ? MOBILE_BOARD_HEIGHT_RATIO : DESKTOP_BOARD_HEIGHT_RATIO);
+    syncBoardRatio();
+    mobileBoard.addEventListener("change", syncBoardRatio);
+    return () => mobileBoard.removeEventListener("change", syncBoardRatio);
+  }, []);
 
   const combatEvents = game.combatReport?.events ?? [];
   const currentEvent = game.phase === "combat" ? combatEvents[Math.min(combatIndex, Math.max(0, combatEvents.length - 1))] ?? null : null;
@@ -337,7 +350,7 @@ export function GameClient() {
     ? currentEvent.targetIds.flatMap((targetId) => {
         const target = currentEvent.snapshot.find((unit) => unit.id === targetId);
         if (!target || target.position === currentActor.position) return [];
-        return [{ targetId, style: combatLinkStyle(currentActor.position, target.position) }];
+        return [{ targetId, style: combatLinkStyle(currentActor.position, target.position, boardHeightRatio) }];
       })
     : [];
   const combatBeatStyle = { "--combat-beat": `${Math.round(680 / speed)}ms` } as CSSProperties;

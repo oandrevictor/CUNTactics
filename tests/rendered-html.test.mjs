@@ -104,3 +104,59 @@ test("ships Boitata's portrait and fire-wall shield animation states", async () 
   assert.match(styles, /@keyframes fire-wall-absorb/);
   assert.match(styles, /@keyframes fire-wall-break/);
 });
+
+test("tilts the battle board with a reduced perspective angle on mobile", async () => {
+  const [client, styles] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(styles, /\.board-wrap\s*\{[^}]*\bperspective\s*:/s);
+
+  const desktopTilt = styles.match(
+    /\.board-wrap\s*\{[^}]*--board-tilt\s*:\s*(-?\d+(?:\.\d+)?)deg/s,
+  );
+  assert.ok(desktopTilt, "the board wrapper should define a static perspective angle");
+  assert.match(
+    styles,
+    /\.board-grid\s*\{[^}]*\btransform\s*:[^;}]*rotateX\(\s*var\(--board-tilt\)\s*\)/s,
+  );
+
+  const mobileTilt = styles.match(
+    /@media\s*\(max-width:\s*\d+px\)[\s\S]*?\.board-wrap\s*\{[^}]*--board-tilt\s*:\s*(-?\d+(?:\.\d+)?)deg/,
+  );
+  assert.ok(mobileTilt, "a mobile breakpoint should reduce the board's tilt");
+  assert.ok(
+    Math.abs(Number(mobileTilt[1])) < Math.abs(Number(desktopTilt[1])),
+    "the mobile rotateX angle should be gentler than the desktop angle",
+  );
+  assert.match(client, /MOBILE_BOARD_HEIGHT_RATIO\s*=\s*6\.3\s*\/\s*8/);
+  assert.match(client, /matchMedia\(["']\(max-width:\s*600px\)["']\)/);
+  assert.match(client, /combatLinkStyle\([^)]*boardHeightRatio\)/);
+});
+
+test("renders Boitata as a transparent creature token blended into the board", async () => {
+  const [client, styles] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  const unitTokenSource = client.slice(
+    client.indexOf("function UnitToken"),
+    client.indexOf("export function GameClient"),
+  );
+  assert.match(unitTokenSource, /unit\.heroId\s*===\s*["']boitata["']/);
+  assert.match(
+    unitTokenSource,
+    /\?\s*["'][^"']*\bunit-token-creature\b[^"']*\bunit-token-boitata\b[^"']*["']/,
+  );
+
+  const boitataRules = [...styles.matchAll(/[^{}]*\.unit-token-(?:creature|boitata)[^{}]*\{([^}]*)\}/g)]
+    .map((match) => match[1])
+    .join("\n");
+  assert.ok(boitataRules, "Boitata should have board-token-specific styling");
+  assert.match(boitataRules, /\bbackground(?:-color)?\s*:\s*(?:none|transparent)\b/);
+  assert.match(boitataRules, /\bborder(?:-color)?\s*:\s*(?:0|none|transparent)\b/);
+  assert.match(boitataRules, /\bfilter\s*:[^;}]*drop-shadow\(/);
+  assert.match(boitataRules, /\bpointer-events\s*:\s*auto\b/);
+});
