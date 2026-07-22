@@ -72,6 +72,33 @@ test("integrates the bench into the arena surface without panel chrome", async (
   assert.match(styles, /@media print\s*\{[\s\S]*?\.arena-bench/);
 });
 
+test("shows equipped gear as readable item-specific badges on board and bench champions", async () => {
+  const [client, styles] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(client, /const ITEM_SHORT_LABELS:[\s\S]*?"inferno-fang": "FANG"[\s\S]*?cinderplate: "PLATE"[\s\S]*?"spirit-lantern": "LAMP"/);
+  assert.match(client, /function equippedItemSummary\(itemSlots: UnitItemSlots\)/);
+  assert.match(client, /title=\{equippedItemTitle \|\| undefined\}/);
+  assert.match(client, /unit-item-pip-\$\{item\.tier\} unit-item-pip-\$\{item\.itemId\}/);
+  assert.match(client, /data-testid=\{`unit-item-badge-\$\{unit\.id\}-\$\{index\}`\}/);
+  assert.match(client, /data-item-id=\{item\?\.itemId \?\? "empty"\}/);
+  assert.match(client, /className="unit-item-pip-glyph"[\s\S]*?definition\.recipe\.map/);
+  assert.match(client, /<small>\{craftedItemShortLabel\(item\)\}<\/small>/);
+  assert.match(client, /className="unit-item-enhancement"/);
+  assert.match(client, /equipmentSummary \? `, \$\{equipmentSummary\}`/);
+  assert.match(client, /equippedItemSummary\(display\.itemSlots\)/);
+
+  assert.match(styles, /\.unit-item-pip\s*\{[^}]*width:\s*20px;[^}]*height:\s*22px;[^}]*grid-template-rows:/s);
+  assert.match(styles, /\.board-grid \.unit-item-pip\s*\{[^}]*width:\s*clamp\(22px, 1\.75vw, 25px\);[^}]*height:\s*clamp\(23px, 1\.85vw, 27px\)/s);
+  assert.match(styles, /\.unit-item-pip small\s*\{[^}]*font-weight:\s*900/s);
+  assert.match(styles, /\.unit-item-enhancement\s*\{[^}]*border-radius:\s*50%/s);
+  for (const itemClass of ["inferno-fang", "cinderplate", "spirit-lantern", "blazing-aegis", "spellfang", "warding-flame"]) {
+    assert.match(styles, new RegExp(`\\.unit-item-pip-${itemClass}\\s*\\{[^}]*--item-accent:`));
+  }
+});
+
 test("ships the bespoke social card and no starter preview dependency", async () => {
   const [packageJson, page, layout] = await Promise.all([
     readFile(new URL("../package.json", import.meta.url), "utf8"),
@@ -255,6 +282,68 @@ test("Sol's Starfall traces the cluster and marks every damaged character", asyn
   assert.match(
     styles,
     /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.sol-starfall-trail[\s\S]*?animation: none !important/,
+  );
+});
+
+test("Meat Gaga exposes a mana-free passive, live reserve, and exact star scaling", async () => {
+  const [client, engine, styles] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/game-engine.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  await access(new URL("../public/characters/meat-couture-npc-v3.png", import.meta.url));
+  assert.match(engine, /id: "meat-gaga"/);
+  assert.match(engine, /portrait: "\/characters\/meat-couture-npc-v3\.png"/);
+  assert.match(engine, /role: "shooter"/);
+  assert.match(engine, /MEAT_GAGA_STACK_GAIN_PERCENTAGES = \[60, 75, 90\]/);
+  assert.match(engine, /MEAT_GAGA_STACK_CONSUME_PERCENTAGES = \[7, 8, 12\]/);
+  assert.match(client, /getMeatGagaPassivePreview\(selectedDisplay\.stars\)/);
+  assert.match(client, /calculateMeatGagaStackConsumption\(selectedDisplay\.meatStack, selectedDisplay\.stars\)/);
+  assert.match(client, /<span className="eyebrow">Passive · No Mana<\/span>/);
+  assert.match(client, /data-testid="meat-gaga-passive-current-values"/);
+  assert.match(client, /data-testid="meat-gaga-passive-scaling"/);
+  assert.match(client, /meatGagaPassivePreview\.current\.stackGainPercent/);
+  assert.match(client, /meatGagaPassivePreview\.current\.stackConsumePercent/);
+  assert.match(client, /meatGagaPassivePreview\.byStar\.map/);
+  assert.match(client, /<small>Next attack bonus<\/small>/);
+  assert.match(client, /unit-meat-stack-inspector-/);
+  assert.match(client, /unit-meat-stack-/);
+  assert.match(client, /event\.type === "passive"/);
+  assert.match(client, /unit-meat-stack-gained/);
+  assert.match(client, /HARVEST \+\$\{Math\.round\(meatHarvestEvent/);
+  assert.match(client, /heroId === "meat-gaga"[\s\S]*?"starting mana has no effect"/);
+  assert.match(client, /selectedHero\.id === "meat-gaga"[\s\S]*?Passive · No Mana[\s\S]*?: \([\s\S]*?<small>Mana<\/small>/);
+  assert.match(styles, /\.unit-token-meat-gaga \.unit-avatar\.hero-art-image/);
+  assert.match(styles, /\.stat-cell-meat-stack/);
+  assert.match(styles, /\.passive-card/);
+});
+
+test("empowered Meat Gaga attacks throw concurrent meat projectiles and splatter", async () => {
+  const [client, styles] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(client, /function isMeatGagaEnhancedAttack/);
+  assert.match(client, /event\.meatBonusDamage/);
+  assert.match(client, /currentEvents\.flatMap<MeatProjectileCue>/);
+  assert.match(client, /meatProjectiles\.map\(\(cue\) =>/);
+  assert.match(client, /data-testid="meat-projectile-layer"/);
+  assert.match(client, /data-testid=\{`meat-projectile-\$\{cue\.event\.id\}-\$\{cue\.targetId\}`\}/);
+  assert.match(client, /MEAT THROW/);
+  assert.match(client, /unit-impact-meat/);
+  assert.match(client, /floating-meat/);
+  assert.match(styles, /\.meat-projectile-layer\s*\{/);
+  assert.match(styles, /\.meat-projectile\s*\{/);
+  assert.match(styles, /\.meat-splatter\s*\{/);
+  assert.match(styles, /@keyframes meat-throw/);
+  assert.match(styles, /@keyframes meat-splatter/);
+  assert.match(styles, /\.combat-paused[\s\S]*?\.meat-projectile-layer/);
+  assert.match(styles, /\.combat-step-preview[\s\S]*?\.meat-projectile-layer/);
+  assert.match(
+    styles,
+    /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.meat-projectile[\s\S]*?animation: none !important/,
   );
 });
 

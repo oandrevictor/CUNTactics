@@ -23,6 +23,7 @@ import {
   applyCombatResult,
   buyPlayerXp,
   buyShopUnit,
+  calculateMeatGagaStackConsumption,
   commanderXpToNext,
   craftItem,
   createInitialGame,
@@ -36,6 +37,7 @@ import {
   getCraftedItemDefinition,
   getCombatStatistics,
   getInterest,
+  getMeatGagaPassivePreview,
   getStreakBonus,
   getUnitStats,
   moveUnit,
@@ -108,6 +110,7 @@ type DisplayUnit = {
   range: number;
   attackSpeed: number;
   manaRegen: number;
+  meatStack: number;
   shield: number;
   fireWallShield: number;
   stunned: number;
@@ -133,6 +136,13 @@ type SolStarfallCue = {
   event: CombatEvent;
   actor: CombatUnit;
   targets: CombatUnit[];
+  style: CSSProperties;
+};
+
+type MeatProjectileCue = {
+  event: CombatEvent;
+  targetId: string;
+  bonusDamage: number;
   style: CSSProperties;
 };
 
@@ -199,6 +209,11 @@ function combatEffectKind(event: CombatEvent | null): CombatEffectKind | null {
   const actor = event.actorId ? event.snapshot.find((unit) => unit.id === event.actorId) : null;
   if (actor?.heroId === "boitata") return "shield";
   return actor?.heroId === "tide" || actor?.heroId === "bramble" ? "heal" : "ability";
+}
+
+function isMeatGagaEnhancedAttack(event: CombatEvent | null): event is CombatEvent & { meatBonusDamage: number } {
+  if (event?.type !== "attack" || !event.actorId || !event.meatBonusDamage || event.meatBonusDamage <= 0) return false;
+  return event.snapshot.find((unit) => unit.id === event.actorId)?.heroId === "meat-gaga";
 }
 
 function combatLinkStyle(actorPosition: number, targetPosition: number, boardHeightRatio: number): CSSProperties {
@@ -270,6 +285,7 @@ function persistentDisplay(unit: UnitInstance): DisplayUnit {
     range: stats.range,
     attackSpeed: stats.attackSpeed,
     manaRegen: stats.manaRegen,
+    meatStack: 0,
     shield: 0,
     fireWallShield: 0,
     stunned: 0,
@@ -283,6 +299,7 @@ function combatDisplay(unit: CombatUnit, persistent?: UnitInstance): DisplayUnit
     ...unit,
     attackSpeed: Number.isFinite(unit.attackSpeed) ? unit.attackSpeed : fallbackStats.attackSpeed,
     manaRegen: Number.isFinite(unit.manaRegen) ? unit.manaRegen : fallbackStats.manaRegen,
+    meatStack: Number.isFinite(unit.meatStack) ? unit.meatStack : 0,
     xp: persistent?.xp ?? 0,
     benchIndex: null,
     itemSlots: persistent?.itemSlots ?? [null, null, null],
@@ -305,14 +322,36 @@ function craftedItemName(item: CraftedItem): string {
   return item.tier === "enhanced" ? `Enhanced ${name}` : name;
 }
 
-function craftedItemBonusText(item: CraftedItem): string {
+function craftedItemBonusText(item: CraftedItem, heroId?: HeroId): string {
   const bonuses = getCraftedItemBonuses(item);
   return [
     bonuses.maxHp ? `+${bonuses.maxHp} HP` : null,
     bonuses.attack ? `+${bonuses.attack} damage` : null,
     bonuses.armor ? `+${bonuses.armor} armor` : null,
-    bonuses.startingMana ? `+${bonuses.startingMana} starting mana` : null,
+    bonuses.startingMana
+      ? heroId === "meat-gaga"
+        ? "starting mana has no effect"
+        : `+${bonuses.startingMana} starting mana`
+      : null,
   ].filter(Boolean).join(" · ");
+}
+
+const ITEM_SHORT_LABELS: Record<CraftedItem["itemId"], string> = {
+  "inferno-fang": "FANG",
+  cinderplate: "PLATE",
+  "spirit-lantern": "LAMP",
+  "blazing-aegis": "AEGIS",
+  spellfang: "SPELL",
+  "warding-flame": "WARD",
+};
+
+function craftedItemShortLabel(item: CraftedItem): string {
+  return ITEM_SHORT_LABELS[item.itemId];
+}
+
+function equippedItemSummary(itemSlots: UnitItemSlots): string {
+  const names = itemSlots.flatMap((item) => item ? [craftedItemName(item)] : []);
+  return names.length ? `Equipped: ${names.join(", ")}` : "";
 }
 
 function targetCountText(values: AbilityValues): string {
@@ -333,6 +372,7 @@ function abilityMetricDefinitions(preview: AbilityPreview): AbilityMetric[] {
     tide: "Allies healed",
     vesper: "Enemies hit",
     piper: "Enemies hit",
+    "meat-gaga": "Target",
   };
   return [
     {
@@ -405,7 +445,7 @@ function HeroArt({ heroId, className, children }: { heroId: HeroId; className: s
   const hero = HEROES[heroId];
   const style = hero.portrait ? { "--hero-art": `url("${hero.portrait}")` } as CSSProperties : undefined;
   return (
-    <span className={`${className} ${hero.portrait ? "hero-art-image" : ""}`} style={style} aria-hidden="true">
+    <span className={`${className} hero-art-${heroId} ${hero.portrait ? "hero-art-image" : ""}`} style={style} aria-hidden="true">
       {hero.portrait ? null : hero.glyph}
       {children}
     </span>
@@ -435,11 +475,17 @@ function UnitToken({
 }) {
   const hero = HEROES[unit.heroId];
   const isCreatureToken = unit.heroId === "boitata";
+  const isMeatGaga = unit.heroId === "meat-gaga";
   const actorEvent = currentEvents.find((event) =>
     event.actorId === unit.id
-      && (event.type === "move" || event.type === "attack" || event.type === "ability"),
+      && (event.type === "move" || event.type === "attack" || event.type === "ability" || event.type === "passive"),
   ) ?? currentEvents.find((event) => event.actorId === unit.id && combatEffectKind(event) !== null) ?? null;
   const actorEffectKind = combatEffectKind(actorEvent);
+  const isMeatAttack = isMeatGagaEnhancedAttack(actorEvent);
+  const meatHarvestEvent = isMeatGaga
+    ? currentEvents.find((event) => event.actorId === unit.id && event.type === "passive" && (event.meatStackGained ?? 0) > 0) ?? null
+    : null;
+  const isMeatHarvest = meatHarvestEvent !== null;
   const isActor = !!actorEvent;
   const previousUnit = previousSnapshotEvent?.snapshot.find((candidate) => candidate.id === unit.id) ?? null;
   const isMoveEvent = actorEvent?.type === "move";
@@ -450,6 +496,7 @@ function UnitToken({
     return kind && event.targetIds?.includes(unit.id) ? [{ event, kind }] : [];
   });
   const isDamaged = targetEffects.some(({ kind }) => kind === "attack" || kind === "ability");
+  const isMeatSplattered = targetEffects.some(({ event }) => isMeatGagaEnhancedAttack(event));
   const isHealed = targetEffects.some(({ kind }) => kind === "heal");
   const isShielded = targetEffects.some(({ kind }) => kind === "shield");
   const isSolStarfall = currentEvents.some((event) => {
@@ -470,7 +517,14 @@ function UnitToken({
     return [{
       key: `${event.id}:${unit.id}`,
       kind,
-      text: kind === "shield" ? `+${targetAmount} SHIELD` : kind === "heal" ? `+${targetAmount}` : `−${targetAmount}`,
+      text: kind === "shield"
+        ? `+${targetAmount} SHIELD`
+        : kind === "heal"
+          ? `+${targetAmount}`
+          : isMeatGagaEnhancedAttack(event)
+            ? `−${targetAmount} · MEAT +${Math.round(event.meatBonusDamage)}`
+            : `−${targetAmount}`,
+      meat: isMeatGagaEnhancedAttack(event),
       starfall: event.type === "ability" && event.actorId
         ? event.snapshot.find((candidate) => candidate.id === event.actorId)?.heroId === "sol"
         : false,
@@ -485,32 +539,63 @@ function UnitToken({
         : "HOLD"
     : actorIsSol
       ? "STARFALL"
-      : actorEffectKind === "shield"
-        ? "WALL"
-        : actorEvent?.type === "ability"
-          ? "CAST"
-          : "ATTACK";
+      : isMeatAttack
+        ? "MEAT THROW"
+        : actorEvent?.type === "passive"
+          ? `HARVEST +${Math.round(meatHarvestEvent?.meatStackGained ?? 0)}`
+          : actorEffectKind === "shield"
+            ? "WALL"
+            : actorEvent?.type === "ability"
+              ? "CAST"
+              : "ATTACK";
+  const equippedItemTitle = equippedItemSummary(unit.itemSlots);
 
   return (
     <div
-      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${actorEffectKind ? `unit-event-actor unit-event-actor-${actorEffectKind}` : ""} ${isMoveEvent ? `unit-event-actor ${didMove ? "unit-event-move" : "unit-event-wait"}` : ""} ${actorIsSol ? "unit-event-actor-sol" : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isDamaged && isSolStarfall ? "unit-impact-starfall" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""} ${loadoutDropStatus ? `unit-loadout-drop-${loadoutDropStatus}` : ""}`}
+      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${isMeatGaga ? "unit-token-meat-gaga" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${actorEffectKind ? `unit-event-actor unit-event-actor-${actorEffectKind}` : ""} ${isMoveEvent ? `unit-event-actor ${didMove ? "unit-event-move" : "unit-event-wait"}` : ""} ${actorIsSol ? "unit-event-actor-sol" : ""} ${isMeatAttack ? "unit-event-actor-meat" : ""} ${isMeatHarvest ? "unit-event-actor unit-event-meat-harvest" : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isDamaged && isSolStarfall ? "unit-impact-starfall" : ""} ${isMeatSplattered ? "unit-impact-meat" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""} ${loadoutDropStatus ? `unit-loadout-drop-${loadoutDropStatus}` : ""}`}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       data-testid={`unit-${unit.id}`}
       data-unit-id={unit.id}
       data-hero-id={unit.heroId}
+      title={equippedItemTitle || undefined}
     >
       <span className="unit-stars" data-testid={`unit-stars-${unit.id}`} aria-label={`${unit.stars} star`}>{starsLabel(unit.stars)}</span>
       <HeroArt heroId={unit.heroId} className="unit-avatar" />
       {hasFireWall ? <span className={`fire-wall ${isShielded ? "fire-wall-cast" : ""} ${fireWallShieldLost > 0 ? "fire-wall-absorb" : ""} ${fireWallBroke ? "fire-wall-break" : ""}`} aria-hidden="true" /> : null}
       <span className="unit-level">L{unit.level}</span>
       <span className="unit-item-pips" data-testid={`unit-item-slots-${unit.id}`} aria-hidden="true">
-        {unit.itemSlots.map((item, index) => (
-          <span className={`unit-item-pip ${item ? `unit-item-pip-${item.tier}` : "unit-item-pip-empty"}`} key={index}>{item ? item.tier === "enhanced" ? "✦" : "◆" : ""}</span>
-        ))}
+        {unit.itemSlots.map((item, index) => {
+          const definition = item ? ITEM_DEFINITIONS[item.itemId] : null;
+          return (
+            <span
+              className={`unit-item-pip ${item ? `unit-item-pip-${item.tier} unit-item-pip-${item.itemId}` : "unit-item-pip-empty"}`}
+              data-testid={`unit-item-badge-${unit.id}-${index}`}
+              data-item-id={item?.itemId ?? "empty"}
+              key={index}
+            >
+              {item && definition ? (
+                <>
+                  <span className="unit-item-pip-glyph">{definition.recipe.map((componentId) => ITEM_COMPONENTS[componentId].glyph).join("")}</span>
+                  <small>{craftedItemShortLabel(item)}</small>
+                  {item.enhancement ? <i className="unit-item-enhancement">{ITEM_COMPONENTS[item.enhancement].glyph}</i> : null}
+                </>
+              ) : null}
+            </span>
+          );
+        })}
       </span>
       <span className="unit-name">{hero.name}</span>
+      {isMeatGaga ? (
+        <span
+          className={`unit-meat-stack ${unit.meatStack > 0 ? "unit-meat-stack-charged" : ""} ${isMeatHarvest ? "unit-meat-stack-gained" : ""}`}
+          data-testid={`unit-meat-stack-${unit.id}`}
+          aria-label={`${hero.name} meat stack ${Math.round(unit.meatStack)}`}
+        >
+          <small>MEAT</small><strong>{Math.round(unit.meatStack)}</strong>
+        </span>
+      ) : null}
       {isActor ? <span className="combat-role" aria-hidden="true">{actorLabel}</span> : null}
       <span className="unit-bars">
         <span
@@ -519,23 +604,28 @@ function UnitToken({
           data-testid={`unit-hp-${unit.id}`}
           aria-label={`${hero.name} health ${Math.round(unit.hp)} of ${unit.maxHp}${unit.shield ? `, shield ${unit.shield}` : ""}`}
         ><span className="meter-fill" /></span>
-        <span
-          className="meter meter-mana"
-          style={meterStyle(unit.mana, unit.maxMana)}
-          data-testid={`unit-mana-${unit.id}`}
-          aria-label={`${hero.name} mana ${Math.round(unit.mana)} of ${unit.maxMana}`}
-        ><span className="meter-fill" /></span>
+        {isMeatGaga ? (
+          <span className="meter unit-passive-meter" aria-label={`${hero.name} uses a passive and has no mana`}><span>PASSIVE · NO MANA</span></span>
+        ) : (
+          <span
+            className="meter meter-mana"
+            style={meterStyle(unit.mana, unit.maxMana)}
+            data-testid={`unit-mana-${unit.id}`}
+            aria-label={`${hero.name} mana ${Math.round(unit.mana)} of ${unit.maxMana}`}
+          ><span className="meter-fill" /></span>
+        )}
       </span>
       {unit.stunned > 0 ? <span className="status-mark" aria-label="Silenced">×</span> : null}
       {feedback.map((entry, index) => (
         <span
-          className={`floating-text ${entry.kind === "heal" ? "floating-heal" : entry.kind === "shield" ? "floating-shield" : "floating-damage"} ${entry.starfall ? "floating-starfall" : ""}`}
+          className={`floating-text ${entry.kind === "heal" ? "floating-heal" : entry.kind === "shield" ? "floating-shield" : "floating-damage"} ${entry.starfall ? "floating-starfall" : ""} ${entry.meat ? "floating-meat" : ""}`}
           key={entry.key}
           style={{ "--feedback-offset": `${index * 12}px` } as CSSProperties}
         >
           {entry.text}
         </span>
       ))}
+      {meatHarvestEvent ? <span className="floating-text floating-meat-gain">+{Math.round(meatHarvestEvent.meatStackGained ?? 0)} MEAT</span> : null}
       {blockFeedback ? <span className="floating-text floating-block">{blockFeedback}</span> : null}
     </div>
   );
@@ -805,6 +895,12 @@ export function GameClient() {
   const abilityPreview = selectedPersistent
     ? getAbilityPreview(selectedPersistent, selectedTeamUnits)
     : null;
+  const meatGagaPassivePreview = selectedDisplay?.heroId === "meat-gaga"
+    ? getMeatGagaPassivePreview(selectedDisplay.stars)
+    : null;
+  const meatGagaNextBonus = selectedDisplay?.heroId === "meat-gaga"
+    ? calculateMeatGagaStackConsumption(selectedDisplay.meatStack, selectedDisplay.stars)
+    : 0;
   const selectedAbilityMetrics = abilityPreview
     ? abilityMetricDefinitions(abilityPreview)
     : [];
@@ -841,9 +937,25 @@ export function GameClient() {
       ),
     }];
   });
+  const meatProjectiles = currentEvents.flatMap<MeatProjectileCue>((event) => {
+    if (!isMeatGagaEnhancedAttack(event) || !event.actorId || !event.targetIds?.length) return [];
+    const actor = event.snapshot.find((unit) => unit.id === event.actorId);
+    if (!actor) return [];
+    return event.targetIds.flatMap((targetId) => {
+      const target = event.snapshot.find((unit) => unit.id === targetId);
+      if (!target || target.position === actor.position) return [];
+      return [{
+        event,
+        targetId,
+        bonusDamage: event.meatBonusDamage,
+        style: combatLinkStyle(actor.position, target.position, boardHeightRatio),
+      }];
+    });
+  });
   const actionLinks = currentEvents.flatMap<CombatLinkCue>((event) => {
     const kind = combatEffectKind(event);
     if (!kind || !event.actorId || !event.targetIds?.length) return [];
+    if (isMeatGagaEnhancedAttack(event)) return [];
     const actor = event.snapshot.find((unit) => unit.id === event.actorId);
     if (!actor || (event.type === "ability" && actor.heroId === "sol")) return [];
     return event.targetIds.flatMap((targetId) => {
@@ -1147,6 +1259,22 @@ export function GameClient() {
                   ))}
                 </div>
               ) : null}
+              {meatProjectiles.length ? (
+                <div className="meat-projectile-layer" aria-hidden="true" data-testid="meat-projectile-layer">
+                  {meatProjectiles.map((cue) => (
+                    <span
+                      className="meat-projectile-path"
+                      data-testid={`meat-projectile-${cue.event.id}-${cue.targetId}`}
+                      data-bonus-damage={Math.round(cue.bonusDamage)}
+                      key={`${cue.event.id}:${cue.targetId}`}
+                      style={cue.style}
+                    >
+                      <i className="meat-projectile" />
+                      <i className="meat-splatter"><b /><b /><b /></i>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
               {solStarfalls.map((starfall) => (
                 <div className="sol-starfall-layer" aria-hidden="true" data-testid="sol-starfall-layer" key={starfall.event.id} style={starfall.style}>
                   <span className="sol-starfall-sky" />
@@ -1177,7 +1305,8 @@ export function GameClient() {
                 const valid = game.phase === "planning" && !!draggedAlly && playerCell;
                 const highlighted = !!unit && !!highlightedTrait && HEROES[unit.heroId].traits.includes(highlightedTrait);
                 const loadoutDropStatus = unit ? loadoutDropStatusFor(unit) : null;
-                const aria = `Row ${row + 1}, column ${column + 1}, ${playerCell ? "player" : "enemy"} territory${unit ? `, ${HEROES[unit.heroId].name}, ${ROLE_PROFILES[HEROES[unit.heroId].role].label}, range ${unit.range}, level ${unit.level}, ${Math.round(clampPercent(unit.hp, unit.maxHp))} percent health${unit.shield > 0 ? `, ${Math.round(unit.shield)} shield` : ""}` : ", empty"}`;
+                const equipmentSummary = unit ? equippedItemSummary(unit.itemSlots) : "";
+                const aria = `Row ${row + 1}, column ${column + 1}, ${playerCell ? "player" : "enemy"} territory${unit ? `, ${HEROES[unit.heroId].name}, ${ROLE_PROFILES[HEROES[unit.heroId].role].label}, range ${unit.range}, level ${unit.level}, ${Math.round(clampPercent(unit.hp, unit.maxHp))} percent health${unit.shield > 0 ? `, ${Math.round(unit.shield)} shield` : ""}${equipmentSummary ? `, ${equipmentSummary}` : ""}` : ", empty"}`;
                 return (
                   <button
                     className={`board-cell ${playerCell ? "board-cell-player" : "board-cell-enemy"} ${valid ? "board-cell-valid" : ""} ${unit?.id === selectedId ? "board-cell-selected" : ""} ${loadoutDropStatus ? `loadout-cell-${loadoutDropStatus}` : ""}`}
@@ -1337,7 +1466,7 @@ export function GameClient() {
                         type="button"
                         key={index}
                         data-testid={`bench-slot-${index}`}
-                        aria-label={display ? `Bench slot ${index + 1}, ${HEROES[display.heroId].name}, ${ROLE_PROFILES[HEROES[display.heroId].role].label}, range ${display.range}` : `Bench slot ${index + 1}, empty`}
+                        aria-label={display ? `Bench slot ${index + 1}, ${HEROES[display.heroId].name}, ${ROLE_PROFILES[HEROES[display.heroId].role].label}, range ${display.range}${equippedItemSummary(display.itemSlots) ? `, ${equippedItemSummary(display.itemSlots)}` : ""}` : `Bench slot ${index + 1}, empty`}
                         disabled={game.phase !== "planning"}
                         onClick={() => handleBenchSlot(index)}
                         onDragOver={(event) => {
@@ -1546,11 +1675,19 @@ export function GameClient() {
               </div>
               <div className="stat-grid">
                 <span className="stat-cell"><small>HP</small><strong>{Math.round(selectedDisplay.hp)}/{selectedDisplay.maxHp}</strong></span>
-                <span className="stat-cell"><small>Mana</small><strong>{Math.round(selectedDisplay.mana)}/{selectedDisplay.maxMana}</strong></span>
+                {selectedHero.id === "meat-gaga" ? (
+                  <span className="stat-cell stat-cell-passive"><small>Resource</small><strong>Passive · No Mana</strong></span>
+                ) : (
+                  <span className="stat-cell"><small>Mana</small><strong>{Math.round(selectedDisplay.mana)}/{selectedDisplay.maxMana}</strong></span>
+                )}
                 <span className="stat-cell"><small>Damage</small><strong>{selectedDisplay.attack}</strong></span>
                 <span className="stat-cell"><small>Armor</small><strong>{selectedDisplay.armor}</strong></span>
                 <span className="stat-cell stat-cell-rate stat-cell-attack-speed" data-testid={`unit-attack-speed-${selectedDisplay.id}`}><small>Attack speed</small><strong>{formatRate(selectedDisplay.attackSpeed)}/sec</strong></span>
-                <span className="stat-cell stat-cell-rate stat-cell-mana-regen" data-testid={`unit-mana-regen-${selectedDisplay.id}`}><small>Mana regen</small><strong>{formatRate(selectedDisplay.manaRegen)}/sec</strong></span>
+                {selectedHero.id === "meat-gaga" ? (
+                  <span className="stat-cell stat-cell-meat-stack" data-testid={`unit-meat-stack-inspector-${selectedDisplay.id}`}><small>Meat reserve</small><strong>{Math.round(selectedDisplay.meatStack)}</strong></span>
+                ) : (
+                  <span className="stat-cell stat-cell-rate stat-cell-mana-regen" data-testid={`unit-mana-regen-${selectedDisplay.id}`}><small>Mana regen</small><strong>{formatRate(selectedDisplay.manaRegen)}/sec</strong></span>
+                )}
                 {selectedHero.id === "boitata" ? (
                   <>
                     <span className="stat-cell stat-cell-shield" data-testid={`unit-fire-wall-shield-${selectedDisplay.id}`}><small>Wall of Fire</small><strong>{Math.round(selectedDisplay.fireWallShield)}</strong></span>
@@ -1582,7 +1719,7 @@ export function GameClient() {
                         disabled={!canEquip && !canUnequip}
                         onClick={() => item ? handleUnequipItem(slotIndex) : handleEquipItem(slotIndex)}
                         aria-label={item
-                          ? `${craftedItemName(item)}, ${craftedItemBonusText(item)}${canUnequip ? ", click to unequip" : ""}`
+                          ? `${craftedItemName(item)}, ${craftedItemBonusText(item, selectedHero.id)}${canUnequip ? ", click to unequip" : ""}`
                           : `Empty item slot ${slotIndex + 1}${canEquip ? `, equip ${craftedItemName(selectedCraftedItem!)}` : ""}`}
                       >
                         <span className="item-mark" aria-hidden="true">
@@ -1591,7 +1728,7 @@ export function GameClient() {
                         </span>
                         <span className="equipment-slot-copy">
                           <strong>{item ? craftedItemName(item) : `Slot ${slotIndex + 1}`}</strong>
-                          <small>{item ? craftedItemBonusText(item) : canEquip ? "Equip selected item" : "Empty"}</small>
+                          <small>{item ? craftedItemBonusText(item, selectedHero.id) : canEquip ? "Equip selected item" : "Empty"}</small>
                         </span>
                       </button>
                     );
@@ -1611,7 +1748,73 @@ export function GameClient() {
                   </span>
                 </div>
               ) : null}
-              {abilityPreview ? (
+              {selectedHero.id === "meat-gaga" && meatGagaPassivePreview ? (
+                <details className="passive-card ability-box ability-card" data-testid={`ability-${selectedHero.ability.id}`}>
+                  <summary className="ability-summary">
+                    <span className="ability-heading">
+                      <span>
+                        <span className="eyebrow">Passive · No Mana</span>
+                        <strong className="ability-name" id={`ability-name-${selectedHero.ability.id}`}>{selectedHero.ability.name}</strong>
+                      </span>
+                      <span className="ability-rank">Current · {"★".repeat(meatGagaPassivePreview.current.stars)}</span>
+                    </span>
+                    <span className="ability-description">{selectedHero.ability.description}</span>
+                    <span
+                      className="ability-current-values"
+                      data-testid="meat-gaga-passive-current-values"
+                      role="list"
+                      aria-label={`${selectedHero.ability.name} current values`}
+                    >
+                      <span className="ability-value ability-value-meat-gain" role="listitem">
+                        <small>Stored per death</small>
+                        <strong>{meatGagaPassivePreview.current.stackGainPercent}% max HP</strong>
+                      </span>
+                      <span className="ability-value ability-value-meat-spend" role="listitem">
+                        <small>Spent per attack</small>
+                        <strong>{meatGagaPassivePreview.current.stackConsumePercent}% of stack</strong>
+                      </span>
+                      <span className="ability-value ability-value-meat-reserve" role="listitem">
+                        <small>Current reserve</small>
+                        <strong>{Math.round(selectedDisplay.meatStack)}</strong>
+                      </span>
+                      <span className="ability-value ability-value-meat-bonus" role="listitem">
+                        <small>Next attack bonus</small>
+                        <strong>+{meatGagaNextBonus} raw</strong>
+                      </span>
+                    </span>
+                    <span className="ability-target-rule">Passive: Every character death · Enhances each basic attack while reserve remains</span>
+                    <span className="ability-disclosure" aria-hidden="true">Hover or tap for star scaling</span>
+                  </summary>
+                  <div className="ability-breakdown" aria-labelledby={`ability-name-${selectedHero.ability.id}`}>
+                    <div className="ability-breakdown-heading">
+                      <strong>Passive star scaling</strong>
+                      <small>No Mana, regeneration, or cast time</small>
+                    </div>
+                    <p className="ability-scale-copy">Whenever any character dies, Meat Gaga stores part of that character&apos;s maximum Life. Her next basic attack consumes part of the reserve as raw bonus damage, repeating until the reserve is empty.</p>
+                    <table className="ability-scale-table" data-testid="meat-gaga-passive-scaling">
+                      <caption className="sr-only">{selectedHero.ability.name} values by star level</caption>
+                      <thead>
+                        <tr><th scope="col">Value</th><th scope="col">1★</th><th scope="col">2★</th><th scope="col">3★</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <th scope="row">Max HP stored per death</th>
+                          {meatGagaPassivePreview.byStar.map((values) => (
+                            <td aria-current={values.stars === meatGagaPassivePreview.current.stars ? "true" : undefined} key={values.stars}>{values.stackGainPercent}%</td>
+                          ))}
+                        </tr>
+                        <tr>
+                          <th scope="row">Stack spent per attack</th>
+                          {meatGagaPassivePreview.byStar.map((values) => (
+                            <td aria-current={values.stars === meatGagaPassivePreview.current.stars ? "true" : undefined} key={values.stars}>{values.stackConsumePercent}%</td>
+                          ))}
+                        </tr>
+                      </tbody>
+                    </table>
+                    <p className="ability-context-note">The reserve is not Mana. Meat Gaga never casts; every empowered hit is still a basic attack and keeps her Shooter range.</p>
+                  </div>
+                </details>
+              ) : abilityPreview ? (
                 <details className="ability-box ability-card" data-testid={`ability-${selectedHero.ability.id}`}>
                   <summary className="ability-summary">
                     <span className="ability-heading">

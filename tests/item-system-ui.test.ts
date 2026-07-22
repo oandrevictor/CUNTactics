@@ -75,7 +75,7 @@ test("item interface is styled for forge cards, enhanced gear, and readable boar
     assert.match(styles, new RegExp(selector.replace(".", "\\.")));
   }
   assert.match(styles, /\.board-grid \.unit-item-pips\s*\{[^}]*left: 50%/s);
-  assert.match(styles, /\.board-grid \.unit-item-pip\s*\{[^}]*width: clamp\(12px, 1\.1vw, 15px\)/s);
+  assert.match(styles, /\.board-grid \.unit-item-pip\s*\{[^}]*width: clamp\(22px, 1\.75vw, 25px\)/s);
   assert.match(styles, /\.board-grid \.unit-item-pip-empty\s*\{[^}]*width: 7px/s);
 });
 

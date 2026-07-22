@@ -12,6 +12,8 @@ import {
   applyCombatResult,
   buyPlayerXp,
   buyShopUnit,
+  calculateMeatGagaStackConsumption,
+  calculateMeatGagaStackGain,
   calculateWallOfFireShield,
   craftItem,
   createInitialGame,
@@ -24,6 +26,7 @@ import {
   getCombatStatistics,
   getInterest,
   getItemComponentRewardForRound,
+  getMeatGagaPassivePreview,
   getUnitStats,
   moveUnit,
   normalizeGameState,
@@ -354,14 +357,102 @@ test("normalizing a legacy v1 state backfills item collections and slots", () =>
   assert.deepEqual(validateState(normalized), []);
 });
 
-test("roster exposes nine distinct heroes, abilities, and real trait hooks", () => {
+test("roster exposes ten distinct heroes, abilities, and real trait hooks", () => {
   const heroes = Object.values(HEROES);
-  assert.equal(heroes.length, 9);
-  assert.equal(new Set(heroes.map((hero) => hero.name)).size, 9);
-  assert.equal(new Set(heroes.map((hero) => hero.ability.name)).size, 9);
+  assert.equal(heroes.length, 10);
+  assert.equal(new Set(heroes.map((hero) => hero.name)).size, 10);
+  assert.equal(new Set(heroes.map((hero) => hero.ability.name)).size, 10);
   assert.ok(heroes.every((hero) => hero.traits.length >= 2));
   assert.equal(HEROES.boitata.portrait, "/characters/boitata.png");
   assert.equal(HEROES.boitata.ability.id, "wall-of-fire");
+  assert.deepEqual(
+    {
+      portrait: HEROES["meat-gaga"].portrait,
+      cost: HEROES["meat-gaga"].cost,
+      rarity: HEROES["meat-gaga"].rarity,
+      role: HEROES["meat-gaga"].role,
+      manaCost: HEROES["meat-gaga"].ability.manaCost,
+      manaRegen: HEROES["meat-gaga"].manaRegen,
+    },
+    {
+      portrait: "/characters/meat-couture-npc-v3.png",
+      cost: 2,
+      rarity: "uncommon",
+      role: "shooter",
+      manaCost: 0,
+      manaRegen: 0,
+    },
+  );
+});
+
+test("Meat Gaga is deterministically available as an uncommon from commander level three", () => {
+  const initial = createInitialGame(5);
+  const market = refreshShop(
+    { ...initial, commanderLevel: 3, gold: 99, seed: 5 },
+    true,
+  );
+
+  assert.equal(market.ok, true);
+  assert.deepEqual(
+    market.state.shop.map((offer) => offer?.heroId),
+    ["tide", "tide", "sol", "meat-gaga", "tide"],
+  );
+  assert.equal(market.state.shop[3]?.cost, 2);
+  assert.deepEqual(
+    createInitialGame(1).enemyUnits.map((unit) => unit.heroId),
+    ["boitata", "vesper", "aster", "meat-gaga"],
+  );
+});
+
+test("Meat Gaga's passive preview and whole-number stack math expose exact star values", () => {
+  assert.deepEqual(getMeatGagaPassivePreview(1), {
+    current: { stars: 1, stackGainPercent: 60, stackConsumePercent: 7 },
+    byStar: [
+      { stars: 1, stackGainPercent: 60, stackConsumePercent: 7 },
+      { stars: 2, stackGainPercent: 75, stackConsumePercent: 8 },
+      { stars: 3, stackGainPercent: 90, stackConsumePercent: 12 },
+    ],
+  });
+  assert.deepEqual(
+    [1, 2, 3].map((stars) => calculateMeatGagaStackGain(101, stars)),
+    [61, 76, 91],
+  );
+  assert.deepEqual(
+    [1, 2, 3].map((stars) => calculateMeatGagaStackConsumption(101, stars)),
+    [8, 9, 13],
+  );
+
+  for (const stars of [1, 2, 3]) {
+    let stack = calculateMeatGagaStackGain(717, stars);
+    let attacks = 0;
+    while (stack > 0 && attacks < 1000) {
+      const consumed = calculateMeatGagaStackConsumption(stack, stars);
+      assert.ok(Number.isInteger(consumed) && consumed >= 1 && consumed <= stack);
+      stack -= consumed;
+      attacks += 1;
+    }
+    assert.equal(stack, 0);
+    assert.ok(attacks < 1000, `${stars}-star Meat Gaga's stack should reach zero`);
+  }
+
+  const initial = createInitialGame(8001);
+  const meatGaga = abilityTestUnit(initial.units[0], "meat-gaga", {
+    id: "preview-meat-gaga",
+    stars: 2,
+  });
+  const preview = getAbilityPreview(meatGaga, [meatGaga]);
+  assert.deepEqual(
+    preview.byStar.map((values) => [
+      values.passiveStackGainPercent,
+      values.passiveStackConsumePercent,
+    ]),
+    [[60, 7], [75, 8], [90, 12]],
+  );
+  assert.equal(preview.current.damage, 0);
+  assert.equal(preview.current.maxTargets, 0);
+  assert.match(preview.scalingDescription, /\(60\/75\/90\)%/);
+  assert.match(preview.scalingDescription, /\(7\/8\/12\)%/);
+  assert.match(preview.contextNote, /has no Mana, never casts/);
 });
 
 test("every hero exposes a complete three-star ability preview", () => {
@@ -379,6 +470,8 @@ test("every hero exposes a complete three-star ability preview", () => {
     "teamHealing",
     "takedownMana",
     "startingManaBonus",
+    "passiveStackGainPercent",
+    "passiveStackConsumePercent",
   ] as const;
 
   for (const hero of Object.values(HEROES)) {
@@ -420,9 +513,11 @@ test("combat roles define distinct ranges and every hero inherits its role range
     assert.equal(stats.attackSpeed, hero.attackSpeed);
     assert.equal(stats.manaRegen, hero.manaRegen);
     assert.ok(Number.isFinite(stats.attackSpeed) && stats.attackSpeed > 0);
-    assert.ok(Number.isFinite(stats.manaRegen) && stats.manaRegen > 0);
+    assert.ok(Number.isFinite(stats.manaRegen) && stats.manaRegen >= 0);
+    assert.equal(stats.manaRegen === 0, hero.id === "meat-gaga");
   }
   assert.equal(getUnitStats({ ...baseUnit, heroId: "boitata" }).range, 1);
+  assert.equal(getUnitStats({ ...baseUnit, heroId: "meat-gaga" }).range, 4);
 });
 
 test("attack speed schedules absolute action opportunities without cadence drift", () => {
@@ -711,6 +806,255 @@ test("simultaneous movers reserve distinct destinations from one frozen board", 
     ),
     [40, 42],
   );
+});
+
+test("Meat Gaga spends only her pre-moment stack and harvests deaths for her next attack", () => {
+  const initial = createInitialGame(999);
+  const enhancedSpellfang = (id: string): CraftedItem => ({
+    id,
+    itemId: "spellfang",
+    tier: "enhanced",
+    enhancement: "ember",
+  });
+  const report = resolveCombat({
+    ...initial,
+    commanderLevel: 8,
+    units: [
+      {
+        ...initial.units[0],
+        id: "gaga",
+        heroId: "meat-gaga",
+        stars: 1,
+        position: 40,
+        benchIndex: null,
+        itemSlots: [
+          fullItem("gaga-lantern-1", "spirit-lantern"),
+          fullItem("gaga-lantern-2", "spirit-lantern"),
+          fullItem("gaga-lantern-3", "spirit-lantern"),
+        ],
+      },
+      {
+        ...initial.units[1],
+        id: "gaga-ally-vesper",
+        heroId: "vesper",
+        stars: 3,
+        position: 47,
+        benchIndex: null,
+        itemSlots: [
+          enhancedSpellfang("gaga-spellfang-1"),
+          enhancedSpellfang("gaga-spellfang-2"),
+          enhancedSpellfang("gaga-spellfang-3"),
+        ],
+      },
+      {
+        ...initial.units[2],
+        id: "gaga-ally-tide",
+        heroId: "tide",
+        position: 46,
+        benchIndex: null,
+        itemSlots: [null, null, null],
+      },
+    ],
+    enemyUnits: [
+      {
+        ...initial.enemyUnits[0],
+        id: "gaga-victim",
+        heroId: "nix",
+        stars: 1,
+        position: 32,
+        benchIndex: null,
+        itemSlots: [null, null, null],
+      },
+      {
+        ...initial.enemyUnits[1],
+        id: "gaga-survivor",
+        heroId: "bramble",
+        stars: 3,
+        level: 5,
+        position: 8,
+        benchIndex: null,
+        itemSlots: [null, null, null],
+      },
+    ],
+  }).report!;
+  const gagaEvents = report.events.filter((event) => event.actorId === "gaga");
+  const firstAttack = gagaEvents.find((event) => event.type === "attack")!;
+  const harvest = gagaEvents.find((event) => event.type === "passive")!;
+  const empoweredAttack = gagaEvents.find(
+    (event) => event.type === "attack" && (event.meatBonusDamage ?? 0) > 0,
+  )!;
+  const victim = report.initialUnits.find((unit) => unit.id === "gaga-victim")!;
+
+  assert.equal(firstAttack.turn, harvest.turn);
+  assert.equal(firstAttack.timestamp, harvest.timestamp);
+  assert.equal(firstAttack.meatStackBefore, 0);
+  assert.equal(firstAttack.meatBonusDamage, undefined);
+  assert.ok(report.events.indexOf(firstAttack) < report.events.indexOf(harvest));
+  assert.equal(harvest.meatStackGained, Math.round(victim.maxHp * 0.6));
+  assert.deepEqual(harvest.targetIds, [victim.id]);
+  assert.equal(harvest.amounts?.[victim.id], 78);
+  assert.equal(harvest.meatStackBefore, 0);
+  assert.equal(harvest.meatStackAfter, 78);
+  assert.equal(empoweredAttack.timestamp, 2.667);
+  assert.equal(empoweredAttack.meatStackBefore, 78);
+  assert.equal(empoweredAttack.meatStackConsumed, 6);
+  assert.equal(empoweredAttack.meatBonusDamage, 6);
+  assert.equal(empoweredAttack.meatStackAfter, 72);
+  assert.match(empoweredAttack.text, /hurls stored meat/);
+  assert.ok(!report.events.some((event) => event.type === "ability" && event.actorId === "gaga"));
+  assert.ok(report.events.every((event) => {
+    const gaga = event.snapshot.find((unit) => unit.id === "gaga");
+    return !gaga || (gaga.mana === 0 && gaga.maxMana === 0);
+  }));
+
+  const gagaDamage = getCombatStatistics(report).units.find((unit) => unit.unitId === "gaga")!;
+  const recordedAttackDamage = gagaEvents
+    .filter((event) => event.type === "attack")
+    .reduce((total, event) => total + (event.amount ?? 0), 0);
+  assert.equal(gagaDamage.damageDealt, recordedAttackDamage);
+});
+
+test("every surviving Meat Gaga harvests every death in a moment at her own star rate", () => {
+  const initial = createInitialGame(1000);
+  const enhancedSpellfang = (id: string): CraftedItem => ({
+    id,
+    itemId: "spellfang",
+    tier: "enhanced",
+    enhancement: "ember",
+  });
+  const gaga = (id: string, stars: number, position: number): UnitInstance => ({
+    ...initial.units[0],
+    id,
+    heroId: "meat-gaga",
+    stars,
+    position,
+    benchIndex: null,
+    itemSlots: [null, null, null],
+  });
+  const report = resolveCombat({
+    ...initial,
+    commanderLevel: 8,
+    units: [
+      gaga("harvest-gaga-1", 1, 40),
+      gaga("harvest-gaga-3", 3, 41),
+      {
+        ...initial.units[1],
+        id: "harvest-sol",
+        heroId: "sol",
+        stars: 3,
+        position: 47,
+        benchIndex: null,
+        itemSlots: [
+          enhancedSpellfang("harvest-spellfang-1"),
+          enhancedSpellfang("harvest-spellfang-2"),
+          enhancedSpellfang("harvest-spellfang-3"),
+        ],
+      },
+    ],
+    enemyUnits: [
+      {
+        ...initial.enemyUnits[0],
+        id: "harvest-victim-sol",
+        heroId: "sol",
+        stars: 1,
+        position: 8,
+        benchIndex: null,
+        itemSlots: [null, null, null],
+      },
+      {
+        ...initial.enemyUnits[1],
+        id: "harvest-victim-piper",
+        heroId: "piper",
+        stars: 1,
+        position: 9,
+        benchIndex: null,
+        itemSlots: [null, null, null],
+      },
+    ],
+  }).report!;
+  const victims = report.initialUnits.filter((unit) => unit.side === "enemy");
+  const harvests = report.events.filter((event) => event.type === "passive");
+
+  assert.equal(harvests.length, 2);
+  for (const [id, stars] of [["harvest-gaga-1", 1], ["harvest-gaga-3", 3]] as const) {
+    const event = harvests.find((candidate) => candidate.actorId === id)!;
+    assert.deepEqual(event.targetIds, victims.map((victim) => victim.id).sort());
+    assert.deepEqual(
+      event.amounts,
+      Object.fromEntries(victims.map((victim) => [
+        victim.id,
+        calculateMeatGagaStackGain(victim.maxHp, stars),
+      ])),
+    );
+    assert.equal(
+      event.meatStackGained,
+      victims.reduce(
+        (total, victim) => total + calculateMeatGagaStackGain(victim.maxHp, stars),
+        0,
+      ),
+    );
+  }
+});
+
+test("Meat Gaga does not harvest a simultaneous death when she also dies in that moment", () => {
+  const initial = createInitialGame(1001);
+  const enhanced = (
+    id: string,
+    itemId: "inferno-fang" | "spellfang",
+  ): CraftedItem => ({ id, itemId, tier: "enhanced", enhancement: "ember" });
+  const report = resolveCombat({
+    ...initial,
+    commanderLevel: 8,
+    units: [{
+      ...initial.units[0],
+      id: "fallen-gaga",
+      heroId: "meat-gaga",
+      stars: 1,
+      position: 40,
+      benchIndex: null,
+      itemSlots: [
+        enhanced("fallen-gaga-fang-1", "inferno-fang"),
+        enhanced("fallen-gaga-fang-2", "inferno-fang"),
+        enhanced("fallen-gaga-fang-3", "inferno-fang"),
+      ],
+    }],
+    enemyUnits: [
+      {
+        ...initial.enemyUnits[0],
+        id: "fallen-gaga-victim",
+        heroId: "sol",
+        stars: 1,
+        position: 32,
+        benchIndex: null,
+        itemSlots: [null, null, null],
+      },
+      {
+        ...initial.enemyUnits[1],
+        id: "fallen-gaga-killer",
+        heroId: "vesper",
+        stars: 3,
+        position: 8,
+        benchIndex: null,
+        itemSlots: [
+          enhanced("fallen-gaga-spellfang-1", "spellfang"),
+          enhanced("fallen-gaga-spellfang-2", "spellfang"),
+          enhanced("fallen-gaga-spellfang-3", "spellfang"),
+        ],
+      },
+    ],
+  }).report!;
+  const simultaneousDeaths = report.events.filter(
+    (event) => event.type === "defeat" && event.timestamp === 1.333,
+  );
+
+  assert.deepEqual(
+    simultaneousDeaths.flatMap((event) => event.targetIds ?? []).sort(),
+    ["fallen-gaga", "fallen-gaga-victim"],
+  );
+  assert.ok(!report.events.some(
+    (event) => event.type === "passive" && event.actorId === "fallen-gaga",
+  ));
+  assert.equal(report.finalUnits.find((unit) => unit.id === "fallen-gaga")?.meatStack, 0);
 });
 
 test("same-time Wall of Fire absorbs the same hit regardless of which side owns Boitata", () => {

@@ -25,6 +25,7 @@ export type HeroRole = "tank" | "carry" | "mage" | "shooter";
 export type HeroId =
   | "bramble"
   | "boitata"
+  | "meat-gaga"
   | "sol"
   | "nix"
   | "aster"
@@ -109,7 +110,20 @@ export interface AbilityValues {
   teamHealing: number;
   takedownMana: number;
   startingManaBonus: number;
+  passiveStackGainPercent: number;
+  passiveStackConsumePercent: number;
   ignoresArmor: boolean;
+}
+
+export interface MeatGagaPassiveValues {
+  stars: 1 | 2 | 3;
+  stackGainPercent: number;
+  stackConsumePercent: number;
+}
+
+export interface MeatGagaPassivePreview {
+  current: MeatGagaPassiveValues;
+  byStar: [MeatGagaPassiveValues, MeatGagaPassiveValues, MeatGagaPassiveValues];
 }
 
 export interface AbilityPreview {
@@ -192,6 +206,8 @@ export interface CombatUnit {
   manaRegen: number;
   shield: number;
   fireWallShield: number;
+  /** Stored maximum-Life essence used by Meat Gaga's empowered attacks. */
+  meatStack: number;
   stunned: number;
   alive: boolean;
   itemSlots?: UnitItemSlots;
@@ -204,6 +220,7 @@ export type CombatEventType =
   | "ability"
   | "heal"
   | "shield"
+  | "passive"
   | "defeat"
   | "outcome";
 
@@ -218,6 +235,12 @@ export interface CombatEvent {
   targetIds?: string[];
   amount?: number;
   amounts?: Record<string, number>;
+  /** Raw bonus damage added to an empowered Meat Gaga basic attack. */
+  meatBonusDamage?: number;
+  meatStackBefore?: number;
+  meatStackConsumed?: number;
+  meatStackGained?: number;
+  meatStackAfter?: number;
   text: string;
   snapshot: CombatUnit[];
 }
@@ -353,6 +376,43 @@ export const ROLE_PROFILES: Record<HeroRole, RoleProfile> = {
   },
 };
 
+export const MEAT_GAGA_STACK_GAIN_PERCENTAGES = [60, 75, 90] as const;
+export const MEAT_GAGA_STACK_CONSUME_PERCENTAGES = [7, 8, 12] as const;
+
+export function getMeatGagaPassivePreview(stars: number): MeatGagaPassivePreview {
+  const byStar: MeatGagaPassivePreview["byStar"] = [
+    {
+      stars: 1,
+      stackGainPercent: MEAT_GAGA_STACK_GAIN_PERCENTAGES[0],
+      stackConsumePercent: MEAT_GAGA_STACK_CONSUME_PERCENTAGES[0],
+    },
+    {
+      stars: 2,
+      stackGainPercent: MEAT_GAGA_STACK_GAIN_PERCENTAGES[1],
+      stackConsumePercent: MEAT_GAGA_STACK_CONSUME_PERCENTAGES[1],
+    },
+    {
+      stars: 3,
+      stackGainPercent: MEAT_GAGA_STACK_GAIN_PERCENTAGES[2],
+      stackConsumePercent: MEAT_GAGA_STACK_CONSUME_PERCENTAGES[2],
+    },
+  ];
+  const normalized = Math.min(MAX_STARS, Math.max(1, Math.round(stars))) as 1 | 2 | 3;
+  return { current: byStar[normalized - 1], byStar };
+}
+
+export function calculateMeatGagaStackGain(maxHp: number, stars: number): number {
+  const gainPercent = getMeatGagaPassivePreview(stars).current.stackGainPercent;
+  return Math.max(0, Math.round(Math.max(0, maxHp) * (gainPercent / 100)));
+}
+
+export function calculateMeatGagaStackConsumption(stack: number, stars: number): number {
+  const available = Math.max(0, Math.round(stack));
+  if (available === 0) return 0;
+  const consumePercent = getMeatGagaPassivePreview(stars).current.stackConsumePercent;
+  return Math.min(available, Math.max(1, Math.ceil(available * (consumePercent / 100))));
+}
+
 export const ITEM_COMPONENT_IDS = ["ember", "scale", "mote"] as const satisfies readonly ItemComponentId[];
 
 export const ITEM_COMPONENTS: Record<ItemComponentId, ItemComponentDefinition> = {
@@ -470,6 +530,30 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Coils into a wall of fire, gaining a shield equal to 20 + 7 per level + 18% max Life + 105% Armor.",
       manaCost: 90,
       targetRule: "Self",
+    },
+  },
+  "meat-gaga": {
+    id: "meat-gaga",
+    name: "Meat Gaga",
+    title: "The Carnal Icon",
+    glyph: "G",
+    portrait: "/characters/meat-couture-npc-v3.png",
+    cost: 2,
+    rarity: "uncommon",
+    role: "shooter",
+    traits: ["nightbound", "duelist"],
+    maxHp: 142,
+    attack: 34,
+    armor: 11,
+    attackSpeed: 0.75,
+    manaRegen: 0,
+    startingMana: 0,
+    ability: {
+      id: "carnal-inheritance",
+      name: "Carnal Inheritance",
+      description: "Passively harvests fallen characters' maximum Life, then hurls part of the stored meat as bonus damage on each basic attack.",
+      manaCost: 0,
+      targetRule: "Passive · Every fallen character",
     },
   },
   sol: {
@@ -801,7 +885,7 @@ function enemyCountForRound(round: number): number {
 
 function generateEnemyMutable(state: GameState): UnitInstance[] {
   const count = enemyCountForRound(state.round);
-  const preferred = ["tide", "boitata", "nix", "vesper", "aster", "morrow", "piper", "sol", "bramble"] as HeroId[];
+  const preferred = ["tide", "boitata", "nix", "vesper", "aster", "morrow", "meat-gaga", "piper", "sol", "bramble"] as HeroId[];
   const openPositions = [2, 5, 10, 13, 17, 20, 22, 7];
   return Array.from({ length: count }, (_, index) => {
     const variance = randomStep(state.seed);
@@ -1301,6 +1385,7 @@ function snapshot(units: CombatUnit[]): CombatUnit[] {
   return cloneCombatUnits(units).map((unit) => ({
     ...unit,
     mana: roundCombatDecimal(unit.mana),
+    meatStack: roundCombatDecimal(unit.meatStack),
   }));
 }
 
@@ -1440,6 +1525,8 @@ function evaluateAbilityValues(input: AbilityEvaluationInput): AbilityValues {
     teamHealing: input.formation.teamHealing,
     takedownMana: 0,
     startingManaBonus: input.formation.startingManaBonus,
+    passiveStackGainPercent: 0,
+    passiveStackConsumePercent: 0,
     ignoresArmor: false,
   };
   const scaleDamage = (amount: number) =>
@@ -1452,6 +1539,14 @@ function evaluateAbilityValues(input: AbilityEvaluationInput): AbilityValues {
     values.maxTargets = input.stars >= 3 ? 2 : 1;
   } else if (input.heroId === "boitata") {
     values.shield = calculateWallOfFireShield(input);
+  } else if (input.heroId === "meat-gaga") {
+    const passive = getMeatGagaPassivePreview(input.stars).current;
+    values.minTargets = 0;
+    values.maxTargets = 0;
+    values.teamHealing = 0;
+    values.startingManaBonus = 0;
+    values.passiveStackGainPercent = passive.stackGainPercent;
+    values.passiveStackConsumePercent = passive.stackConsumePercent;
   } else if (input.heroId === "sol") {
     values.damage = scaleDamage(48 + input.attack * 0.9);
     values.maxTargets = 5;
@@ -1496,6 +1591,9 @@ function abilityScalingDescription(byStar: AbilityPreview["byStar"]): string {
   }
   if (heroId === "boitata") {
     return `Shields self for ${triplet((value) => value.shield)} damage at 1★/2★/3★.`;
+  }
+  if (heroId === "meat-gaga") {
+    return `Passively stores ${triplet((value) => value.passiveStackGainPercent)}% of every fallen character's maximum Life, then consumes ${triplet((value) => value.passiveStackConsumePercent)}% of the stack as bonus damage on each basic attack at 1★/2★/3★.`;
   }
   if (heroId === "sol") {
     return `Hits ${triplet((value) => `${value.minTargets}–${value.maxTargets}`)} clustered enemies for ${triplet((value) => value.damage)} raw damage each at 1★/2★/3★.`;
@@ -1582,6 +1680,9 @@ export function getAbilityPreview(
     ? `Current values include the deployed ${unit.side} formation's active bonds.`
     : "Bench preview: deploy this character to activate formation bonds.";
   const outputNotes = [formationContext];
+  if (unit.heroId === "meat-gaga") {
+    outputNotes.push("Passive: Meat Gaga has no Mana, never casts, and empowers only basic attacks after a character falls.");
+  }
   if (current.damage > 0) {
     outputNotes.push(current.ignoresArmor
       ? "Damage is shown before shields; this ability ignores Armor."
@@ -1626,6 +1727,7 @@ function makeCombatUnits(state: GameState): CombatUnit[] {
       manaRegen: stats.manaRegen,
       shield: 0,
       fireWallShield: 0,
+      meatStack: 0,
       stunned: 0,
       alive: true,
       itemSlots: cloneItemSlots(unit.itemSlots),
@@ -1637,7 +1739,9 @@ function makeCombatUnits(state: GameState): CombatUnit[] {
     for (const unit of base.filter((candidate) => candidate.side === side)) {
       unit.armor += formation.armor;
       unit.attack = Math.round(unit.attack * (1 + formation.attackPercent));
-      unit.mana = Math.min(unit.maxMana, unit.mana + formation.startingManaBonus);
+      unit.mana = unit.heroId === "meat-gaga"
+        ? 0
+        : Math.min(unit.maxMana, unit.mana + formation.startingManaBonus);
     }
   }
   return base;
@@ -1693,7 +1797,18 @@ function addEvent(
   timestamp: number,
   type: CombatEventType,
   text: string,
-  options: Pick<CombatEvent, "actorId" | "targetIds" | "amount" | "amounts"> = {},
+  options: Pick<
+    CombatEvent,
+    | "actorId"
+    | "targetIds"
+    | "amount"
+    | "amounts"
+    | "meatBonusDamage"
+    | "meatStackBefore"
+    | "meatStackConsumed"
+    | "meatStackGained"
+    | "meatStackAfter"
+  > = {},
 ): void {
   events.push({
     id: `event-${events.length + 1}`,
@@ -1730,6 +1845,8 @@ type PlannedCombatAction =
       kind: "attack";
       actorId: string;
       targetId: string;
+      meatBonusDamage: number;
+      meatStackConsumed: number;
     }
   | {
       kind: "ability";
@@ -1750,6 +1867,11 @@ function combatAbilityValues(actor: CombatUnit, units: CombatUnit[]): AbilityVal
     armor: actor.armor,
     formation: formationAbilityBonuses(traitCountsForSide(units, actor.side)),
   });
+}
+
+function plannedMeatStackConsumption(actor: CombatUnit): number {
+  if (actor.heroId !== "meat-gaga" || actor.meatStack <= COMBAT_EPSILON) return 0;
+  return calculateMeatGagaStackConsumption(actor.meatStack, actor.stars);
 }
 
 function plannedAbilityTargetIds(
@@ -1808,7 +1930,7 @@ function planCombatAction(
 ): PlannedCombatAction {
   if (actor.stunned > 0) return { kind: "stunned", actorId: actor.id };
 
-  if (actor.mana >= actor.maxMana) {
+  if (actor.heroId !== "meat-gaga" && actor.maxMana > 0 && actor.mana >= actor.maxMana) {
     const values = combatAbilityValues(actor, units);
     const targetIds = plannedAbilityTargetIds(actor, units, values);
     const movementTarget = actor.heroId === "nix"
@@ -1833,7 +1955,14 @@ function planCombatAction(
   const target = nearestEnemy(actor, units);
   if (!target) return { kind: "move", actorId: actor.id, targetId: "", destination: null };
   if (manhattan(actor.position, target.position) <= actor.range) {
-    return { kind: "attack", actorId: actor.id, targetId: target.id };
+    const meatStackConsumed = plannedMeatStackConsumption(actor);
+    return {
+      kind: "attack",
+      actorId: actor.id,
+      targetId: target.id,
+      meatBonusDamage: meatStackConsumed,
+      meatStackConsumed,
+    };
   }
   const destination = openStepToward(actor, target, units, reservedPositions);
   if (destination !== null) reservedPositions.add(destination);
@@ -2019,7 +2148,7 @@ function damageContributions(
         id: `${action.actorId}-damage-${target.id}`,
         actorId: action.actorId,
         targetId: target.id,
-        potential: mitigatedDamage(target, actor.attack, false),
+        potential: mitigatedDamage(target, actor.attack + action.meatBonusDamage, false),
         manaDrain: 0,
         stunTurns: 0,
       });
@@ -2267,6 +2396,13 @@ function resolveCombatBatch(
         ? units.find((unit) => unit.id === contribution.targetId)
         : null;
       const amount = contribution?.amount ?? 0;
+      const meatStackBefore = actor.heroId === "meat-gaga" ? actor.meatStack : undefined;
+      if (action.meatStackConsumed > 0) {
+        actor.meatStack = roundCombatDecimal(Math.max(
+          0,
+          actor.meatStack - action.meatStackConsumed,
+        ));
+      }
       if (target) damageUnit(target, amount, true);
       addEvent(
         events,
@@ -2275,12 +2411,18 @@ function resolveCombatBatch(
         timestamp,
         "attack",
         target
-          ? `${combatName(actor)} strikes ${combatName(target)} for ${amount} damage.`
+          ? action.meatBonusDamage > 0
+            ? `${combatName(actor)} hurls stored meat at ${combatName(target)} for ${amount} damage (${action.meatBonusDamage} bonus).`
+            : `${combatName(actor)} strikes ${combatName(target)} for ${amount} damage.`
           : `${combatName(actor)} strikes at an empty space.`,
         {
           actorId: actor.id,
           targetIds: target ? [target.id] : [],
           amount,
+          meatBonusDamage: action.meatBonusDamage > 0 ? action.meatBonusDamage : undefined,
+          meatStackBefore,
+          meatStackConsumed: action.meatStackConsumed > 0 ? action.meatStackConsumed : undefined,
+          meatStackAfter: actor.heroId === "meat-gaga" ? actor.meatStack : undefined,
         },
       );
       continue;
@@ -2338,6 +2480,44 @@ function resolveCombatBatch(
       actorId: owner.id,
       targetIds: [target.id],
     });
+  }
+
+  // Death essence is harvested only after every frozen action in the moment
+  // has resolved. A Meat Gaga defeated in this batch is therefore ineligible,
+  // while any stack gained here is reserved for her next basic attack.
+  if (newlyDefeated.length > 0) {
+    const survivors = units
+      .filter((unit) => unit.heroId === "meat-gaga" && unit.alive)
+      .sort((a, b) => a.id.localeCompare(b.id));
+    for (const meatGaga of survivors) {
+      const meatStackBefore = meatGaga.meatStack;
+      const amounts = Object.fromEntries(newlyDefeated.map((fallen) => [
+        fallen.id,
+        calculateMeatGagaStackGain(fallen.maxHp, meatGaga.stars),
+      ]));
+      const gained = roundCombatDecimal(
+        Object.values(amounts).reduce((total, amount) => total + amount, 0),
+      );
+      if (gained <= COMBAT_EPSILON) continue;
+      meatGaga.meatStack = roundCombatDecimal(meatGaga.meatStack + gained);
+      addEvent(
+        events,
+        units,
+        turn,
+        timestamp,
+        "passive",
+        `${combatName(meatGaga)} harvests ${gained} meat from ${newlyDefeated.length === 1 ? "the fallen" : `${newlyDefeated.length} fallen characters`}.`,
+        {
+          actorId: meatGaga.id,
+          targetIds: newlyDefeated.map((fallen) => fallen.id),
+          amount: gained,
+          amounts,
+          meatStackBefore,
+          meatStackGained: gained,
+          meatStackAfter: meatGaga.meatStack,
+        },
+      );
+    }
   }
 }
 

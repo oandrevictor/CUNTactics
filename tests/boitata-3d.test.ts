@@ -32,6 +32,7 @@ function combatUnit(overrides: Partial<CombatUnit> = {}): CombatUnit {
     manaRegen: 10,
     shield: 0,
     fireWallShield: 0,
+    meatStack: 0,
     stunned: 0,
     alive: true,
     ...overrides,
