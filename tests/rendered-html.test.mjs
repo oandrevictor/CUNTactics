@@ -113,8 +113,11 @@ test("ships the bespoke social card and no starter preview dependency", async ()
   assert.match(layout, /x-forwarded-host/);
 });
 
-test("combat playback batches equal timestamps and preserves remaining time across pause and speed changes", async () => {
-  const client = await readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8");
+test("combat playback batches equal timestamps while its visible clock advances linearly", async () => {
+  const [client, playback] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/combat-playback.ts", import.meta.url), "utf8"),
+  ]);
 
   assert.match(client, /const LEGACY_COMBAT_EVENT_SECONDS = 0\.82/);
   assert.match(client, /const COMBAT_TIMESTAMP_EPSILON_SECONDS = 0\.0005/);
@@ -128,10 +131,8 @@ test("combat playback batches equal timestamps and preserves remaining time acro
   assert.match(client, /current\.events\.push\(event\)/);
   assert.match(client, /current\.snapshotEvent = event/);
   assert.match(client, /const interval = nextTimestamp - currentTimestamp/);
-  assert.match(
-    client,
-    /interval > 0\s*\? Math\.max\(MIN_COMBAT_MOMENT_SECONDS, interval\)\s*: MIN_COMBAT_MOMENT_SECONDS/,
-  );
+  assert.match(client, /interval > 0 \? interval : 0/);
+  assert.doesNotMatch(client, /Math\.max\(MIN_COMBAT_MOMENT_SECONDS, interval\)/);
   assert.match(
     client,
     /groupCombatEventsByTimestamp\(combatEvents\)/,
@@ -143,34 +144,44 @@ test("combat playback batches equal timestamps and preserves remaining time acro
 
   assert.match(client, /playbackMomentKeyRef = useRef<string \| null>\(null\)/);
   assert.match(client, /playbackRemainingSecondsRef = useRef<number \| null>\(null\)/);
+  assert.match(client, /combatClockSeconds, setCombatClockSeconds/);
+  assert.match(client, /sampleLinearCombatClock\(\{/);
   assert.match(
     client,
     /const remainingSeconds = playbackRemainingSecondsRef\.current \?\? currentMomentInterval/,
   );
   assert.match(client, /const startedAt = performance\.now\(\)/);
   assert.match(client, /Math\.round\(\(remainingSeconds \* 1000\) \/ speed\)/);
+  assert.match(client, /window\.requestAnimationFrame\(updateClock\)/);
+  assert.match(client, /window\.cancelAnimationFrame\(animationFrame\)/);
+  assert.match(client, /const COMBAT_CLOCK_RENDER_INTERVAL_MS = 50/);
   assert.match(
     client,
-    /const elapsedSeconds = \(\(performance\.now\(\) - startedAt\) \/ 1000\) \* speed/,
+    /now - lastClockRenderAt >= COMBAT_CLOCK_RENDER_INTERVAL_MS \|\| sample\.remainingDuration === 0/,
   );
+  assert.match(client, /lastClockRenderAt = now/);
   assert.match(
     client,
-    /playbackRemainingSecondsRef\.current = Math\.max\(0, remainingSeconds - elapsedSeconds\)/,
+    /playbackRemainingSecondsRef\.current = sample\.remainingDuration/,
   );
+  assert.match(client, /setCombatClockSeconds\(sample\.time\)/);
   assert.match(client, /window\.clearTimeout\(timeout\)/);
-  assert.match(
-    client,
-    /\[game\.phase, playing, atCombatEnd, currentMoment, currentMomentInterval, combatMoments\.length, speed\]/,
-  );
   assert.doesNotMatch(client, /Math\.round\(820 \/ speed\)/);
 
+  assert.match(playback, /export function sampleLinearCombatClock/);
+  assert.match(playback, /elapsedWallTime[\s\S]*?\* Math\.max\(0, finiteOr\(input\.speed, 1\)\)/);
+  assert.match(playback, /Math\.max\(0, initialRemaining - elapsedTimelineTime\)/);
   assert.match(client, /<span>\{formatCombatTime\(currentCombatTime\)\}<\/span>/);
+  assert.doesNotMatch(client, /const currentCombatTime = currentMoment\?\.timestamp/);
   assert.match(client, /visibleCombatMoments\.flatMap/);
   assert.match(client, /<span className="log-time">\{formatCombatTime\(moment\.timestamp\)\}<\/span>/);
+  assert.match(client, /className="combat-caption-copy" aria-live="polite" aria-atomic="true"/);
   assert.match(client, /combat-step-preview/);
   assert.match(client, /--combat-preview-delay/);
   assert.match(client, /<span>Combat time<\/span>/);
   assert.match(client, />Next moment<\/button>/);
+  assert.match(client, /setCombatClockSeconds\(combatMoments\[nextIndex\]\?\.timestamp \?\? currentCombatTime\)/);
+  assert.match(client, /setCombatClockSeconds\(totalCombatTime\)/);
 });
 
 test("unit inspector exposes effective attack cadence and passive mana regeneration", async () => {

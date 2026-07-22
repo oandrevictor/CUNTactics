@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent, ReactNode } from "react";
 import { Boitata3DLayer } from "./boitata-3d-layer";
+import { sampleLinearCombatClock } from "./combat-playback";
 import {
   BENCH_SIZE,
   BOARD_COLUMNS,
@@ -76,6 +77,7 @@ const LEGACY_COMBAT_EVENT_SECONDS = 0.82;
 const COMBAT_TIMESTAMP_EPSILON_SECONDS = 0.0005;
 const MIN_COMBAT_MOMENT_SECONDS = 0.08;
 const DEFAULT_COMBAT_BEAT_SECONDS = 0.68;
+const COMBAT_CLOCK_RENDER_INTERVAL_MS = 50;
 
 type LoadoutDrag =
   | { kind: "item"; id: string }
@@ -187,9 +189,7 @@ function groupCombatEventsByTimestamp(events: readonly CombatEvent[]): CombatMom
 function combatMomentInterval(currentTimestamp: number, nextTimestamp: number | undefined): number {
   if (nextTimestamp === undefined) return DEFAULT_COMBAT_BEAT_SECONDS;
   const interval = nextTimestamp - currentTimestamp;
-  return Number.isFinite(interval) && interval > 0
-    ? Math.max(MIN_COMBAT_MOMENT_SECONDS, interval)
-    : MIN_COMBAT_MOMENT_SECONDS;
+  return Number.isFinite(interval) && interval > 0 ? interval : 0;
 }
 
 function formatCombatTime(seconds: number): string {
@@ -715,6 +715,7 @@ export function GameClient() {
   const [highlightedTrait, setHighlightedTrait] = useState<TraitId | null>(null);
   const [toast, setToast] = useState("Welcome to HEXFALL. Set your formation, then begin battle.");
   const [combatMomentIndex, setCombatMomentIndex] = useState(0);
+  const [combatClockSeconds, setCombatClockSeconds] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [steppedMomentKey, setSteppedMomentKey] = useState<string | null>(null);
@@ -792,11 +793,15 @@ export function GameClient() {
   const previousSnapshotEvent = previousMoment?.snapshotEvent ?? null;
   const atCombatEnd = game.phase === "combat"
     && (combatMoments.length === 0 || combatMomentIndex >= combatMoments.length - 1);
-  const currentCombatTime = currentMoment?.timestamp ?? 0;
+  const currentMomentTimestamp = currentMoment?.timestamp ?? 0;
   const totalCombatTime = combatMoments.at(-1)?.timestamp ?? 0;
+  const nextMomentTimestamp = combatMoments[combatMomentIndex + 1]?.timestamp;
+  const currentCombatTime = game.phase === "combat"
+    ? Math.min(totalCombatTime, Math.max(currentMomentTimestamp, combatClockSeconds))
+    : 0;
   const currentMomentInterval = combatMomentInterval(
-    currentCombatTime,
-    combatMoments[combatMomentIndex + 1]?.timestamp,
+    currentMomentTimestamp,
+    nextMomentTimestamp,
   );
   const combatLogStart = Math.max(0, combatMomentIndex - 5);
   const visibleCombatMoments = combatMoments.slice(combatLogStart, combatMomentIndex + 1);
@@ -806,7 +811,13 @@ export function GameClient() {
   ).length;
 
   useEffect(() => {
-    if (game.phase !== "combat" || atCombatEnd || !currentMoment) {
+    if (game.phase !== "combat" || !currentMoment) {
+      playbackMomentKeyRef.current = null;
+      playbackRemainingSecondsRef.current = null;
+      return;
+    }
+
+    if (atCombatEnd) {
       playbackMomentKeyRef.current = null;
       playbackRemainingSecondsRef.current = null;
       return;
@@ -820,20 +831,45 @@ export function GameClient() {
 
     const remainingSeconds = playbackRemainingSecondsRef.current ?? currentMomentInterval;
     const startedAt = performance.now();
+    let lastClockRenderAt = startedAt - COMBAT_CLOCK_RENDER_INTERVAL_MS;
+    let animationFrame = 0;
+    const sampleClock = (now: number) => sampleLinearCombatClock({
+      startTime: currentMoment.timestamp,
+      endTime: nextMomentTimestamp ?? currentMoment.timestamp,
+      segmentDuration: currentMomentInterval,
+      remainingDuration: remainingSeconds,
+      elapsedWallTime: (now - startedAt) / 1000,
+      speed,
+    });
+    const updateClock = (now: number) => {
+      const sample = sampleClock(now);
+      if (now - lastClockRenderAt >= COMBAT_CLOCK_RENDER_INTERVAL_MS || sample.remainingDuration === 0) {
+        lastClockRenderAt = now;
+        setCombatClockSeconds(sample.time);
+      }
+      if (sample.remainingDuration > 0) {
+        animationFrame = window.requestAnimationFrame(updateClock);
+      }
+    };
+    animationFrame = window.requestAnimationFrame(updateClock);
     const timeout = window.setTimeout(() => {
+      const nextIndex = Math.min(combatMomentIndex + 1, combatMoments.length - 1);
       playbackMomentKeyRef.current = null;
       playbackRemainingSecondsRef.current = null;
       setSteppedMomentKey(null);
-      setCombatMomentIndex((index) => Math.min(index + 1, combatMoments.length - 1));
+      setCombatClockSeconds(combatMoments[nextIndex]?.timestamp ?? currentMoment.timestamp);
+      setCombatMomentIndex(nextIndex);
     }, Math.max(1, Math.round((remainingSeconds * 1000) / speed)));
 
     return () => {
       window.clearTimeout(timeout);
+      window.cancelAnimationFrame(animationFrame);
       if (playbackMomentKeyRef.current !== currentMoment.key) return;
-      const elapsedSeconds = ((performance.now() - startedAt) / 1000) * speed;
-      playbackRemainingSecondsRef.current = Math.max(0, remainingSeconds - elapsedSeconds);
+      const sample = sampleClock(performance.now());
+      playbackRemainingSecondsRef.current = sample.remainingDuration;
+      setCombatClockSeconds(sample.time);
     };
-  }, [game.phase, playing, atCombatEnd, currentMoment, currentMomentInterval, combatMoments.length, speed]);
+  }, [game.phase, playing, atCombatEnd, currentMoment, currentMomentInterval, nextMomentTimestamp, combatMomentIndex, combatMoments, speed]);
 
   useEffect(() => {
     const handleKey = (event: globalThis.KeyboardEvent) => {
@@ -859,12 +895,13 @@ export function GameClient() {
         playbackRemainingSecondsRef.current = null;
         setPlaying(false);
         setSteppedMomentKey(combatMoments[nextIndex]?.key ?? null);
+        setCombatClockSeconds(combatMoments[nextIndex]?.timestamp ?? currentCombatTime);
         setCombatMomentIndex(nextIndex);
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [game.phase, atCombatEnd, combatMomentIndex, combatMoments, forgeOpen]);
+  }, [game.phase, atCombatEnd, combatMomentIndex, combatMoments, currentCombatTime, forgeOpen]);
 
   const displayUnits = useMemo<DisplayUnit[]>(() => {
     if (game.phase === "combat" && currentSnapshotEvent) {
@@ -982,7 +1019,7 @@ export function GameClient() {
   const combatLinks = [...actionLinks, ...movementLinks];
   const combatBeatMilliseconds = Math.min(
     680,
-    Math.max(80, Math.round(currentMomentInterval * 820)),
+    Math.max(Math.round(MIN_COMBAT_MOMENT_SECONDS * 1000), Math.round(currentMomentInterval * 820)),
   );
   const renderedCombatBeatMilliseconds = Math.round(combatBeatMilliseconds / speed);
   const combatBeatStyle = {
@@ -1133,6 +1170,7 @@ export function GameClient() {
       playbackMomentKeyRef.current = null;
       playbackRemainingSecondsRef.current = null;
       setCombatMomentIndex(0);
+      setCombatClockSeconds(0);
       setSteppedMomentKey(null);
       setPlaying(true);
       setForgeOpen(false);
@@ -1157,6 +1195,7 @@ export function GameClient() {
     playbackMomentKeyRef.current = null;
     playbackRemainingSecondsRef.current = null;
     setCombatMomentIndex(0);
+    setCombatClockSeconds(0);
     setSteppedMomentKey(null);
     setPlaying(false);
     setToast("A new campaign begins.");
@@ -1647,9 +1686,9 @@ export function GameClient() {
             ) : null}
           </div>
           {game.phase === "combat" && currentMoment ? (
-            <div className="combat-caption" aria-live="polite" aria-atomic="true">
+            <div className="combat-caption">
               <span>{formatCombatTime(currentCombatTime)}</span>
-              <div className="combat-caption-copy">
+              <div className="combat-caption-copy" aria-live="polite" aria-atomic="true">
                 {currentEvents.map((event) => <strong key={event.id}>{event.text}</strong>)}
               </div>
             </div>
@@ -1975,10 +2014,11 @@ export function GameClient() {
                 playbackRemainingSecondsRef.current = null;
                 setPlaying(false);
                 setSteppedMomentKey(combatMoments[nextIndex]?.key ?? null);
+                setCombatClockSeconds(combatMoments[nextIndex]?.timestamp ?? currentCombatTime);
                 setCombatMomentIndex(nextIndex);
               }}>Next moment</button>
               <label className="speed-control">Speed<select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} data-testid="combat-speed"><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option></select></label>
-              {!atCombatEnd ? <button className="game-button button-ghost" type="button" data-testid="combat-skip" onClick={() => { playbackMomentKeyRef.current = null; playbackRemainingSecondsRef.current = null; setSteppedMomentKey(null); setPlaying(false); setCombatMomentIndex(combatMoments.length - 1); }}>Skip to result</button> : <button className="game-button button-primary" type="button" onClick={() => commit(applyCombatResult(game))}>Claim result</button>}
+              {!atCombatEnd ? <button className="game-button button-ghost" type="button" data-testid="combat-skip" onClick={() => { playbackMomentKeyRef.current = null; playbackRemainingSecondsRef.current = null; setSteppedMomentKey(null); setPlaying(false); setCombatClockSeconds(totalCombatTime); setCombatMomentIndex(combatMoments.length - 1); }}>Skip to result</button> : <button className="game-button button-primary" type="button" onClick={() => commit(applyCombatResult(game))}>Claim result</button>}
             </div>
           ) : (
             <div className="income-line"><span>Round resolved</span><strong>{game.roundResult?.outcome === "victory" ? "Victory" : "Defeat"}</strong><small>Review the result to continue</small></div>
