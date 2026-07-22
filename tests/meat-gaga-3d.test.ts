@@ -378,8 +378,8 @@ test("the shared animated layer is decorative and preserves the interactive port
   assert.match(client, /onReady=\{\(\) => setMeatGaga3DReady\(true\)\}/);
   assert.match(client, /onFallback=\{\(\) => setMeatGaga3DReady\(false\)\}/);
   assert.match(client, /onDisposed=\{\(\) => setMeatGaga3DReady\(false\)\}/);
-  assert.match(client, /aria-label=\{isTimedStunned \?/);
-  assert.match(client, /`Stunned until \$\{formatAbilitySeconds\(unit\.stunnedUntil\)\}` : "Stunned"/);
+  assert.match(client, /aria-label=\{localizeText\(locale, isTimedStunned \?/);
+  assert.match(client, /`Stunned until \$\{formatAbilitySeconds\(unit\.stunnedUntil, locale\)\}` : "Stunned"/);
   assert.match(styles, /\.meat-gaga-3d-ready \.unit-token-meat-gaga \.unit-avatar\.hero-art-image/);
   assert.match(styles, /opacity: 0/);
   assert.match(styles, /\.unit-token-meat-gaga \.unit-avatar\.hero-art-image \{[^}]*transition: opacity 180ms ease;/);

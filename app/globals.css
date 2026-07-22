@@ -4164,6 +4164,30 @@ button:disabled,
   font-size: 10px;
 }
 
+.language-control {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.language-control select {
+  min-height: 34px;
+  max-width: 124px;
+  padding: 4px 24px 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--aubergine-2);
+  color: var(--ivory);
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .combat-controls {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -4578,6 +4602,18 @@ button:disabled,
   .hud-icon,
   .help-button {
     display: none;
+  }
+
+  .language-control {
+    grid-column: 1 / -1;
+    grid-template-columns: auto minmax(0, 150px);
+    align-items: center;
+    justify-content: end;
+  }
+
+  .language-control select {
+    width: 100%;
+    max-width: 150px;
   }
 
   .status-banner {

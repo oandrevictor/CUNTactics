@@ -2,13 +2,19 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
-async function render() {
+async function render(locale) {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("http://localhost/", { headers: { accept: "text/html", host: "localhost" } }),
+    new Request("http://localhost/", {
+      headers: {
+        accept: "text/html",
+        host: "localhost",
+        ...(locale ? { cookie: `hexfall-locale=${locale}` } : {}),
+      },
+    }),
     { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
     { waitUntil() {}, passThroughOnException() {} },
   );
@@ -32,6 +38,37 @@ test("server-renders the complete HEXFALL game surface", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site|react-loading-skeleton/i);
 });
 
+test("server-renders the complete Portuguese game surface from the locale cookie", async () => {
+  const response = await render("pt-BR");
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /<html lang="pt-BR">/i);
+  assert.match(html, /<title>HEXFALL — Batalha tática de tabuleiro em turnos<\/title>/i);
+  assert.match(html, /Vínculos ativos/);
+  assert.match(html, /Mercado Noturno/);
+  assert.match(html, /Iniciar batalha/);
+  assert.match(html, /Vida do comandante/);
+  assert.match(html, /data-testid="language-selector"/);
+  assert.match(html, /<option value="pt-BR" selected="">Português \(Brasil\)<\/option>/);
+  assert.doesNotMatch(html, />Active bonds<|>Begin battle<|>Commander life</);
+});
+
+test("language selector persists independently and updates the document locale", async () => {
+  const [client, styles] = await Promise.all([
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(client, /data-testid="language-selector"/);
+  assert.match(client, /window\.localStorage\.getItem\(LOCALE_STORAGE_KEY\)/);
+  assert.match(client, /window\.localStorage\.setItem\(LOCALE_STORAGE_KEY, locale\)/);
+  assert.match(client, /document\.cookie = `\$\{LOCALE_COOKIE_KEY\}=/);
+  assert.match(client, /document\.documentElement\.lang = locale/);
+  assert.match(client, /data-locale=\{locale\} lang=\{locale\}/);
+  assert.match(styles, /\.language-control\s*\{/);
+});
+
 test("integrates the bench into the arena surface without panel chrome", async () => {
   const [client, styles] = await Promise.all([
     readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
@@ -50,7 +87,7 @@ test("integrates the bench into the arena surface without panel chrome", async (
   assert.match(arenaSurface, /className="arena-plane"/);
   assert.match(arenaSurface, /className="arena-bench" aria-labelledby="bench-title" data-testid="bench"/);
   assert.match(arenaSurface, /data-testid="bench-forge"/);
-  assert.match(arenaSurface, /<h2 id="bench-title">Bench<\/h2>/);
+  assert.match(arenaSurface, /<h2 id="bench-title">\{t\("Bench"\)\}<\/h2>/);
   assert.ok(
     arenaSurface.indexOf('data-testid="game-board"') < arenaSurface.indexOf('data-testid="bench"'),
     "the reserve bays should follow the battle grid inside the shared arena",
@@ -79,16 +116,16 @@ test("shows equipped gear as readable item-specific badges on board and bench ch
   ]);
 
   assert.match(client, /const ITEM_SHORT_LABELS:[\s\S]*?"inferno-fang": "FANG"[\s\S]*?cinderplate: "PLATE"[\s\S]*?"spirit-lantern": "LAMP"/);
-  assert.match(client, /function equippedItemSummary\(itemSlots: UnitItemSlots\)/);
+  assert.match(client, /function equippedItemSummary\(itemSlots: UnitItemSlots, locale: GameLocale\)/);
   assert.match(client, /title=\{equippedItemTitle \|\| undefined\}/);
   assert.match(client, /unit-item-pip-\$\{item\.tier\} unit-item-pip-\$\{item\.itemId\}/);
   assert.match(client, /data-testid=\{`unit-item-badge-\$\{unit\.id\}-\$\{index\}`\}/);
   assert.match(client, /data-item-id=\{item\?\.itemId \?\? "empty"\}/);
   assert.match(client, /className="unit-item-pip-glyph"[\s\S]*?definition\.recipe\.map/);
-  assert.match(client, /<small>\{craftedItemShortLabel\(item\)\}<\/small>/);
+  assert.match(client, /<small>\{craftedItemShortLabel\(item, locale\)\}<\/small>/);
   assert.match(client, /className="unit-item-enhancement"/);
   assert.match(client, /equipmentSummary \? `, \$\{equipmentSummary\}`/);
-  assert.match(client, /equippedItemSummary\(display\.itemSlots\)/);
+  assert.match(client, /equippedItemSummary\(display\.itemSlots, locale\)/);
 
   assert.match(styles, /\.unit-item-pip\s*\{[^}]*width:\s*20px;[^}]*height:\s*22px;[^}]*grid-template-rows:/s);
   assert.match(styles, /\.board-grid \.unit-item-pip\s*\{[^}]*width:\s*clamp\(22px, 1\.75vw, 25px\);[^}]*height:\s*clamp\(23px, 1\.85vw, 27px\)/s);
@@ -171,15 +208,15 @@ test("combat playback batches equal timestamps while its visible clock advances 
   assert.match(playback, /export function sampleLinearCombatClock/);
   assert.match(playback, /elapsedWallTime[\s\S]*?\* Math\.max\(0, finiteOr\(input\.speed, 1\)\)/);
   assert.match(playback, /Math\.max\(0, initialRemaining - elapsedTimelineTime\)/);
-  assert.match(client, /<span>\{formatCombatTime\(currentCombatTime\)\}<\/span>/);
+  assert.match(client, /<span>\{formatCombatTime\(currentCombatTime, locale\)\}<\/span>/);
   assert.doesNotMatch(client, /const currentCombatTime = currentMoment\?\.timestamp/);
   assert.match(client, /visibleCombatMoments\.flatMap/);
-  assert.match(client, /<span className="log-time">\{formatCombatTime\(moment\.timestamp\)\}<\/span>/);
+  assert.match(client, /<span className="log-time">\{formatCombatTime\(moment\.timestamp, locale\)\}<\/span>/);
   assert.match(client, /className="combat-caption-copy" aria-live="polite" aria-atomic="true"/);
   assert.match(client, /combat-step-preview/);
   assert.match(client, /--combat-preview-delay/);
-  assert.match(client, /<span>Combat time<\/span>/);
-  assert.match(client, />Next moment<\/button>/);
+  assert.match(client, /<span>\{t\("Combat time"\)\}<\/span>/);
+  assert.match(client, />\{t\("Next moment"\)\}<\/button>/);
   assert.match(client, /setCombatClockSeconds\(combatMoments\[nextIndex\]\?\.timestamp \?\? currentCombatTime\)/);
   assert.match(client, /setCombatClockSeconds\(totalCombatTime\)/);
 });
@@ -220,9 +257,9 @@ test("unit inspector exposes effective attack cadence and passive mana regenerat
     client.indexOf('<section className="combat-log"'),
   );
   assert.match(inspector, /unit-attack-speed-\$\{selectedDisplay\.id\}/);
-  assert.match(inspector, /<small>Attack speed<\/small><strong>\{formatRate\(selectedDisplay\.attackSpeed\)\}\/sec<\/strong>/);
+  assert.match(inspector, /<small>\{t\("Attack speed"\)\}<\/small><strong>\{formatRate\(selectedDisplay\.attackSpeed, locale\)\}\/\{t\("sec"\)\}<\/strong>/);
   assert.match(inspector, /unit-mana-regen-\$\{selectedDisplay\.id\}/);
-  assert.match(inspector, /<small>Mana regen<\/small><strong>\{formatRate\(selectedDisplay\.manaRegen\)\}\/sec<\/strong>/);
+  assert.match(inspector, /<small>\{t\("Mana regen"\)\}<\/small><strong>\{formatRate\(selectedDisplay\.manaRegen, locale\)\}\/\{t\("sec"\)\}<\/strong>/);
 });
 
 test("character clicks inspect while formation changes require dragging", async () => {
@@ -311,20 +348,20 @@ test("Meat Gaga exposes a mana-free passive, live reserve, and exact star scalin
   assert.match(engine, /MEAT_GAGA_STACK_CONSUME_PERCENTAGES = \[7, 8, 12\]/);
   assert.match(client, /getMeatGagaPassivePreview\(selectedDisplay\.stars\)/);
   assert.match(client, /calculateMeatGagaStackConsumption\(selectedDisplay\.meatStack, selectedDisplay\.stars\)/);
-  assert.match(client, /<span className="eyebrow">Passive · No Mana<\/span>/);
+  assert.match(client, /<span className="eyebrow">\{t\("Passive · No Mana"\)\}<\/span>/);
   assert.match(client, /data-testid="meat-gaga-passive-current-values"/);
   assert.match(client, /data-testid="meat-gaga-passive-scaling"/);
   assert.match(client, /meatGagaPassivePreview\.current\.stackGainPercent/);
   assert.match(client, /meatGagaPassivePreview\.current\.stackConsumePercent/);
   assert.match(client, /meatGagaPassivePreview\.byStar\.map/);
-  assert.match(client, /<small>Next attack bonus<\/small>/);
+  assert.match(client, /<small>\{t\("Next attack bonus"\)\}<\/small>/);
   assert.match(client, /unit-meat-stack-inspector-/);
   assert.match(client, /unit-meat-stack-/);
   assert.match(client, /event\.type === "passive"/);
   assert.match(client, /unit-meat-stack-gained/);
-  assert.match(client, /HARVEST \+\$\{Math\.round\(meatHarvestEvent/);
+  assert.match(client, /t\("HARVEST"\)[\s\S]*?Math\.round\(meatHarvestEvent/);
   assert.match(client, /heroId === "meat-gaga"[\s\S]*?"starting mana has no effect"/);
-  assert.match(client, /selectedHero\.id === "meat-gaga"[\s\S]*?Passive · No Mana[\s\S]*?: \([\s\S]*?<small>Mana<\/small>/);
+  assert.match(client, /selectedHero\.id === "meat-gaga"[\s\S]*?t\("Passive · No Mana"\)[\s\S]*?: \([\s\S]*?<small>\{t\("Mana"\)\}<\/small>/);
   assert.match(styles, /\.unit-token-meat-gaga \.unit-avatar\.hero-art-image/);
   assert.match(styles, /\.stat-cell-meat-stack/);
   assert.match(styles, /\.passive-card/);
@@ -366,7 +403,7 @@ test("character inspector presents combat role and exact basic-attack range", as
 
   assert.match(client, /unit-role-range-/);
   assert.match(client, /Basic attack range/);
-  assert.match(client, /Range \{ROLE_PROFILES\[hero\.role\]\.range\}/);
+  assert.match(client, /\{t\("Range"\)\} \{ROLE_PROFILES\[hero\.role\]\.range\}/);
   assert.match(engine, /tank:[\s\S]*?range: 1/);
   assert.match(engine, /shooter:[\s\S]*?range: 4/);
 });
@@ -392,7 +429,7 @@ test("ability inspector shows current values and an accessible star-scaling brea
   );
   assert.match(abilityCard, /ability-value-/);
   assert.match(abilityCard, /className="ability-breakdown"/);
-  assert.match(abilityCard, /abilityPreview\.scalingDescription/);
+  assert.match(abilityCard, /formatAbilityScaling\(locale, abilityPreview\)/);
   assert.match(abilityCard, /className="ability-scale-table"/);
   assert.match(abilityCard, /data-testid=\{`ability-scaling-\$\{selectedHero\.ability\.id\}`\}/);
   assert.match(abilityCard, /className="ability-modifiers"/);

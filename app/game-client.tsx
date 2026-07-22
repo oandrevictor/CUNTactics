@@ -6,6 +6,27 @@ import { Boitata3DLayer } from "./boitata-3d-layer";
 import { sampleLinearCombatClock } from "./combat-playback";
 import { MeatGaga3DLayer } from "./meat-gaga-3d-layer";
 import {
+  GAME_LOCALES,
+  LOCALE_COOKIE_KEY,
+  LOCALE_STORAGE_KEY,
+  formatAbilityScaling,
+  formatList,
+  formatNumber,
+  isGameLocale,
+  localizeAbilityText,
+  localizeCombatEvent,
+  localizeComponent,
+  localizeHero,
+  localizeItem,
+  localizeOutcome,
+  localizePhase,
+  localizeRarity,
+  localizeRole,
+  localizeText,
+  localizeTrait,
+  type GameLocale,
+} from "./i18n";
+import {
   BENCH_SIZE,
   BOARD_COLUMNS,
   BOARD_SIZE,
@@ -112,6 +133,7 @@ type DisplayUnit = {
   armor: number;
   range: number;
   attackSpeed: number;
+  moveSpeed: number;
   manaRegen: number;
   meatStack: number;
   shield: number;
@@ -218,17 +240,17 @@ function combatMomentInterval(currentTimestamp: number, nextTimestamp: number | 
   return Number.isFinite(interval) && interval > 0 ? interval : 0;
 }
 
-function formatCombatTime(seconds: number): string {
-  return `${Math.max(0, seconds).toFixed(1)}s`;
+function formatCombatTime(seconds: number, locale: GameLocale): string {
+  return `${formatNumber(locale, Math.max(0, seconds), 1)}s`;
 }
 
-function formatRate(value: number): string {
+function formatRate(value: number, locale: GameLocale): string {
   if (!Number.isFinite(value)) return "0";
-  return value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  return formatNumber(locale, value, 2);
 }
 
-function formatAbilitySeconds(value: number): string {
-  return `${formatRate(value)}s`;
+function formatAbilitySeconds(value: number, locale: GameLocale): string {
+  return `${formatRate(value, locale)}s`;
 }
 
 function elphabaAbilityPhase(event: CombatEvent | null): ElphabaAbilityPhase | null {
@@ -335,6 +357,7 @@ function persistentDisplay(unit: UnitInstance): DisplayUnit {
     armor: stats.armor,
     range: stats.range,
     attackSpeed: stats.attackSpeed,
+    moveSpeed: stats.moveSpeed,
     manaRegen: stats.manaRegen,
     meatStack: 0,
     shield: 0,
@@ -352,6 +375,7 @@ function combatDisplay(unit: CombatUnit, persistent?: UnitInstance): DisplayUnit
   return {
     ...unit,
     attackSpeed: Number.isFinite(unit.attackSpeed) ? unit.attackSpeed : fallbackStats.attackSpeed,
+    moveSpeed: Number.isFinite(unit.moveSpeed) ? unit.moveSpeed : fallbackStats.moveSpeed,
     manaRegen: Number.isFinite(unit.manaRegen) ? unit.manaRegen : fallbackStats.manaRegen,
     meatStack: Number.isFinite(unit.meatStack) ? unit.meatStack : 0,
     levitatingUntil: Number.isFinite(timedUnit.levitatingUntil) ? timedUnit.levitatingUntil! : 0,
@@ -362,25 +386,22 @@ function combatDisplay(unit: CombatUnit, persistent?: UnitInstance): DisplayUnit
   };
 }
 
-function phaseLabel(phase: GameState["phase"]): string {
-  if (phase === "planning") return "Planning";
-  if (phase === "combat") return "Combat";
-  if (phase === "resolution") return "Round complete";
-  return "Campaign complete";
+function phaseLabel(phase: GameState["phase"], locale: GameLocale): string {
+  return localizePhase(locale, phase);
 }
 
 function starsLabel(stars: number): string {
   return `${"★".repeat(stars)}${"☆".repeat(Math.max(0, 3 - stars))}`;
 }
 
-function craftedItemName(item: CraftedItem): string {
-  const name = ITEM_DEFINITIONS[item.itemId].name;
-  return item.tier === "enhanced" ? `Enhanced ${name}` : name;
+function craftedItemName(item: CraftedItem, locale: GameLocale): string {
+  const name = localizeItem(locale, item.itemId).name;
+  return item.tier === "enhanced" ? localizeText(locale, `Enhanced ${name}`) : name;
 }
 
-function craftedItemBonusText(item: CraftedItem, heroId?: HeroId): string {
+function craftedItemBonusText(item: CraftedItem, locale: GameLocale, heroId?: HeroId): string {
   const bonuses = getCraftedItemBonuses(item);
-  return [
+  const copy = [
     bonuses.maxHp ? `+${bonuses.maxHp} HP` : null,
     bonuses.attack ? `+${bonuses.attack} damage` : null,
     bonuses.armor ? `+${bonuses.armor} armor` : null,
@@ -389,7 +410,8 @@ function craftedItemBonusText(item: CraftedItem, heroId?: HeroId): string {
         ? "starting mana has no effect"
         : `+${bonuses.startingMana} starting mana`
       : null,
-  ].filter(Boolean).join(" · ");
+  ].filter((entry): entry is string => Boolean(entry));
+  return copy.map((entry) => localizeText(locale, entry)).join(" · ");
 }
 
 const ITEM_SHORT_LABELS: Record<CraftedItem["itemId"], string> = {
@@ -401,23 +423,24 @@ const ITEM_SHORT_LABELS: Record<CraftedItem["itemId"], string> = {
   "warding-flame": "WARD",
 };
 
-function craftedItemShortLabel(item: CraftedItem): string {
-  return ITEM_SHORT_LABELS[item.itemId];
+function craftedItemShortLabel(item: CraftedItem, locale: GameLocale): string {
+  return localizeText(locale, ITEM_SHORT_LABELS[item.itemId]);
 }
 
-function equippedItemSummary(itemSlots: UnitItemSlots): string {
-  const names = itemSlots.flatMap((item) => item ? [craftedItemName(item)] : []);
-  return names.length ? `Equipped: ${names.join(", ")}` : "";
+function equippedItemSummary(itemSlots: UnitItemSlots, locale: GameLocale): string {
+  const names = itemSlots.flatMap((item) => item ? [craftedItemName(item, locale)] : []);
+  return names.length ? localizeText(locale, `Equipped: ${names.join(", ")}`) : "";
 }
 
-function targetCountText(values: AbilityValues): string {
+function targetCountText(values: AbilityValues, locale: GameLocale): string {
   if (values.minTargets === values.maxTargets) return String(values.maxTargets);
-  if (values.minTargets === 0) return `Up to ${values.maxTargets}`;
+  if (values.minTargets === 0) return localizeText(locale, `Up to ${values.maxTargets}`);
   return `${values.minTargets}–${values.maxTargets}`;
 }
 
-function abilityMetricDefinitions(preview: AbilityPreview): AbilityMetric[] {
-  const damageLabel = preview.current.ignoresArmor ? "True damage" : "Raw damage";
+function abilityMetricDefinitions(preview: AbilityPreview, locale: GameLocale): AbilityMetric[] {
+  const t = (text: string) => localizeText(locale, text);
+  const damageLabel = t(preview.current.ignoresArmor ? "True damage" : "Raw damage");
   const targetLabel: Record<HeroId, string> = {
     bramble: "Allies healed",
     boitata: "Target",
@@ -441,80 +464,80 @@ function abilityMetricDefinitions(preview: AbilityPreview): AbilityMetric[] {
     },
     {
       id: "current-health-true-damage",
-      label: "Landing true damage",
+      label: t("Landing true damage"),
       kind: "true-damage",
       applies: (values) => values.currentHealthDamagePercent > 0,
-      format: (values) => `${formatRate(values.currentHealthDamagePercent)}% current Life`,
+      format: (values) => `${formatRate(values.currentHealthDamagePercent, locale)}% ${t("current Life")}`,
     },
     {
       id: "healing",
-      label: "Healing",
+      label: t("Healing"),
       kind: "healing",
       applies: (values) => values.healing > 0,
       format: (values) => String(values.healing),
     },
     {
       id: "shield",
-      label: "Shield",
+      label: t("Shield"),
       kind: "shield",
       applies: (values) => values.shield > 0,
       format: (values) => String(values.shield),
     },
     {
       id: "targets",
-      label: targetLabel[preview.current.heroId],
+      label: t(targetLabel[preview.current.heroId]),
       kind: "targets",
       applies: (values) => values.maxTargets > 0,
-      format: preview.current.heroId === "boitata" ? () => "Self" : targetCountText,
+      format: preview.current.heroId === "boitata" ? () => t("Self") : (values) => targetCountText(values, locale),
     },
     {
       id: "levitation",
-      label: "Levitation",
+      label: t("Levitation"),
       kind: "duration",
       applies: (values) => values.liftDurationSeconds > 0,
-      format: (values) => formatAbilitySeconds(values.liftDurationSeconds),
+      format: (values) => formatAbilitySeconds(values.liftDurationSeconds, locale),
     },
     {
       id: "landing-stun",
-      label: "Landing stun",
+      label: t("Landing stun"),
       kind: "stun",
       applies: (values) => values.stunDurationSeconds > 0,
-      format: (values) => formatAbilitySeconds(values.stunDurationSeconds),
+      format: (values) => formatAbilitySeconds(values.stunDurationSeconds, locale),
     },
     {
       id: "projectiles",
-      label: "Projectiles",
+      label: t("Projectiles"),
       kind: "projectiles",
       applies: (values) => values.projectiles > 0,
       format: (values) => String(values.projectiles),
     },
     {
       id: "mana-drain",
-      label: "Mana drain",
+      label: t("Mana drain"),
       kind: "mana-drain",
       applies: (values) => values.manaDrain > 0,
       format: (values) => String(values.manaDrain),
     },
     {
       id: "stun",
-      label: "Stun",
+      label: t("Stun"),
       kind: "stun",
       applies: (values) => values.stunTurns > 0,
-      format: (values) => `${values.stunTurns} ${values.stunTurns === 1 ? "action" : "actions"}`,
+      format: (values) => localizeText(locale, `${values.stunTurns} ${values.stunTurns === 1 ? "action" : "actions"}`),
     },
     {
       id: "self-heal",
-      label: "Self-heal",
+      label: t("Self-heal"),
       kind: "self-heal",
       applies: (values) => values.selfHealPercent > 0,
       format: (values) => `${values.selfHealPercent}%`,
     },
     {
       id: "team-heal",
-      label: "Team heal",
+      label: t("Team heal"),
       kind: "team-heal",
       applies: (values) => values.teamHealing > 0,
-      format: (values) => `${values.teamHealing} each`,
+      format: (values) => localizeText(locale, `${values.teamHealing} each`),
     },
   ];
 }
@@ -532,6 +555,7 @@ function HeroArt({ heroId, className, children }: { heroId: HeroId; className: s
 
 function UnitToken({
   unit,
+  locale,
   selected,
   highlighted,
   currentEvents,
@@ -543,6 +567,7 @@ function UnitToken({
   loadoutDropStatus = null,
 }: {
   unit: DisplayUnit;
+  locale: GameLocale;
   selected: boolean;
   highlighted: boolean;
   currentEvents: readonly CombatEvent[];
@@ -554,6 +579,8 @@ function UnitToken({
   loadoutDropStatus?: LoadoutDropStatus;
 }) {
   const hero = HEROES[unit.heroId];
+  const heroCopy = localizeHero(locale, unit.heroId);
+  const t = (text: string) => localizeText(locale, text);
   const isCreatureToken = unit.heroId === "boitata";
   const isMeatGaga = unit.heroId === "meat-gaga";
   const gravityActorEvent = currentEvents.find((event) => (
@@ -616,11 +643,11 @@ function UnitToken({
       key: `${event.id}:${unit.id}`,
       kind,
       text: kind === "shield"
-        ? `+${targetAmount} SHIELD`
+        ? `+${targetAmount} ${t("SHIELD")}`
         : kind === "heal"
           ? `+${targetAmount}`
           : isMeatGagaEnhancedAttack(event)
-            ? `−${targetAmount} · MEAT +${Math.round(event.meatBonusDamage)}`
+            ? `−${targetAmount} · ${t("MEAT")} +${Math.round(event.meatBonusDamage)}`
             : `−${targetAmount}`,
       meat: isMeatGagaEnhancedAttack(event),
       starfall: event.type === "ability" && event.actorId
@@ -629,29 +656,29 @@ function UnitToken({
       gravity: elphabaAbilityPhase(event) === "landing",
     }];
   });
-  const blockFeedback = shieldLost > 0 ? `BLOCK ${shieldLost}` : null;
+  const blockFeedback = shieldLost > 0 ? `${t("BLOCK")} ${shieldLost}` : null;
   const actorLabel = isMoveEvent
     ? didMove
-      ? "MOVE"
+      ? t("MOVE")
       : isStunnedAction
-        ? "STUNNED"
-        : "HOLD"
+        ? t("STUNNED")
+        : t("HOLD")
     : actorGravityPhase === "lift"
-      ? "DEFY GRAVITY"
+      ? t("DEFY GRAVITY")
       : actorGravityPhase === "landing"
-        ? "GRAVITY"
+        ? t("GRAVITY")
         : actorIsSol
-          ? "STARFALL"
+          ? t("STARFALL")
           : isMeatAttack
-            ? "MEAT THROW"
+            ? t("MEAT THROW")
             : actorEvent?.type === "passive"
-              ? `HARVEST +${Math.round(meatHarvestEvent?.meatStackGained ?? 0)}`
+              ? `${t("HARVEST")} +${Math.round(meatHarvestEvent?.meatStackGained ?? 0)}`
               : actorEffectKind === "shield"
-                ? "WALL"
+                ? t("WALL")
                 : actorEvent?.type === "ability"
-                  ? "CAST"
-                  : "ATTACK";
-  const equippedItemTitle = equippedItemSummary(unit.itemSlots);
+                  ? t("CAST")
+                  : t("ATTACK");
+  const equippedItemTitle = equippedItemSummary(unit.itemSlots, locale);
 
   return (
     <div
@@ -666,7 +693,7 @@ function UnitToken({
       data-stunned-until={unit.stunnedUntil || undefined}
       title={equippedItemTitle || undefined}
     >
-      <span className="unit-stars" data-testid={`unit-stars-${unit.id}`} aria-label={`${unit.stars} star`}>{starsLabel(unit.stars)}</span>
+      <span className="unit-stars" data-testid={`unit-stars-${unit.id}`} aria-label={localizeText(locale, `${unit.stars} star`)}>{starsLabel(unit.stars)}</span>
       {isLevitating || gravityLiftEvent || gravityLandingCenterEvent ? (
         <span
           className="gravity-lift-aura"
@@ -677,7 +704,7 @@ function UnitToken({
       ) : null}
       <HeroArt heroId={unit.heroId} className="unit-avatar" />
       {hasFireWall ? <span className={`fire-wall ${isShielded ? "fire-wall-cast" : ""} ${fireWallShieldLost > 0 ? "fire-wall-absorb" : ""} ${fireWallBroke ? "fire-wall-break" : ""}`} aria-hidden="true" /> : null}
-      <span className="unit-level">L{unit.level}</span>
+      <span className="unit-level">{t("L")}{unit.level}</span>
       <span className="unit-item-pips" data-testid={`unit-item-slots-${unit.id}`} aria-hidden="true">
         {unit.itemSlots.map((item, index) => {
           const definition = item ? ITEM_DEFINITIONS[item.itemId] : null;
@@ -691,7 +718,7 @@ function UnitToken({
               {item && definition ? (
                 <>
                   <span className="unit-item-pip-glyph">{definition.recipe.map((componentId) => ITEM_COMPONENTS[componentId].glyph).join("")}</span>
-                  <small>{craftedItemShortLabel(item)}</small>
+                  <small>{craftedItemShortLabel(item, locale)}</small>
                   {item.enhancement ? <i className="unit-item-enhancement">{ITEM_COMPONENTS[item.enhancement].glyph}</i> : null}
                 </>
               ) : null}
@@ -699,14 +726,14 @@ function UnitToken({
           );
         })}
       </span>
-      <span className="unit-name">{hero.name}</span>
+      <span className="unit-name">{heroCopy.name}</span>
       {isMeatGaga ? (
         <span
           className={`unit-meat-stack ${unit.meatStack > 0 ? "unit-meat-stack-charged" : ""} ${isMeatHarvest ? "unit-meat-stack-gained" : ""}`}
           data-testid={`unit-meat-stack-${unit.id}`}
-          aria-label={`${hero.name} meat stack ${Math.round(unit.meatStack)}`}
+          aria-label={localizeText(locale, `${heroCopy.name} meat stack ${Math.round(unit.meatStack)}`)}
         >
-          <small>MEAT</small><strong>{Math.round(unit.meatStack)}</strong>
+          <small>{t("MEAT")}</small><strong>{Math.round(unit.meatStack)}</strong>
         </span>
       ) : null}
       {isActor ? <span className="combat-role" aria-hidden="true">{actorLabel}</span> : null}
@@ -715,22 +742,22 @@ function UnitToken({
           className="meter meter-life"
           style={meterStyle(unit.hp + unit.shield, unit.maxHp + Math.max(0, unit.shield))}
           data-testid={`unit-hp-${unit.id}`}
-          aria-label={`${hero.name} health ${Math.round(unit.hp)} of ${unit.maxHp}${unit.shield ? `, shield ${unit.shield}` : ""}`}
+          aria-label={localizeText(locale, `${heroCopy.name} health ${Math.round(unit.hp)} of ${unit.maxHp}${unit.shield ? `, shield ${unit.shield}` : ""}`)}
         ><span className="meter-fill" /></span>
         {isMeatGaga ? (
-          <span className="meter unit-passive-meter" aria-label={`${hero.name} uses a passive and has no mana`}><span>PASSIVE · NO MANA</span></span>
+          <span className="meter unit-passive-meter" aria-label={localizeText(locale, `${heroCopy.name} uses a passive and has no mana`)}><span>{t("PASSIVE · NO MANA")}</span></span>
         ) : (
           <span
             className="meter meter-mana"
             style={meterStyle(unit.mana, unit.maxMana)}
             data-testid={`unit-mana-${unit.id}`}
-            aria-label={`${hero.name} mana ${Math.round(unit.mana)} of ${unit.maxMana}`}
+            aria-label={localizeText(locale, `${heroCopy.name} mana ${Math.round(unit.mana)} of ${unit.maxMana}`)}
           ><span className="meter-fill" /></span>
         )}
       </span>
-      {isLevitating ? <span className="levitation-mark" aria-label={`Levitating until ${formatAbilitySeconds(unit.levitatingUntil)}`}>↑</span> : null}
+      {isLevitating ? <span className="levitation-mark" aria-label={localizeText(locale, `Levitating until ${formatAbilitySeconds(unit.levitatingUntil, locale)}`)}>↑</span> : null}
       {unit.stunned > 0 || isTimedStunned ? (
-        <span className="status-mark" aria-label={isTimedStunned ? `Stunned until ${formatAbilitySeconds(unit.stunnedUntil)}` : "Stunned"}>×</span>
+        <span className="status-mark" aria-label={localizeText(locale, isTimedStunned ? `Stunned until ${formatAbilitySeconds(unit.stunnedUntil, locale)}` : "Stunned")}>×</span>
       ) : null}
       {feedback.map((entry, index) => (
         <span
@@ -741,7 +768,7 @@ function UnitToken({
           {entry.text}
         </span>
       ))}
-      {meatHarvestEvent ? <span className="floating-text floating-meat-gain">+{Math.round(meatHarvestEvent.meatStackGained ?? 0)} MEAT</span> : null}
+      {meatHarvestEvent ? <span className="floating-text floating-meat-gain">+{Math.round(meatHarvestEvent.meatStackGained ?? 0)} {t("MEAT")}</span> : null}
       {blockFeedback ? <span className="floating-text floating-block">{blockFeedback}</span> : null}
     </div>
   );
@@ -750,11 +777,14 @@ function UnitToken({
 function CombatTeamReport({
   side,
   statistics,
+  locale,
 }: {
   side: "player" | "enemy";
   statistics: CombatStatistics;
+  locale: GameLocale;
 }) {
-  const label = side === "player" ? "Your team" : "Mooncrest";
+  const t = (text: string) => localizeText(locale, text);
+  const label = t(side === "player" ? "Your team" : "Mooncrest");
   const totals = statistics.teams[side];
   const units = statistics.units.filter((unit) => unit.side === side);
 
@@ -766,27 +796,27 @@ function CombatTeamReport({
     >
       <div className="combat-team-heading">
         <h4 id={`combat-team-${side}-title`}>{label}</h4>
-        <span>{units.length} {units.length === 1 ? "champion" : "champions"}</span>
+        <span>{localizeText(locale, `${units.length} ${units.length === 1 ? "champion" : "champions"}`)}</span>
       </div>
       <dl className="combat-team-totals">
         <div className="combat-total combat-total-damage">
-          <dt>Damage dealt</dt>
+          <dt>{t("Damage dealt")}</dt>
           <dd data-testid={`combat-total-${side}-damage`}>{totals.damageDealt}</dd>
         </div>
         <div className="combat-total combat-total-shield">
-          <dt>Shield granted</dt>
+          <dt>{t("Shield granted")}</dt>
           <dd data-testid={`combat-total-${side}-shield`}>{totals.shieldGranted}</dd>
         </div>
         <div className="combat-total combat-total-healing">
-          <dt>Effective healing</dt>
+          <dt>{t("Effective healing")}</dt>
           <dd data-testid={`combat-total-${side}-healing`}>{totals.healingDone}</dd>
         </div>
       </dl>
       <div className="combat-stat-scroll">
         <table className="combat-stat-table">
-          <caption className="sr-only">{label} character combat contributions</caption>
+          <caption className="sr-only">{label} {t("character combat contributions")}</caption>
           <thead>
-            <tr><th scope="col">Character</th><th scope="col">Damage</th><th scope="col">Shield</th><th scope="col">Healing</th></tr>
+            <tr><th scope="col">{t("Character")}</th><th scope="col">{t("Damage")}</th><th scope="col">{t("Shield")}</th><th scope="col">{t("Healing")}</th></tr>
           </thead>
           <tbody>
             {units.map((unit) => (
@@ -794,7 +824,7 @@ function CombatTeamReport({
                 <th scope="row">
                   <span className="combat-stat-unit">
                     <HeroArt heroId={unit.heroId} className="combat-stat-portrait" />
-                    <span className="combat-stat-copy"><strong>{HEROES[unit.heroId].name}</strong><small>L{unit.level} · {starsLabel(unit.stars)}</small></span>
+                    <span className="combat-stat-copy"><strong>{localizeHero(locale, unit.heroId).name}</strong><small>{t("L")}{unit.level} · {starsLabel(unit.stars)}</small></span>
                   </span>
                 </th>
                 <td className="combat-stat-value combat-stat-damage">{unit.damageDealt}</td>
@@ -809,23 +839,25 @@ function CombatTeamReport({
   );
 }
 
-function CombatBreakdown({ statistics }: { statistics: CombatStatistics }) {
+function CombatBreakdown({ statistics, locale }: { statistics: CombatStatistics; locale: GameLocale }) {
+  const t = (text: string) => localizeText(locale, text);
   return (
     <section className="combat-breakdown" data-testid="combat-breakdown" aria-labelledby="combat-breakdown-title">
       <div className="combat-breakdown-heading">
-        <div><span className="eyebrow">Match report</span><h3 id="combat-breakdown-title">Combat breakdown</h3></div>
-        <p>Damage includes health and shields removed. Shield measures protection granted. Healing counts life actually restored.</p>
+        <div><span className="eyebrow">{t("Match report")}</span><h3 id="combat-breakdown-title">{t("Combat breakdown")}</h3></div>
+        <p>{t("Damage includes health and shields removed. Shield measures protection granted. Healing counts life actually restored.")}</p>
       </div>
       <div className="combat-team-grid">
-        <CombatTeamReport side="player" statistics={statistics} />
-        <CombatTeamReport side="enemy" statistics={statistics} />
+        <CombatTeamReport side="player" statistics={statistics} locale={locale} />
+        <CombatTeamReport side="enemy" statistics={statistics} locale={locale} />
       </div>
     </section>
   );
 }
 
-export function GameClient() {
+export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocale }) {
   const [game, setGame] = useState<GameState>(() => createInitialGame());
+  const [locale, setLocale] = useState<GameLocale>(initialLocale);
   const [hydrated, setHydrated] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [highlightedTrait, setHighlightedTrait] = useState<TraitId | null>(null);
@@ -849,10 +881,13 @@ export function GameClient() {
   const playbackRemainingSecondsRef = useRef<number | null>(null);
   const forgeToggleRef = useRef<HTMLButtonElement>(null);
   const forgeDrawerRef = useRef<HTMLElement>(null);
+  const t = (text: string) => localizeText(locale, text);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       try {
+        const savedLocale = window.localStorage.getItem(LOCALE_STORAGE_KEY);
+        if (isGameLocale(savedLocale)) setLocale(savedLocale);
         const saved = window.localStorage.getItem(STORAGE_KEY);
         if (saved) {
           const parsed = JSON.parse(saved) as GameState;
@@ -873,6 +908,14 @@ export function GameClient() {
     if (!hydrated) return;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
   }, [game, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+    document.cookie = `${LOCALE_COOKIE_KEY}=${encodeURIComponent(locale)}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    document.documentElement.lang = locale;
+    document.title = localizeText(locale, "HEXFALL — Turn-based tactical board battler");
+  }, [hydrated, locale]);
 
   useEffect(() => {
     if (!toast) return;
@@ -1046,7 +1089,9 @@ export function GameClient() {
     : null;
   const componentCount = ITEM_COMPONENT_IDS.reduce((total, id) => total + game.componentInventory[id], 0);
   const selectedHero = selectedDisplay ? HEROES[selectedDisplay.heroId] : null;
+  const selectedHeroCopy = selectedDisplay ? localizeHero(locale, selectedDisplay.heroId) : null;
   const selectedRole = selectedHero ? ROLE_PROFILES[selectedHero.role] : null;
+  const selectedRoleCopy = selectedHero ? localizeRole(locale, selectedHero.role) : null;
   const selectedTeamUnits = selectedPersistent
     ? selectedPersistent.side === "player" ? game.units : game.enemyUnits
     : [];
@@ -1060,7 +1105,7 @@ export function GameClient() {
     ? calculateMeatGagaStackConsumption(selectedDisplay.meatStack, selectedDisplay.stars)
     : 0;
   const selectedAbilityMetrics = abilityPreview
-    ? abilityMetricDefinitions(abilityPreview)
+    ? abilityMetricDefinitions(abilityPreview, locale)
     : [];
   const currentAbilityMetrics = abilityPreview
     ? selectedAbilityMetrics.filter((metric) => metric.applies(abilityPreview.current))
@@ -1345,54 +1390,72 @@ export function GameClient() {
   const selectedCopies = selectedPersistent ? getCopyCount(game, selectedPersistent.heroId, selectedPersistent.stars) : 0;
 
   return (
-    <main className="game-shell" data-testid="game-screen">
+    <main className="game-shell" data-testid="game-screen" data-locale={locale} lang={locale}>
       <header className="game-topbar">
         <div className="brand-lockup">
           <span className="brand-name">HEXFALL</span>
-          <span className="brand-kicker">Build your bond. Break their line.</span>
+          <span className="brand-kicker">{t("Build your bond. Break their line.")}</span>
         </div>
         <div className="stage-block">
-          <span className="stage-label">{phaseLabel(game.phase)}</span>
-          <strong className="stage-value" data-testid="round-label">Round {game.round}</strong>
+          <span className="stage-label">{phaseLabel(game.phase, locale)}</span>
+          <strong className="stage-value" data-testid="round-label">{t("Round")} {game.round}</strong>
         </div>
         <div className="player-hud">
           <div className="hud-stat">
             <span className="hud-icon" aria-hidden="true">♥</span>
-            <span className="hud-copy"><strong className="hud-value" data-testid="player-life">{game.life}</strong><span className="hud-label">Commander life</span></span>
+            <span className="hud-copy"><strong className="hud-value" data-testid="player-life">{game.life}</strong><span className="hud-label">{t("Commander life")}</span></span>
           </div>
           <div className="hud-stat">
             <span className="hud-icon" aria-hidden="true">III</span>
             <span className="hud-copy">
-              <strong className="hud-value" data-testid="player-level">Level {game.commanderLevel}</strong>
-              <span className="hud-label" data-testid="player-xp">XP {game.commanderXp}/{commanderXpMaximum || "MAX"}</span>
+              <strong className="hud-value" data-testid="player-level">{t("Level")} {game.commanderLevel}</strong>
+              <span className="hud-label" data-testid="player-xp">XP {game.commanderXp}/{commanderXpMaximum || t("MAX")}</span>
               <span className="mini-meter" style={meterStyle(game.commanderXp, commanderXpMaximum)}><span className="mini-meter-fill" /></span>
             </span>
           </div>
           <div className="hud-stat">
             <span className="hud-icon" aria-hidden="true">●</span>
-            <span className="hud-copy"><strong className="hud-value" data-testid="player-gold">{game.gold} gold</strong><span className="hud-label">+{interest} interest</span></span>
+            <span className="hud-copy"><strong className="hud-value" data-testid="player-gold">{game.gold} {t("gold")}</strong><span className="hud-label">+{interest} {t("interest")}</span></span>
           </div>
-          <button className="game-button button-ghost help-button" type="button" onClick={() => { setTutorialStage(0); setTutorialVisible(true); }}>How to play</button>
+          <label className="language-control" htmlFor="game-language">
+            <span>{t("Language")}</span>
+            <select
+              id="game-language"
+              data-testid="language-selector"
+              value={locale}
+              aria-label={t("Game language")}
+              onChange={(event) => {
+                const nextLocale = event.target.value;
+                if (isGameLocale(nextLocale)) setLocale(nextLocale);
+              }}
+            >
+              {GAME_LOCALES.map((option) => (
+                <option value={option.id} key={option.id}>{option.id === "en" ? t("English") : option.label}</option>
+              ))}
+            </select>
+          </label>
+          <button className="game-button button-ghost help-button" type="button" onClick={() => { setTutorialStage(0); setTutorialVisible(true); }}>{t("How to play")}</button>
         </div>
       </header>
 
       {tutorialVisible ? (
-        <section className="status-banner" data-testid={`tutorial-step-${tutorialStage}`} aria-label="Tutorial">
-          <span className="eyebrow">First battle · Step {tutorialStage + 1} of 3</span>
-          <strong>{tutorialStage === 0 ? "Recruit a hero from the Night Market." : tutorialStage === 1 ? "Drag an ally to a teal tile or the bench to move or swap." : "When your formation is ready, begin battle."}</strong>
-          <button className="game-button button-ghost" type="button" data-testid="tutorial-skip" onClick={finishTutorial}>Skip tutorial</button>
+        <section className="status-banner" data-testid={`tutorial-step-${tutorialStage}`} aria-label={t("Tutorial")}>
+          <span className="eyebrow">{t("First battle")} · {t("Step")} {tutorialStage + 1} {t("of")} 3</span>
+          <strong>{t(tutorialStage === 0 ? "Recruit a hero from the Night Market." : tutorialStage === 1 ? "Drag an ally to a teal tile or the bench to move or swap." : "When your formation is ready, begin battle.")}</strong>
+          <button className="game-button button-ghost" type="button" data-testid="tutorial-skip" onClick={finishTutorial}>{t("Skip tutorial")}</button>
         </section>
       ) : null}
 
       <section className="workspace">
-        <aside className="panel traits-panel" aria-label="Active traits">
+        <aside className="panel traits-panel" aria-label={t("Active traits")}>
           <div className="panel-heading">
-            <div><span className="eyebrow">Formation</span><h2 className="panel-title">Active bonds</h2></div>
+            <div><span className="eyebrow">{t("Formation")}</span><h2 className="panel-title">{t("Active bonds")}</h2></div>
             <span className="panel-meta" data-testid="team-cap">{deployedCount}/{commanderCap}</span>
           </div>
           <div className="trait-list">
             {traits.map((trait) => {
               const definition = TRAITS[trait.id];
+              const traitCopy = localizeTrait(locale, trait.id);
               const threshold = trait.nextThreshold ?? definition.thresholds.at(-1) ?? trait.count;
               return (
                 <button
@@ -1403,30 +1466,30 @@ export function GameClient() {
                   onClick={() => setHighlightedTrait((value) => value === trait.id ? null : trait.id)}
                 >
                   <span className="trait-icon" aria-hidden="true">{definition.glyph}</span>
-                  <span className="trait-copy"><strong className="trait-name">{definition.name}</strong><span className="trait-effect" data-testid={`trait-detail-${trait.id}`}>{trait.activeEffect}</span></span>
+                  <span className="trait-copy"><strong className="trait-name">{traitCopy.name}</strong><span className="trait-effect" data-testid={`trait-detail-${trait.id}`}>{trait.tier > 0 ? traitCopy.effects[trait.tier - 1] : t("Inactive")}</span></span>
                   <span className="trait-count" data-testid={`trait-count-${trait.id}`}>{trait.count}/{threshold}</span>
                 </button>
               );
             })}
           </div>
           <div className="tactical-note">
-            <span className="eyebrow">Tactical note</span>
-            <p>Vanguards harden the whole team. Invokers accelerate the first cast. Select a bond to reveal its champions.</p>
+            <span className="eyebrow">{t("Tactical note")}</span>
+            <p>{t("Vanguards harden the whole team. Invokers accelerate the first cast. Select a bond to reveal its champions.")}</p>
           </div>
         </aside>
 
         <section className="board-section" aria-labelledby="board-title">
           <div className="board-header">
             <div className="board-copy">
-              <span className="eyebrow">Mooncrest arena</span>
-              <h1 className="board-title" id="board-title">Hold the lower line</h1>
+              <span className="eyebrow">{t("Mooncrest arena")}</span>
+              <h1 className="board-title" id="board-title">{t("Hold the lower line")}</h1>
             </div>
-            <span className={`phase-chip phase-${game.phase}`} data-testid="phase-label">{phaseLabel(game.phase)}</span>
+            <span className={`phase-chip phase-${game.phase}`} data-testid="phase-label">{phaseLabel(game.phase, locale)}</span>
           </div>
           <div className="board-wrap">
-            <div className="territory-label territory-enemy">Enemy territory</div>
+            <div className="territory-label territory-enemy">{t("Enemy territory")}</div>
             <div className="arena-plane">
-              <div className={`board-grid ${boitata3DReady ? "boitata-3d-ready" : ""} ${meatGaga3DReady ? "meat-gaga-3d-ready" : ""} ${game.phase === "combat" && !playing ? "combat-paused" : ""} ${isSteppedMoment ? "combat-step-preview" : ""}`} role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
+              <div className={`board-grid ${boitata3DReady ? "boitata-3d-ready" : ""} ${meatGaga3DReady ? "meat-gaga-3d-ready" : ""} ${game.phase === "combat" && !playing ? "combat-paused" : ""} ${isSteppedMoment ? "combat-step-preview" : ""}`} role="grid" aria-label={t("Eight column by six row battle board")} data-testid="game-board" style={combatBeatStyle}>
               {combatLinks.length ? (
                 <div className="combat-links" aria-hidden="true" data-testid="combat-links">
                   {combatLinks.map((link) => (
@@ -1535,8 +1598,8 @@ export function GameClient() {
                 const valid = game.phase === "planning" && !!draggedAlly && playerCell;
                 const highlighted = !!unit && !!highlightedTrait && HEROES[unit.heroId].traits.includes(highlightedTrait);
                 const loadoutDropStatus = unit ? loadoutDropStatusFor(unit) : null;
-                const equipmentSummary = unit ? equippedItemSummary(unit.itemSlots) : "";
-                const aria = `Row ${row + 1}, column ${column + 1}, ${playerCell ? "player" : "enemy"} territory${unit ? `, ${HEROES[unit.heroId].name}, ${ROLE_PROFILES[HEROES[unit.heroId].role].label}, range ${unit.range}, level ${unit.level}, ${Math.round(clampPercent(unit.hp, unit.maxHp))} percent health${unit.shield > 0 ? `, ${Math.round(unit.shield)} shield` : ""}${equipmentSummary ? `, ${equipmentSummary}` : ""}` : ", empty"}`;
+                const equipmentSummary = unit ? equippedItemSummary(unit.itemSlots, locale) : "";
+                const aria = `${t("Row")} ${row + 1}, ${t("column")} ${column + 1}, ${t(playerCell ? "player" : "enemy")} ${t("territory")}${unit ? `, ${localizeHero(locale, unit.heroId).name}, ${localizeRole(locale, HEROES[unit.heroId].role).label}, ${t("range")} ${unit.range}, ${t("level")} ${unit.level}, ${Math.round(clampPercent(unit.hp, unit.maxHp))} ${t("percent health")}${unit.shield > 0 ? `, ${Math.round(unit.shield)} ${t("shield")}` : ""}${equipmentSummary ? `, ${equipmentSummary}` : ""}` : `, ${t("empty")}`}`;
                 return (
                   <button
                     className={`board-cell ${playerCell ? "board-cell-player" : "board-cell-enemy"} ${valid ? "board-cell-valid" : ""} ${unit?.id === selectedId ? "board-cell-selected" : ""} ${loadoutDropStatus ? `loadout-cell-${loadoutDropStatus}` : ""}`}
@@ -1568,6 +1631,7 @@ export function GameClient() {
                       <UnitToken
                         key={`${unit.id}-${currentMoment?.key ?? "idle"}`}
                         unit={unit}
+                        locale={locale}
                         selected={unit.id === selectedId}
                         highlighted={highlighted}
                         currentEvents={currentEvents}
@@ -1619,14 +1683,14 @@ export function GameClient() {
               </div>
               <section className="arena-bench" aria-labelledby="bench-title" data-testid="bench">
                 <div className="arena-bench-rail">
-                  <span className="arena-bench-territory">Your territory · {deployedCount}/{commanderCap} deployed</span>
-                  <h2 id="bench-title">Bench</h2>
-                  <span className="arena-bench-count">{benchUnits.length}/{BENCH_SIZE} reserves</span>
+                  <span className="arena-bench-territory">{t("Your territory")} · {deployedCount}/{commanderCap} {t("deployed")}</span>
+                  <h2 id="bench-title">{t("Bench")}</h2>
+                  <span className="arena-bench-count">{benchUnits.length}/{BENCH_SIZE} {t("reserves")}</span>
                 </div>
                 <div className="bench-grid">
                   <section
                     className={`bench-forge-slot ${forgeOpen ? "bench-forge-slot-open" : ""} ${game.roundResult?.itemComponentReward ? "bench-forge-slot-reward" : ""}`}
-                    aria-label="Relic Forge inventory"
+                    aria-label={t("Relic Forge inventory")}
                     data-testid="bench-forge"
                   >
                     <button
@@ -1637,12 +1701,13 @@ export function GameClient() {
                       aria-controls="arena-forge-drawer"
                       onClick={() => setForgeOpen((open) => !open)}
                     >
-                      <span><small>Left bay</small><strong>Forge</strong></span>
-                      <b>{componentCount}<small> parts</small> · {game.craftedItemInventory.length}<small> gear</small></b>
+                      <span><small>{t("Left bay")}</small><strong>{t("Forge")}</strong></span>
+                      <b>{componentCount}<small> {t("parts")}</small> · {game.craftedItemInventory.length}<small> {t("gear")}</small></b>
                     </button>
-                    <div className="bench-forge-components" aria-label="Forge components">
+                    <div className="bench-forge-components" aria-label={t("Forge components")}>
                       {ITEM_COMPONENT_IDS.map((componentId) => {
                         const component = ITEM_COMPONENTS[componentId];
+                        const componentCopy = localizeComponent(locale, componentId);
                         const selectedCount = forgeComponents.filter((id) => id === componentId).length;
                         const available = game.componentInventory[componentId];
                         return (
@@ -1663,8 +1728,8 @@ export function GameClient() {
                               setDraggedLoadout({ kind: "component", id: componentId });
                             }}
                             onDragEnd={() => setDraggedLoadout(null)}
-                            aria-label={`${component.name}, ${available} available. Add to the forge or drag onto a champion to enhance gear.`}
-                            title={`${component.name} ×${available}`}
+                            aria-label={`${componentCopy.name}, ${available} ${t("available")}. ${t("Add to the forge or drag onto a champion to enhance gear.")}`}
+                            title={`${componentCopy.name} ×${available}`}
                           >
                             <span aria-hidden="true">{component.glyph}</span>
                             <b>×{available}</b>
@@ -1672,7 +1737,7 @@ export function GameClient() {
                         );
                       })}
                     </div>
-                    <div className="bench-forge-items" aria-label="Crafted gear inventory">
+                    <div className="bench-forge-items" aria-label={t("Crafted gear inventory")}>
                       {game.craftedItemInventory.length ? game.craftedItemInventory.map((item) => {
                         const definition = ITEM_DEFINITIONS[item.itemId];
                         return (
@@ -1682,8 +1747,8 @@ export function GameClient() {
                             key={item.id}
                             data-testid={`bench-forge-item-${item.id}`}
                             aria-pressed={item.id === selectedCraftedItemId}
-                            aria-label={`${craftedItemName(item)}, ${craftedItemBonusText(item)}. Select or drag onto a champion.`}
-                            title={craftedItemName(item)}
+                            aria-label={`${craftedItemName(item, locale)}, ${craftedItemBonusText(item, locale)}. ${t("Select or drag onto a champion.")}`}
+                            title={craftedItemName(item, locale)}
                             draggable={game.phase === "planning"}
                             onDragStart={(event) => {
                               event.dataTransfer.effectAllowed = "move";
@@ -1700,7 +1765,7 @@ export function GameClient() {
                             {item.enhancement ? <i aria-hidden="true">{ITEM_COMPONENTS[item.enhancement].glyph}</i> : null}
                           </button>
                         );
-                      }) : <button className="bench-forge-empty" type="button" onClick={() => setForgeOpen(true)}>Gear</button>}
+                      }) : <button className="bench-forge-empty" type="button" onClick={() => setForgeOpen(true)}>{t("Gear")}</button>}
                     </div>
                   </section>
                   {Array.from({ length: BENCH_SIZE }, (_, index) => {
@@ -1713,7 +1778,7 @@ export function GameClient() {
                         type="button"
                         key={index}
                         data-testid={`bench-slot-${index}`}
-                        aria-label={display ? `Bench slot ${index + 1}, ${HEROES[display.heroId].name}, ${ROLE_PROFILES[HEROES[display.heroId].role].label}, range ${display.range}${equippedItemSummary(display.itemSlots) ? `, ${equippedItemSummary(display.itemSlots)}` : ""}` : `Bench slot ${index + 1}, empty`}
+                        aria-label={display ? `${t("Bench slot")} ${index + 1}, ${localizeHero(locale, display.heroId).name}, ${localizeRole(locale, HEROES[display.heroId].role).label}, ${t("range")} ${display.range}${equippedItemSummary(display.itemSlots, locale) ? `, ${equippedItemSummary(display.itemSlots, locale)}` : ""}` : `${t("Bench slot")} ${index + 1}, ${t("empty")}`}
                         disabled={game.phase !== "planning"}
                         onClick={() => handleBenchSlot(index)}
                         onDragOver={(event) => {
@@ -1736,6 +1801,7 @@ export function GameClient() {
                         {display ? (
                           <UnitToken
                             unit={display}
+                            locale={locale}
                             selected={display.id === selectedId}
                             highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)}
                             currentEvents={[]}
@@ -1764,13 +1830,13 @@ export function GameClient() {
                 id="arena-forge-drawer"
                 ref={forgeDrawerRef}
                 tabIndex={-1}
-                aria-label="Relic Forge"
+                aria-label={t("Relic Forge")}
                 data-testid="item-armory"
               >
                 <div className="panel-heading">
-                  <div><span className="eyebrow">Components & gear</span><h2 className="panel-title">Relic Forge</h2></div>
+                  <div><span className="eyebrow">{t("Components & gear")}</span><h2 className="panel-title">{t("Relic Forge")}</h2></div>
                   <div className="bench-forge-drawer-actions">
-                    <span className="panel-meta">{componentCount} parts · {game.craftedItemInventory.length} gear</span>
+                    <span className="panel-meta">{componentCount} {t("parts")} · {game.craftedItemInventory.length} {t("gear")}</span>
                     <button
                       className="bench-forge-close"
                       type="button"
@@ -1778,21 +1844,22 @@ export function GameClient() {
                         setForgeOpen(false);
                         window.requestAnimationFrame(() => forgeToggleRef.current?.focus());
                       }}
-                      aria-label="Close Relic Forge"
+                      aria-label={t("Close Relic Forge")}
                     >×</button>
                   </div>
                 </div>
-                <p className="armory-cadence">This Forge occupies the left arena bay. A component arrives every other round. Combine two for gear, then drag gear onto a champion to equip it or drag a component onto a champion with full gear to enhance it.</p>
+                <p className="armory-cadence">{t("This Forge occupies the left arena bay. A component arrives every other round. Combine two for gear, then drag gear onto a champion to equip it or drag a component onto a champion with full gear to enhance it.")}</p>
                 {game.roundResult?.itemComponentReward ? (
                   <div className="armory-reward" data-testid="round-item-reward">
                     <span>{ITEM_COMPONENTS[game.roundResult.itemComponentReward].glyph}</span>
-                    <small>New component</small>
-                    <strong>{ITEM_COMPONENTS[game.roundResult.itemComponentReward].name}</strong>
+                    <small>{t("New component")}</small>
+                    <strong>{localizeComponent(locale, game.roundResult.itemComponentReward).name}</strong>
                   </div>
                 ) : null}
-                <div className="component-grid" aria-label="Item components">
+                <div className="component-grid" aria-label={t("Item components")}>
                   {ITEM_COMPONENT_IDS.map((componentId) => {
                     const component = ITEM_COMPONENTS[componentId];
+                    const componentCopy = localizeComponent(locale, componentId);
                     const selectedCount = forgeComponents.filter((id) => id === componentId).length;
                     const available = game.componentInventory[componentId];
                     return (
@@ -1810,16 +1877,16 @@ export function GameClient() {
                           setDraggedLoadout({ kind: "component", id: componentId });
                         }}
                         onDragEnd={() => setDraggedLoadout(null)}
-                        aria-label={`Add ${component.name} to forge, or drag it onto a champion to enhance equipped full gear, ${available} available${selectedCount ? `, ${selectedCount} selected` : ""}`}
+                        aria-label={`${t("Add")} ${componentCopy.name} ${t("to forge, or drag it onto a champion to enhance equipped full gear")}, ${available} ${t("available")}${selectedCount ? `, ${selectedCount} ${t("selected")}` : ""}`}
                       >
                         <span className="item-component-glyph" aria-hidden="true">{component.glyph}</span>
-                        <span><strong>{component.name}</strong><small>{component.description}</small></span>
+                        <span><strong>{componentCopy.name}</strong><small>{componentCopy.description}</small></span>
                         <b data-testid={`item-component-count-${componentId}`}>×{available}</b>
                       </button>
                     );
                   })}
                 </div>
-                <div className="craft-tray" aria-label="Crafting tray">
+                <div className="craft-tray" aria-label={t("Crafting tray")}>
                   {[0, 1].map((index) => {
                     const componentId = forgeComponents[index];
                     return (
@@ -1830,21 +1897,21 @@ export function GameClient() {
                         data-testid={`item-craft-slot-${index}`}
                         disabled={!componentId}
                         onClick={() => setForgeComponents((components) => components.filter((_, componentIndex) => componentIndex !== index))}
-                        aria-label={componentId ? `Remove ${ITEM_COMPONENTS[componentId].name} from forge` : `Empty craft slot ${index + 1}`}
+                        aria-label={localizeText(locale, componentId ? `Remove ${localizeComponent(locale, componentId).name} from forge` : `Empty craft slot ${index + 1}`)}
                       >
-                        {componentId ? <><span>{ITEM_COMPONENTS[componentId].glyph}</span><small>{ITEM_COMPONENTS[componentId].name}</small></> : <><span>+</span><small>Component</small></>}
+                        {componentId ? <><span>{ITEM_COMPONENTS[componentId].glyph}</span><small>{localizeComponent(locale, componentId).name}</small></> : <><span>+</span><small>{t("Component")}</small></>}
                       </button>
                     );
                   })}
                   <div className="craft-preview" data-testid="item-craft-preview">
-                    <small>{forgeRecipe ? "Recipe ready" : forgeComponents.length ? "Choose one more" : "Crafting tray"}</small>
-                    <strong>{forgeRecipe?.name ?? "2 components → full item"}</strong>
+                    <small>{t(forgeRecipe ? "Recipe ready" : forgeComponents.length ? "Choose one more" : "Crafting tray")}</small>
+                    <strong>{forgeRecipe ? localizeItem(locale, forgeRecipe.id).name : t("2 components → full item")}</strong>
                   </div>
-                  <button className="game-button button-secondary" type="button" data-testid="craft-item" disabled={game.phase !== "planning" || !forgeRecipe} onClick={handleCraftItem}>Craft full item</button>
+                  <button className="game-button button-secondary" type="button" data-testid="craft-item" disabled={game.phase !== "planning" || !forgeRecipe} onClick={handleCraftItem}>{t("Craft full item")}</button>
                 </div>
                 <div className="crafted-inventory-heading">
-                  <span><small>Inventory</small><strong>Crafted gear</strong></span>
-                  <small>{selectedAllyForItems ? `Equipping ${HEROES[selectedAllyForItems.heroId].name}` : "Select an allied champion to equip"}</small>
+                  <span><small>{t("Inventory")}</small><strong>{t("Crafted gear")}</strong></span>
+                  <small>{localizeText(locale, selectedAllyForItems ? `Equipping ${localizeHero(locale, selectedAllyForItems.heroId).name}` : "Select an allied champion to equip")}</small>
                 </div>
                 <div className="crafted-item-list">
                   {game.craftedItemInventory.length ? game.craftedItemInventory.map((item) => {
@@ -1866,16 +1933,16 @@ export function GameClient() {
                         onClick={() => setSelectedCraftedItemId((selected) => selected === item.id ? null : item.id)}
                       >
                         <span className="item-mark" aria-hidden="true">{definition.recipe.map((componentId) => ITEM_COMPONENTS[componentId].glyph).join("")}{item.enhancement ? <i>{ITEM_COMPONENTS[item.enhancement].glyph}</i> : null}</span>
-                        <span><strong>{craftedItemName(item)}</strong><small>{craftedItemBonusText(item)}</small></span>
-                        <b className={`item-tier ${item.tier === "enhanced" ? "item-tier-enhanced" : ""}`}>{item.tier}</b>
+                        <span><strong>{craftedItemName(item, locale)}</strong><small>{craftedItemBonusText(item, locale)}</small></span>
+                        <b className={`item-tier ${item.tier === "enhanced" ? "item-tier-enhanced" : ""}`}>{t(item.tier)}</b>
                       </button>
                     );
-                  }) : <p className="armory-empty">Your first full item can be forged after collecting two components.</p>}
+                  }) : <p className="armory-empty">{t("Your first full item can be forged after collecting two components.")}</p>}
                 </div>
                 {selectedCraftedItem ? (
                   <div className="item-action-row">
-                    <button className="game-button button-secondary" type="button" data-testid={`equip-item-${selectedCraftedItem.id}`} disabled={game.phase !== "planning" || !selectedAllyForItems || selectedAllyForItems.itemSlots.every(Boolean)} onClick={() => handleEquipItem()}>Equip{selectedAllyForItems ? ` to ${HEROES[selectedAllyForItems.heroId].name}` : " selected champion"}</button>
-                    <button className="game-button button-primary" type="button" data-testid={`enhance-item-${selectedCraftedItem.id}`} disabled={game.phase !== "planning" || selectedCraftedItem.tier === "enhanced" || forgeComponents.length !== 1} onClick={handleEnhanceItem}>Enhance with 1 component</button>
+                    <button className="game-button button-secondary" type="button" data-testid={`equip-item-${selectedCraftedItem.id}`} disabled={game.phase !== "planning" || !selectedAllyForItems || selectedAllyForItems.itemSlots.every(Boolean)} onClick={() => handleEquipItem()}>{selectedAllyForItems ? `${t("Equip to")} ${localizeHero(locale, selectedAllyForItems.heroId).name}` : t("Equip selected champion")}</button>
+                    <button className="game-button button-primary" type="button" data-testid={`enhance-item-${selectedCraftedItem.id}`} disabled={game.phase !== "planning" || selectedCraftedItem.tier === "enhanced" || forgeComponents.length !== 1} onClick={handleEnhanceItem}>{t("Enhance with 1 component")}</button>
                   </div>
                 ) : null}
                 {forgeComponents.length === 1 ? (
@@ -1887,7 +1954,7 @@ export function GameClient() {
                       disabled={game.phase !== "planning" || !selectedAllyForItems || !selectedAllyForItems.itemSlots.some((item) => item?.tier === "full")}
                       onClick={() => selectedAllyForItems && handleEnhanceEquippedGear(selectedAllyForItems.id, forgeComponents[0])}
                     >
-                      Enhance {selectedAllyForItems ? `${HEROES[selectedAllyForItems.heroId].name}'s full gear` : "selected champion's gear"}
+                      {selectedAllyForItems ? `${t("Enhance full gear for")} ${localizeHero(locale, selectedAllyForItems.heroId).name}` : t("Enhance selected champion's gear")}
                     </button>
                   </div>
                 ) : null}
@@ -1896,60 +1963,61 @@ export function GameClient() {
           </div>
           {game.phase === "combat" && currentMoment ? (
             <div className="combat-caption">
-              <span>{formatCombatTime(currentCombatTime)}</span>
+              <span>{formatCombatTime(currentCombatTime, locale)}</span>
               <div className="combat-caption-copy" aria-live="polite" aria-atomic="true">
-                {currentEvents.map((event) => <strong key={event.id}>{event.text}</strong>)}
+                {currentEvents.map((event) => <strong key={event.id}>{localizeCombatEvent(locale, event)}</strong>)}
               </div>
             </div>
           ) : (
-            <p className="placement-hint">Click any character to inspect. Drag allies between teal tiles and the bench to place or swap.</p>
+            <p className="placement-hint">{t("Click any character to inspect. Drag allies between teal tiles and the bench to place or swap.")}</p>
           )}
         </section>
 
-        <aside className="panel enemy-panel" aria-label={selectedDisplay ? "Unit inspector" : "Enemy scout report"}>
-          {selectedDisplay && selectedHero ? (
+        <aside className="panel enemy-panel" aria-label={t(selectedDisplay ? "Unit inspector" : "Enemy scout report")}>
+          {selectedDisplay && selectedHero && selectedHeroCopy ? (
             <section className="selected-panel" data-testid="unit-inspector">
               <div className="selected-head">
                 <HeroArt heroId={selectedHero.id} className={`enemy-portrait ${selectedDisplay.side === "player" ? "portrait-ally" : ""}`} />
-                <div><span className="eyebrow">{selectedDisplay.side === "player" ? "Your champion" : "Enemy champion"}</span><h2 className="panel-title">{selectedHero.name}</h2><p>{selectedHero.title}</p></div>
+                <div><span className="eyebrow">{t(selectedDisplay.side === "player" ? "Your champion" : "Enemy champion")}</span><h2 className="panel-title">{selectedHeroCopy.name}</h2><p>{selectedHeroCopy.title}</p></div>
               </div>
               <div className="rank-line">
                 <span data-testid={`unit-stars-${selectedDisplay.id}`}>{starsLabel(selectedDisplay.stars)}</span>
-                <span>Unit level {selectedDisplay.level}</span>
+                <span>{t("Unit level")} {selectedDisplay.level}</span>
               </div>
               <div className="unit-xp-block" data-testid={`unit-xp-${selectedDisplay.id}`}>
-                <span>XP {selectedPersistent?.xp ?? 0}/{selectedUnitXpMax || "MAX"}</span>
+                <span>XP {selectedPersistent?.xp ?? 0}/{selectedUnitXpMax || t("MAX")}</span>
                 <span className="meter meter-xp" style={meterStyle(selectedPersistent?.xp ?? 0, selectedUnitXpMax)}><span className="meter-fill" /></span>
               </div>
               <div className="stat-grid">
-                <span className="stat-cell"><small>HP</small><strong>{Math.round(selectedDisplay.hp)}/{selectedDisplay.maxHp}</strong></span>
+                <span className="stat-cell"><small>{t("HP")}</small><strong>{Math.round(selectedDisplay.hp)}/{selectedDisplay.maxHp}</strong></span>
                 {selectedHero.id === "meat-gaga" ? (
-                  <span className="stat-cell stat-cell-passive"><small>Resource</small><strong>Passive · No Mana</strong></span>
+                  <span className="stat-cell stat-cell-passive"><small>{t("Resource")}</small><strong>{t("Passive · No Mana")}</strong></span>
                 ) : (
-                  <span className="stat-cell"><small>Mana</small><strong>{Math.round(selectedDisplay.mana)}/{selectedDisplay.maxMana}</strong></span>
+                  <span className="stat-cell"><small>{t("Mana")}</small><strong>{Math.round(selectedDisplay.mana)}/{selectedDisplay.maxMana}</strong></span>
                 )}
-                <span className="stat-cell"><small>Damage</small><strong>{selectedDisplay.attack}</strong></span>
-                <span className="stat-cell"><small>Armor</small><strong>{selectedDisplay.armor}</strong></span>
-                <span className="stat-cell stat-cell-rate stat-cell-attack-speed" data-testid={`unit-attack-speed-${selectedDisplay.id}`}><small>Attack speed</small><strong>{formatRate(selectedDisplay.attackSpeed)}/sec</strong></span>
+                <span className="stat-cell"><small>{t("Damage")}</small><strong>{selectedDisplay.attack}</strong></span>
+                <span className="stat-cell"><small>{t("Armor")}</small><strong>{selectedDisplay.armor}</strong></span>
+                <span className="stat-cell stat-cell-rate stat-cell-attack-speed" data-testid={`unit-attack-speed-${selectedDisplay.id}`}><small>{t("Attack speed")}</small><strong>{formatRate(selectedDisplay.attackSpeed, locale)}/{t("sec")}</strong></span>
+                <span className="stat-cell stat-cell-rate stat-cell-move-speed" data-testid={`unit-move-speed-${selectedDisplay.id}`}><small>{t("Move speed")}</small><strong>{formatRate(selectedDisplay.moveSpeed, locale)} {t("tiles")}/{t("sec")}</strong></span>
                 {selectedHero.id === "meat-gaga" ? (
-                  <span className="stat-cell stat-cell-meat-stack" data-testid={`unit-meat-stack-inspector-${selectedDisplay.id}`}><small>Meat reserve</small><strong>{Math.round(selectedDisplay.meatStack)}</strong></span>
+                  <span className="stat-cell stat-cell-meat-stack" data-testid={`unit-meat-stack-inspector-${selectedDisplay.id}`}><small>{t("Meat reserve")}</small><strong>{Math.round(selectedDisplay.meatStack)}</strong></span>
                 ) : (
-                  <span className="stat-cell stat-cell-rate stat-cell-mana-regen" data-testid={`unit-mana-regen-${selectedDisplay.id}`}><small>Mana regen</small><strong>{formatRate(selectedDisplay.manaRegen)}/sec</strong></span>
+                  <span className="stat-cell stat-cell-rate stat-cell-mana-regen" data-testid={`unit-mana-regen-${selectedDisplay.id}`}><small>{t("Mana regen")}</small><strong>{formatRate(selectedDisplay.manaRegen, locale)}/{t("sec")}</strong></span>
                 )}
                 {selectedHero.id === "boitata" ? (
                   <>
-                    <span className="stat-cell stat-cell-shield" data-testid={`unit-fire-wall-shield-${selectedDisplay.id}`}><small>Wall of Fire</small><strong>{Math.round(selectedDisplay.fireWallShield)}</strong></span>
+                    <span className="stat-cell stat-cell-shield" data-testid={`unit-fire-wall-shield-${selectedDisplay.id}`}><small>{selectedHeroCopy.ability.name}</small><strong>{Math.round(selectedDisplay.fireWallShield)}</strong></span>
                     {selectedDisplay.shield > selectedDisplay.fireWallShield ? (
-                      <span className="stat-cell stat-cell-shield"><small>Other shields</small><strong>{Math.round(selectedDisplay.shield - selectedDisplay.fireWallShield)}</strong></span>
+                      <span className="stat-cell stat-cell-shield"><small>{t("Other shields")}</small><strong>{Math.round(selectedDisplay.shield - selectedDisplay.fireWallShield)}</strong></span>
                     ) : null}
                   </>
                 ) : selectedDisplay.shield > 0 ? (
-                  <span className="stat-cell stat-cell-shield" data-testid={`unit-shield-${selectedDisplay.id}`}><small>Shield</small><strong>{Math.round(selectedDisplay.shield)}</strong></span>
+                  <span className="stat-cell stat-cell-shield" data-testid={`unit-shield-${selectedDisplay.id}`}><small>{t("Shield")}</small><strong>{Math.round(selectedDisplay.shield)}</strong></span>
                 ) : null}
               </div>
-              <section className="equipment-block" data-testid={`unit-equipment-${selectedDisplay.id}`} aria-label={`${selectedHero.name} item slots`}>
+              <section className="equipment-block" data-testid={`unit-equipment-${selectedDisplay.id}`} aria-label={`${selectedHeroCopy.name}: ${t("item slots")}`}>
                 <div className="equipment-heading">
-                  <span><small>Equipment</small><strong>Item slots</strong></span>
+                  <span><small>{t("Equipment")}</small><strong>{t("Item slots")}</strong></span>
                   <span>{selectedPersistent?.itemSlots.filter(Boolean).length ?? 0}/{ITEM_SLOTS_PER_UNIT}</span>
                 </div>
                 <div className="equipment-slots">
@@ -1967,32 +2035,32 @@ export function GameClient() {
                         disabled={!canEquip && !canUnequip}
                         onClick={() => item ? handleUnequipItem(slotIndex) : handleEquipItem(slotIndex)}
                         aria-label={item
-                          ? `${craftedItemName(item)}, ${craftedItemBonusText(item, selectedHero.id)}${canUnequip ? ", click to unequip" : ""}`
-                          : `Empty item slot ${slotIndex + 1}${canEquip ? `, equip ${craftedItemName(selectedCraftedItem!)}` : ""}`}
+                          ? `${craftedItemName(item, locale)}, ${craftedItemBonusText(item, locale, selectedHero.id)}${canUnequip ? `, ${t("click to unequip")}` : ""}`
+                          : `${t("Empty item slot")} ${slotIndex + 1}${canEquip ? `, ${t("equip")} ${craftedItemName(selectedCraftedItem!, locale)}` : ""}`}
                       >
                         <span className="item-mark" aria-hidden="true">
                           {definition ? definition.recipe.map((componentId) => ITEM_COMPONENTS[componentId].glyph).join("") : "+"}
                           {item?.enhancement ? <i>{ITEM_COMPONENTS[item.enhancement].glyph}</i> : null}
                         </span>
                         <span className="equipment-slot-copy">
-                          <strong>{item ? craftedItemName(item) : `Slot ${slotIndex + 1}`}</strong>
-                          <small>{item ? craftedItemBonusText(item, selectedHero.id) : canEquip ? "Equip selected item" : "Empty"}</small>
+                          <strong>{item ? craftedItemName(item, locale) : `${t("Slot")} ${slotIndex + 1}`}</strong>
+                          <small>{item ? craftedItemBonusText(item, locale, selectedHero.id) : t(canEquip ? "Equip selected item" : "Empty")}</small>
                         </span>
                       </button>
                     );
                   })}
                 </div>
               </section>
-              {selectedRole ? (
+              {selectedRole && selectedRoleCopy ? (
                 <div className={`role-range-card role-${selectedRole.id}`} data-testid={`unit-role-range-${selectedDisplay.id}`}>
                   <span className="role-range-copy">
-                    <small>Combat role · Basic attack range</small>
-                    <strong>{selectedRole.label}</strong>
-                    <p>{selectedRole.description}</p>
+                    <small>{t("Combat role · Basic attack range")}</small>
+                    <strong>{selectedRoleCopy.label}</strong>
+                    <p>{selectedRoleCopy.description}</p>
                   </span>
                   <span className="range-readout">
                     <strong>{selectedDisplay.range}</strong>
-                    <small>{selectedDisplay.range === 1 ? "tile" : "tiles"}</small>
+                    <small>{t(selectedDisplay.range === 1 ? "tile" : "tiles")}</small>
                   </span>
                 </div>
               ) : null}
@@ -2001,65 +2069,65 @@ export function GameClient() {
                   <summary className="ability-summary">
                     <span className="ability-heading">
                       <span>
-                        <span className="eyebrow">Passive · No Mana</span>
-                        <strong className="ability-name" id={`ability-name-${selectedHero.ability.id}`}>{selectedHero.ability.name}</strong>
+                        <span className="eyebrow">{t("Passive · No Mana")}</span>
+                        <strong className="ability-name" id={`ability-name-${selectedHero.ability.id}`}>{selectedHeroCopy.ability.name}</strong>
                       </span>
-                      <span className="ability-rank">Current · {"★".repeat(meatGagaPassivePreview.current.stars)}</span>
+                      <span className="ability-rank">{t("Current")} · {"★".repeat(meatGagaPassivePreview.current.stars)}</span>
                     </span>
-                    <span className="ability-description">{selectedHero.ability.description}</span>
+                    <span className="ability-description">{selectedHeroCopy.ability.description}</span>
                     <span
                       className="ability-current-values"
                       data-testid="meat-gaga-passive-current-values"
                       role="list"
-                      aria-label={`${selectedHero.ability.name} current values`}
+                      aria-label={`${selectedHeroCopy.ability.name}: ${t("current values")}`}
                     >
                       <span className="ability-value ability-value-meat-gain" role="listitem">
-                        <small>Stored per death</small>
-                        <strong>{meatGagaPassivePreview.current.stackGainPercent}% max HP</strong>
+                        <small>{t("Stored per death")}</small>
+                        <strong>{meatGagaPassivePreview.current.stackGainPercent}% {t("max HP")}</strong>
                       </span>
                       <span className="ability-value ability-value-meat-spend" role="listitem">
-                        <small>Spent per attack</small>
-                        <strong>{meatGagaPassivePreview.current.stackConsumePercent}% of stack</strong>
+                        <small>{t("Spent per attack")}</small>
+                        <strong>{meatGagaPassivePreview.current.stackConsumePercent}% {t("of stack")}</strong>
                       </span>
                       <span className="ability-value ability-value-meat-reserve" role="listitem">
-                        <small>Current reserve</small>
+                        <small>{t("Current reserve")}</small>
                         <strong>{Math.round(selectedDisplay.meatStack)}</strong>
                       </span>
                       <span className="ability-value ability-value-meat-bonus" role="listitem">
-                        <small>Next attack bonus</small>
-                        <strong>+{meatGagaNextBonus} raw</strong>
+                        <small>{t("Next attack bonus")}</small>
+                        <strong>+{meatGagaNextBonus} {t("raw")}</strong>
                       </span>
                     </span>
-                    <span className="ability-target-rule">Passive: Every character death · Enhances each basic attack while reserve remains</span>
-                    <span className="ability-disclosure" aria-hidden="true">Hover or tap for star scaling</span>
+                    <span className="ability-target-rule">{t("Passive: Every character death · Enhances each basic attack while reserve remains")}</span>
+                    <span className="ability-disclosure" aria-hidden="true">{t("Hover or tap for star scaling")}</span>
                   </summary>
                   <div className="ability-breakdown" aria-labelledby={`ability-name-${selectedHero.ability.id}`}>
                     <div className="ability-breakdown-heading">
-                      <strong>Passive star scaling</strong>
-                      <small>No Mana, regeneration, or cast time</small>
+                      <strong>{t("Passive star scaling")}</strong>
+                      <small>{t("No Mana, regeneration, or cast time")}</small>
                     </div>
-                    <p className="ability-scale-copy">Whenever any character dies, Meat Gaga stores part of that character&apos;s maximum Life. Her next basic attack consumes part of the reserve as raw bonus damage, repeating until the reserve is empty.</p>
+                    <p className="ability-scale-copy">{t("Whenever any character dies, Meat Gaga stores part of that character's maximum Life. Her next basic attack consumes part of the reserve as raw bonus damage, repeating until the reserve is empty.")}</p>
                     <table className="ability-scale-table" data-testid="meat-gaga-passive-scaling">
-                      <caption className="sr-only">{selectedHero.ability.name} values by star level</caption>
+                      <caption className="sr-only">{selectedHeroCopy.ability.name}: {t("values by star level")}</caption>
                       <thead>
-                        <tr><th scope="col">Value</th><th scope="col">1★</th><th scope="col">2★</th><th scope="col">3★</th></tr>
+                        <tr><th scope="col">{t("Value")}</th><th scope="col">1★</th><th scope="col">2★</th><th scope="col">3★</th></tr>
                       </thead>
                       <tbody>
                         <tr>
-                          <th scope="row">Max HP stored per death</th>
+                          <th scope="row">{t("Max HP stored per death")}</th>
                           {meatGagaPassivePreview.byStar.map((values) => (
                             <td aria-current={values.stars === meatGagaPassivePreview.current.stars ? "true" : undefined} key={values.stars}>{values.stackGainPercent}%</td>
                           ))}
                         </tr>
                         <tr>
-                          <th scope="row">Stack spent per attack</th>
+                          <th scope="row">{t("Stack spent per attack")}</th>
                           {meatGagaPassivePreview.byStar.map((values) => (
                             <td aria-current={values.stars === meatGagaPassivePreview.current.stars ? "true" : undefined} key={values.stars}>{values.stackConsumePercent}%</td>
                           ))}
                         </tr>
                       </tbody>
                     </table>
-                    <p className="ability-context-note">The reserve is not Mana. Meat Gaga never casts; every empowered hit is still a basic attack and keeps her Shooter range.</p>
+                    <p className="ability-context-note">{t("The reserve is not Mana. Meat Gaga never casts; every empowered hit is still a basic attack and keeps her Shooter range.")}</p>
                   </div>
                 </details>
               ) : abilityPreview ? (
@@ -2067,17 +2135,17 @@ export function GameClient() {
                   <summary className="ability-summary">
                     <span className="ability-heading">
                       <span>
-                        <span className="eyebrow">Ability · {selectedHero.ability.manaCost} mana</span>
-                        <strong className="ability-name" id={`ability-name-${selectedHero.ability.id}`}>{selectedHero.ability.name}</strong>
+                        <span className="eyebrow">{t("Ability")} · {selectedHero.ability.manaCost} {t("mana")}</span>
+                        <strong className="ability-name" id={`ability-name-${selectedHero.ability.id}`}>{selectedHeroCopy.ability.name}</strong>
                       </span>
-                      <span className="ability-rank">Current · {"★".repeat(abilityPreview.current.stars)}</span>
+                      <span className="ability-rank">{t("Current")} · {"★".repeat(abilityPreview.current.stars)}</span>
                     </span>
-                    <span className="ability-description">{selectedHero.ability.description}</span>
+                    <span className="ability-description">{selectedHeroCopy.ability.description}</span>
                     <span
                       className="ability-current-values"
                       data-testid={`ability-current-values-${selectedHero.ability.id}`}
                       role="list"
-                      aria-label={`${selectedHero.ability.name} current values`}
+                      aria-label={`${selectedHeroCopy.ability.name}: ${t("current values")}`}
                     >
                       {currentAbilityMetrics.map((metric) => (
                         <span className={`ability-value ability-value-${metric.kind}`} role="listitem" key={metric.id}>
@@ -2086,20 +2154,20 @@ export function GameClient() {
                         </span>
                       ))}
                     </span>
-                    <span className="ability-target-rule">Targets: {selectedHero.ability.targetRule}</span>
-                    <span className="ability-disclosure" aria-hidden="true">Hover or tap for star scaling</span>
+                    <span className="ability-target-rule">{t("Targets")}: {selectedHeroCopy.ability.targetRule}</span>
+                    <span className="ability-disclosure" aria-hidden="true">{t("Hover or tap for star scaling")}</span>
                   </summary>
                   <div className="ability-breakdown" aria-labelledby={`ability-name-${selectedHero.ability.id}`}>
                     <div className="ability-breakdown-heading">
-                      <strong>Star scaling</strong>
-                      <small>Same level, equipment, and bonds</small>
+                      <strong>{t("Star scaling")}</strong>
+                      <small>{t("Same level, equipment, and bonds")}</small>
                     </div>
-                    <p className="ability-scale-copy">{abilityPreview.scalingDescription}</p>
+                    <p className="ability-scale-copy">{formatAbilityScaling(locale, abilityPreview)}</p>
                     <table className="ability-scale-table" data-testid={`ability-scaling-${selectedHero.ability.id}`}>
-                      <caption className="sr-only">{selectedHero.ability.name} values by star level</caption>
+                      <caption className="sr-only">{selectedHeroCopy.ability.name}: {t("values by star level")}</caption>
                       <thead>
                         <tr>
-                          <th scope="col">Value</th>
+                          <th scope="col">{t("Value")}</th>
                           <th scope="col">1★</th>
                           <th scope="col">2★</th>
                           <th scope="col">3★</th>
@@ -2119,45 +2187,45 @@ export function GameClient() {
                       </tbody>
                     </table>
                     {abilityPreview.modifiers.length ? (
-                      <div className="ability-modifiers" aria-label="Included ability modifiers">
-                        <span className="ability-modifier-label">Included</span>
+                      <div className="ability-modifiers" aria-label={t("Included ability modifiers")}>
+                        <span className="ability-modifier-label">{t("Included")}</span>
                         {abilityPreview.modifiers.map((modifier) => (
                           <span
                             className={`ability-modifier ${modifier.startsWith("Item ·") ? "ability-modifier-item" : modifier.startsWith("Bond ·") ? "ability-modifier-bond" : ""}`}
                             key={modifier}
                           >
-                            {modifier}
+                            {localizeAbilityText(locale, modifier)}
                           </span>
                         ))}
                       </div>
                     ) : null}
-                    {abilityPreview.contextNote ? <p className="ability-context-note">{abilityPreview.contextNote}</p> : null}
+                    {abilityPreview.contextNote ? <p className="ability-context-note">{localizeAbilityText(locale, abilityPreview.contextNote)}</p> : null}
                   </div>
                 </details>
               ) : null}
-              <div className="trait-chips">{selectedHero.traits.map((trait) => <span key={trait}>{TRAITS[trait].glyph} {TRAITS[trait].name}</span>)}</div>
-              {selectedPersistent?.side === "player" ? <p className="copy-progress">Copies toward next star: {selectedCopies}/3</p> : null}
+              <div className="trait-chips">{selectedHero.traits.map((trait) => <span key={trait}>{TRAITS[trait].glyph} {localizeTrait(locale, trait).name}</span>)}</div>
+              {selectedPersistent?.side === "player" ? <p className="copy-progress">{t("Copies toward next star")}: {selectedCopies}/3</p> : null}
               {selectedPersistent?.side === "player" && game.phase === "planning" ? (
                 <button className="game-button button-danger" type="button" onClick={() => {
                   commit(sellUnit(game, selectedPersistent.id), () => {
                     if (selectedPersistent.heroId === "boitata") setBoitata3DReady(false);
                     setSelectedId(null);
                   });
-                }}>Sell for {HEROES[selectedPersistent.heroId].cost * (selectedPersistent.stars === 3 ? 9 : selectedPersistent.stars === 2 ? 3 : 1)} gold</button>
+                }}>{t("Sell for")} {HEROES[selectedPersistent.heroId].cost * (selectedPersistent.stars === 3 ? 9 : selectedPersistent.stars === 2 ? 3 : 1)} {t("gold")}</button>
               ) : null}
             </section>
           ) : game.phase === "combat" ? (
             <section className="combat-log" data-testid="combat-log">
-              <div className="panel-heading"><div><span className="eyebrow">Live chronicle</span><h2 className="panel-title">Combat log</h2></div></div>
+              <div className="panel-heading"><div><span className="eyebrow">{t("Live chronicle")}</span><h2 className="panel-title">{t("Combat log")}</h2></div></div>
               <div className="log-list">
                 {visibleCombatMoments.flatMap((moment) => moment.events.map((event) => (
-                  <p className={`log-entry log-${event.type}`} key={event.id} data-testid={`combat-event-${event.id}`}><span className="log-time">{formatCombatTime(moment.timestamp)}</span>{event.text}</p>
+                  <p className={`log-entry log-${event.type}`} key={event.id} data-testid={`combat-event-${event.id}`}><span className="log-time">{formatCombatTime(moment.timestamp, locale)}</span>{localizeCombatEvent(locale, event)}</p>
                 )))}
               </div>
             </section>
           ) : (
             <section>
-              <div className="panel-heading"><div><span className="eyebrow">Scout report</span><h2 className="panel-title">Mooncrest</h2></div><span className="panel-meta">{game.enemyUnits.length} units</span></div>
+              <div className="panel-heading"><div><span className="eyebrow">{t("Scout report")}</span><h2 className="panel-title">Mooncrest</h2></div><span className="panel-meta">{game.enemyUnits.length} {t("units")}</span></div>
               <div className="enemy-list">
                 {game.enemyUnits.map((unit) => {
                   const hero = HEROES[unit.heroId];
@@ -2165,24 +2233,24 @@ export function GameClient() {
                   return (
                     <button className="enemy-card" type="button" key={unit.id} onClick={() => setSelectedId(unit.id)}>
                       <HeroArt heroId={hero.id} className="enemy-portrait" />
-                      <span className="enemy-copy"><strong>{hero.name}</strong><small>{ROLE_PROFILES[hero.role].label} · Range {stats.range} · L{unit.level} · {starsLabel(unit.stars)}</small></span>
-                      <span className="enemy-threat">HP {stats.maxHp}</span>
+                      <span className="enemy-copy"><strong>{localizeHero(locale, hero.id).name}</strong><small>{localizeRole(locale, hero.role).label} · {t("Range")} {stats.range} · {t("L")}{unit.level} · {starsLabel(unit.stars)}</small></span>
+                      <span className="enemy-threat">{t("HP")} {stats.maxHp}</span>
                     </button>
                   );
                 })}
               </div>
-              <div className="scout-note"><span className="eyebrow">Read their line</span><p>Coral champions begin above the center. Inspect any unit to learn its range, defenses, and casting rule.</p></div>
+              <div className="scout-note"><span className="eyebrow">{t("Read their line")}</span><p>{t("Coral champions begin above the center. Inspect any unit to learn its range, defenses, and casting rule.")}</p></div>
             </section>
           )}
         </aside>
       </section>
 
       <section className="dock">
-        <section className="panel shop-panel" aria-label="Night Market" data-testid="shop">
-          <div className="panel-heading"><div><span className="eyebrow">Recruitment</span><h2 className="panel-title">Night Market</h2></div><span className="panel-meta">{game.shopLocked ? "Locked" : "Refreshes next round"}</span></div>
+        <section className="panel shop-panel" aria-label={t("Night Market")} data-testid="shop">
+          <div className="panel-heading"><div><span className="eyebrow">{t("Recruitment")}</span><h2 className="panel-title">{t("Night Market")}</h2></div><span className="panel-meta">{t(game.shopLocked ? "Locked" : "Refreshes next round")}</span></div>
           <div className="shop-grid">
             {game.shop.map((offer, index) => {
-              if (!offer) return <div className="shop-card shop-card-empty" key={`empty-${index}`}><span>Sold</span></div>;
+              if (!offer) return <div className="shop-card shop-card-empty" key={`empty-${index}`}><span>{t("Sold")}</span></div>;
               const hero = HEROES[offer.heroId];
               const copies = getCopyCount(game, offer.heroId, 1);
               return (
@@ -2191,32 +2259,32 @@ export function GameClient() {
                   type="button"
                   key={offer.id}
                   data-testid={`buy-offer-${offer.id}`}
-                  aria-label={`Recruit ${hero.name}, ${hero.rarity} ${ROLE_PROFILES[hero.role].label}, ${hero.traits.map((trait) => TRAITS[trait].name).join(" and ")}, range ${ROLE_PROFILES[hero.role].range}, copies ${copies} of 3, ${offer.cost} gold`}
+                  aria-label={`${t("Recruit")} ${localizeHero(locale, hero.id).name}, ${localizeRarity(locale, hero.rarity)} ${localizeRole(locale, hero.role).label}, ${formatList(locale, hero.traits.map((trait) => localizeTrait(locale, trait).name))}, ${t("range")} ${ROLE_PROFILES[hero.role].range}, ${t("copies")} ${copies} ${t("of")} 3, ${offer.cost} ${t("gold")}`}
                   disabled={game.phase !== "planning" || game.gold < offer.cost}
                   onClick={() => handleBuy(offer.id)}
                 >
-                  <HeroArt heroId={hero.id} className={`shop-art rarity-${hero.rarity}`}><small className="shop-rarity">{hero.rarity}</small></HeroArt>
-                  <span className="shop-meta"><strong className="shop-name">{hero.name}</strong><span className="shop-traits">{hero.traits.map((trait) => TRAITS[trait].name).join(" · ")}</span><small>{ROLE_PROFILES[hero.role].label} · Range {ROLE_PROFILES[hero.role].range} · Copies {copies}/3</small></span>
-                  <span className="price">{offer.cost} gold</span>
+                  <HeroArt heroId={hero.id} className={`shop-art rarity-${hero.rarity}`}><small className="shop-rarity">{localizeRarity(locale, hero.rarity)}</small></HeroArt>
+                  <span className="shop-meta"><strong className="shop-name">{localizeHero(locale, hero.id).name}</strong><span className="shop-traits">{hero.traits.map((trait) => localizeTrait(locale, trait).name).join(" · ")}</span><small>{localizeRole(locale, hero.role).label} · {t("Range")} {ROLE_PROFILES[hero.role].range} · {t("Copies")} {copies}/3</small></span>
+                  <span className="price">{offer.cost} {t("gold")}</span>
                 </button>
               );
             })}
           </div>
         </section>
 
-        <section className="actions-panel" aria-label="Round actions">
+        <section className="actions-panel" aria-label={t("Round actions")}>
           {game.phase === "planning" ? (
             <>
-              <div className="income-line" data-testid="income-breakdown"><span>Next income</span><strong>+{projectedIncome}</strong><small>5 base + {interest} interest{projectedStreak ? ` + ${projectedStreak} streak` : ""}</small></div>
-              <button className="game-button button-secondary" type="button" data-testid="shop-refresh" disabled={game.gold < REFRESH_COST} onClick={() => commit(refreshShop(game))}>Refresh shop · {REFRESH_COST}</button>
-              <button className="game-button button-secondary" type="button" data-testid="shop-lock" onClick={() => commit(toggleShopLock(game))}>{game.shopLocked ? "Unlock shop" : "Lock shop"}</button>
-              <button className="game-button button-secondary" type="button" data-testid="buy-xp" disabled={game.commanderLevel >= MAX_COMMANDER_LEVEL || game.gold < XP_BUY_COST} onClick={() => commit(buyPlayerXp(game))}>Buy {XP_BUY_AMOUNT} XP · {XP_BUY_COST}</button>
-              <button className="game-button button-primary" type="button" data-testid="begin-combat" onClick={handleBeginCombat}>Begin battle</button>
+              <div className="income-line" data-testid="income-breakdown"><span>{t("Next income")}</span><strong>+{projectedIncome}</strong><small>5 {t("base")} + {interest} {t("interest")}{projectedStreak ? ` + ${projectedStreak} ${t("streak")}` : ""}</small></div>
+              <button className="game-button button-secondary" type="button" data-testid="shop-refresh" disabled={game.gold < REFRESH_COST} onClick={() => commit(refreshShop(game))}>{t("Refresh shop")} · {REFRESH_COST}</button>
+              <button className="game-button button-secondary" type="button" data-testid="shop-lock" onClick={() => commit(toggleShopLock(game))}>{t(game.shopLocked ? "Unlock shop" : "Lock shop")}</button>
+              <button className="game-button button-secondary" type="button" data-testid="buy-xp" disabled={game.commanderLevel >= MAX_COMMANDER_LEVEL || game.gold < XP_BUY_COST} onClick={() => commit(buyPlayerXp(game))}>{t("Buy")} {XP_BUY_AMOUNT} XP · {XP_BUY_COST}</button>
+              <button className="game-button button-primary" type="button" data-testid="begin-combat" onClick={handleBeginCombat}>{t("Begin battle")}</button>
             </>
           ) : game.phase === "combat" ? (
             <div className="combat-controls" data-testid="combat-controls">
-              <div className="income-line"><span>Combat time</span><strong>{formatCombatTime(currentCombatTime)} / {formatCombatTime(totalCombatTime)}</strong><small>{atCombatEnd ? `Outcome ready · Moment ${combatMomentIndex + 1}/${combatMoments.length}` : `Moment ${combatMomentIndex + 1}/${combatMoments.length} · ${currentMomentActionCount} ${currentMomentActionCount === 1 ? "action" : "actions"} · ${speed}× playback`}</small></div>
-              <button className="game-button button-secondary" type="button" data-testid="combat-play-pause" disabled={atCombatEnd} onClick={() => { setSteppedMomentKey(null); setPlaying((value) => !value); }}>{atCombatEnd ? "Complete" : playing ? "Pause" : "Play"}</button>
+              <div className="income-line"><span>{t("Combat time")}</span><strong>{formatCombatTime(currentCombatTime, locale)} / {formatCombatTime(totalCombatTime, locale)}</strong><small>{atCombatEnd ? `${t("Outcome ready")} · ${t("Moment")} ${combatMomentIndex + 1}/${combatMoments.length}` : `${t("Moment")} ${combatMomentIndex + 1}/${combatMoments.length} · ${currentMomentActionCount} ${t(currentMomentActionCount === 1 ? "action" : "actions")} · ${formatNumber(locale, speed, 1)}× ${t("playback")}`}</small></div>
+              <button className="game-button button-secondary" type="button" data-testid="combat-play-pause" disabled={atCombatEnd} onClick={() => { setSteppedMomentKey(null); setPlaying((value) => !value); }}>{t(atCombatEnd ? "Complete" : playing ? "Pause" : "Play")}</button>
               <button className="game-button button-secondary" type="button" data-testid="combat-step" disabled={atCombatEnd} onClick={() => {
                 const nextIndex = Math.min(combatMomentIndex + 1, combatMoments.length - 1);
                 playbackMomentKeyRef.current = null;
@@ -2225,12 +2293,12 @@ export function GameClient() {
                 setSteppedMomentKey(combatMoments[nextIndex]?.key ?? null);
                 setCombatClockSeconds(combatMoments[nextIndex]?.timestamp ?? currentCombatTime);
                 setCombatMomentIndex(nextIndex);
-              }}>Next moment</button>
-              <label className="speed-control">Speed<select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} data-testid="combat-speed"><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option></select></label>
-              {!atCombatEnd ? <button className="game-button button-ghost" type="button" data-testid="combat-skip" onClick={() => { playbackMomentKeyRef.current = null; playbackRemainingSecondsRef.current = null; setSteppedMomentKey(null); setPlaying(false); setCombatClockSeconds(totalCombatTime); setCombatMomentIndex(combatMoments.length - 1); }}>Skip to result</button> : <button className="game-button button-primary" type="button" onClick={() => commit(applyCombatResult(game))}>Claim result</button>}
+              }}>{t("Next moment")}</button>
+              <label className="speed-control">{t("Speed")}<select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} data-testid="combat-speed"><option value={0.5}>{formatNumber(locale, 0.5, 1)}×</option><option value={1}>{formatNumber(locale, 1, 1)}×</option><option value={2}>{formatNumber(locale, 2, 1)}×</option></select></label>
+              {!atCombatEnd ? <button className="game-button button-ghost" type="button" data-testid="combat-skip" onClick={() => { playbackMomentKeyRef.current = null; playbackRemainingSecondsRef.current = null; setSteppedMomentKey(null); setPlaying(false); setCombatClockSeconds(totalCombatTime); setCombatMomentIndex(combatMoments.length - 1); }}>{t("Skip to result")}</button> : <button className="game-button button-primary" type="button" onClick={() => commit(applyCombatResult(game))}>{t("Claim result")}</button>}
             </div>
           ) : (
-            <div className="income-line"><span>Round resolved</span><strong>{game.roundResult?.outcome === "victory" ? "Victory" : "Defeat"}</strong><small>Review the result to continue</small></div>
+            <div className="income-line"><span>{t("Round resolved")}</span><strong>{localizeOutcome(locale, game.roundResult?.outcome ?? "defeat")}</strong><small>{t("Review the result to continue")}</small></div>
           )}
         </section>
       </section>
@@ -2238,18 +2306,18 @@ export function GameClient() {
       {game.phase === "resolution" && game.roundResult ? (
         <div className="modal-backdrop" role="presentation">
           <section className="modal modal-round-result" role="dialog" aria-modal="true" aria-labelledby="round-result-title" data-testid="round-result">
-            <span className="eyebrow">Round {game.roundResult.round} complete</span>
-            <h2 id="round-result-title">{game.roundResult.outcome === "victory" ? "The line holds." : "The line broke."}</h2>
-            <p>{game.roundResult.outcome === "victory" ? "Your bond outlasted Mooncrest." : `The commander lost ${Math.abs(game.roundResult.lifeDelta)} life, but the campaign continues.`}</p>
+            <span className="eyebrow">{localizeText(locale, `Round ${game.roundResult.round} complete`)}</span>
+            <h2 id="round-result-title">{t(game.roundResult.outcome === "victory" ? "The line holds." : "The line broke.")}</h2>
+            <p>{localizeText(locale, game.roundResult.outcome === "victory" ? "Your bond outlasted Mooncrest." : `The commander lost ${Math.abs(game.roundResult.lifeDelta)} life, but the campaign continues.`)}</p>
             <div className="result-grid">
-              <span><small>Gold earned</small><strong>+{game.roundResult.goldEarned}</strong></span>
-              <span><small>Commander XP</small><strong>+{game.roundResult.commanderXp}</strong></span>
-              <span><small>Unit XP</small><strong>+{game.roundResult.outcome === "victory" ? 3 : 2}</strong></span>
-              <span><small>Streak</small><strong>{game.streak > 0 ? `+${game.streak}` : game.streak}</strong></span>
+              <span><small>{t("Gold earned")}</small><strong>+{game.roundResult.goldEarned}</strong></span>
+              <span><small>{t("Commander XP")}</small><strong>+{game.roundResult.commanderXp}</strong></span>
+              <span><small>{t("Unit XP")}</small><strong>+{game.roundResult.outcome === "victory" ? 3 : 2}</strong></span>
+              <span><small>{t("Streak")}</small><strong>{game.streak > 0 ? `+${game.streak}` : game.streak}</strong></span>
             </div>
-            <p className="result-formula">Income: {game.roundResult.income.base} base + {game.roundResult.income.interest} interest + {game.roundResult.income.streak} streak + {game.roundResult.income.victory} victory.</p>
-            {combatStatistics ? <CombatBreakdown statistics={combatStatistics} /> : null}
-            <div className="modal-actions"><button className="game-button button-primary" type="button" data-testid="continue-round" onClick={() => commit(advanceRound(game))}>Continue to round {game.round + 1}</button></div>
+            <p className="result-formula">{t("Income")}: {game.roundResult.income.base} {t("base")} + {game.roundResult.income.interest} {t("interest")} + {game.roundResult.income.streak} {t("streak")} + {game.roundResult.income.victory} {t("victory")}.</p>
+            {combatStatistics ? <CombatBreakdown statistics={combatStatistics} locale={locale} /> : null}
+            <div className="modal-actions"><button className="game-button button-primary" type="button" data-testid="continue-round" onClick={() => commit(advanceRound(game))}>{t("Continue to round")} {game.round + 1}</button></div>
           </section>
         </div>
       ) : null}
@@ -2257,16 +2325,16 @@ export function GameClient() {
       {game.phase === "gameover" ? (
         <div className="modal-backdrop" role="presentation">
           <section className="modal modal-round-result" role="dialog" aria-modal="true" aria-labelledby="game-result-title" data-testid="game-result">
-            <span className="eyebrow">Campaign complete</span>
-            <h2 id="game-result-title">{game.campaignOutcome === "victory" ? "HEXFALL answered your call." : "Mooncrest claims the arena."}</h2>
-            <p>{game.campaignOutcome === "victory" ? `You survived all ${game.round} rounds with ${game.life} commander life.` : `You reached round ${game.round}. Rebuild the bond and try a new formation.`}</p>
-            {combatStatistics ? <CombatBreakdown statistics={combatStatistics} /> : null}
-            <div className="modal-actions"><button className="game-button button-primary" type="button" data-testid="restart-game" onClick={handleRestart}>Play again</button></div>
+            <span className="eyebrow">{t("Campaign complete")}</span>
+            <h2 id="game-result-title">{t(game.campaignOutcome === "victory" ? "HEXFALL answered your call." : "Mooncrest claims the arena.")}</h2>
+            <p>{localizeText(locale, game.campaignOutcome === "victory" ? `You survived all ${game.round} rounds with ${game.life} commander life.` : `You reached round ${game.round}. Rebuild the bond and try a new formation.`)}</p>
+            {combatStatistics ? <CombatBreakdown statistics={combatStatistics} locale={locale} /> : null}
+            <div className="modal-actions"><button className="game-button button-primary" type="button" data-testid="restart-game" onClick={handleRestart}>{t("Play again")}</button></div>
           </section>
         </div>
       ) : null}
 
-      <div className="toast" role="status" aria-live="polite" aria-atomic="true" data-testid="toast-region">{toast}</div>
+      <div className="toast" role="status" aria-live="polite" aria-atomic="true" data-testid="toast-region">{localizeText(locale, toast)}</div>
     </main>
   );
 }
