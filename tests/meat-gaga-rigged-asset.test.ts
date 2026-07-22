@@ -37,7 +37,13 @@ type GltfJson = {
       indices?: number;
     }>;
   }>;
-  nodes?: Array<{ name?: string; mesh?: number; skin?: number }>;
+  nodes?: Array<{
+    name?: string;
+    mesh?: number;
+    skin?: number;
+    translation?: number[];
+    scale?: number[];
+  }>;
   scenes?: Array<{ nodes?: number[] }>;
   skins?: Array<{ inverseBindMatrices?: number; joints?: number[] }>;
   textures?: unknown[];
@@ -98,6 +104,10 @@ test("ships Meat Gaga as a self-contained skinned GLB with all authored clips", 
   assert.equal(joints.length, 24);
   assert.equal(new Set(joints).size, 24);
   const nodes = gltf.nodes ?? [];
+  const armature = nodes.find((node) => node.name === "Armature");
+  const hips = nodes.find((node) => node.name === "Hips");
+  assert.ok(armature?.scale?.every((value) => Math.abs(value - 0.01) < 1e-6));
+  assert.ok((hips?.translation?.[1] ?? 0) > 90, "the authored rest pose keeps centimeter-scale joint coordinates");
   const jointNames = joints.map((jointIndex) => nodes[jointIndex]?.name);
   assert.ok(jointNames.every((name) => typeof name === "string" && name.length > 0));
   assert.equal(new Set(jointNames).size, 24);
