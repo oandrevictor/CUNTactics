@@ -404,11 +404,11 @@ test("normalizing a legacy v1 state backfills item collections and slots", () =>
   assert.deepEqual(validateState(normalized), []);
 });
 
-test("roster exposes eleven distinct heroes, abilities, and real trait hooks", () => {
+test("roster exposes twelve distinct heroes, abilities, and real trait hooks", () => {
   const heroes = Object.values(HEROES);
-  assert.equal(heroes.length, 11);
-  assert.equal(new Set(heroes.map((hero) => hero.name)).size, 11);
-  assert.equal(new Set(heroes.map((hero) => hero.ability.name)).size, 11);
+  assert.equal(heroes.length, 12);
+  assert.equal(new Set(heroes.map((hero) => hero.name)).size, 12);
+  assert.equal(new Set(heroes.map((hero) => hero.ability.name)).size, 12);
   assert.ok(heroes.every((hero) => hero.traits.length >= 2));
   assert.equal(HEROES.boitata.portrait, "/characters/boitata.png");
   assert.equal(HEROES.boitata.ability.id, "wall-of-fire");
@@ -519,6 +519,9 @@ test("every hero exposes a complete three-star ability preview", () => {
     "startingManaBonus",
     "passiveStackGainPercent",
     "passiveStackConsumePercent",
+    "summonCount",
+    "summonDamage",
+    "birdAttackPercent",
   ] as const;
 
   for (const hero of Object.values(HEROES)) {
@@ -532,8 +535,8 @@ test("every hero exposes a complete three-star ability preview", () => {
     assert.ok(preview.scalingDescription.includes("/"), `${hero.name} should expose three-star values`);
     assert.equal(
       preview.current.projectiles > 0,
-      hero.id === "piper",
-      `${hero.name} should only expose a projectile count when it fires projectiles`,
+      hero.id === "piper" || hero.id === "billie",
+      `${hero.name} should only expose a projectile count when it fires projectiles or summons birds`,
     );
     for (const values of preview.byStar) {
       assert.equal(values.heroId, hero.id);

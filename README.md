@@ -17,7 +17,7 @@ Open the local address printed by the development server.
 - Commander XP, levels, and increasing deployment capacity
 - Champion XP, levels, three-copy star upgrades, and stat scaling
 - Seven team traits that modify real combat calculations
-- Eight champions with distinct targeting rules and mana abilities
+- Twelve champions with distinct targeting rules, mana abilities, and combat passives
 - Deterministic turn-by-turn combat with movement, attacks, shields, healing, mana, defeat, and playback controls
 - Device-local campaign persistence
 

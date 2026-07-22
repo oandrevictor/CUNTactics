@@ -50,7 +50,8 @@ export type HeroId =
   | "morrow"
   | "tide"
   | "vesper"
-  | "piper";
+  | "piper"
+  | "billie";
 export type TraitId =
   | "vanguard"
   | "nightbound"
@@ -132,6 +133,9 @@ export interface AbilityValues {
   startingManaBonus: number;
   passiveStackGainPercent: number;
   passiveStackConsumePercent: number;
+  summonCount: number;
+  summonDamage: number;
+  birdAttackPercent: number;
   liftDurationSeconds: number;
   stunDurationSeconds: number;
   currentHealthDamagePercent: number;
@@ -234,6 +238,8 @@ export interface CombatUnit {
   fireWallShield: number;
   /** Stored maximum-Life essence used by Meat Gaga's empowered attacks. */
   meatStack: number;
+  /** Birds currently following Billie and echoing her basic attacks. */
+  summonedBirds?: number;
   /** Legacy action-count stun used by Vesper. */
   stunned: number;
   /** Absolute combat timestamp until which this unit is unable to act. */
@@ -273,6 +279,12 @@ export interface CombatEvent {
   meatStackConsumed?: number;
   meatStackGained?: number;
   meatStackAfter?: number;
+  /** Number of Billie-owned birds participating in this event. */
+  birdCount?: number;
+  /** Raw pre-Armor damage dealt by each bird. */
+  birdDamageEach?: number;
+  /** Percentage of Billie's effective Attack used by each follow-up bird. */
+  birdAttackPercent?: number;
   /** Original Defying Gravity anchors, distinct from landing impact targets. */
   liftedTargetIds?: string[];
   liftDurationSeconds?: number;
@@ -801,6 +813,31 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       castAnimationSeconds: 1.4,
     },
   },
+  billie: {
+    id: "billie",
+    name: "Billie",
+    title: "The Flock Whisperer",
+    glyph: "♪",
+    cost: 4,
+    rarity: "mythic",
+    role: "shooter",
+    traits: ["invoker", "duelist"],
+    maxHp: 138,
+    attack: 39,
+    armor: 10,
+    attackSpeed: 0.52,
+    moveSpeed: 0.36,
+    manaRegen: 10.5,
+    startingMana: 30,
+    ability: {
+      id: "birds-of-a-feather",
+      name: "Birds of a Feather",
+      description: "Summons two birds that strike the lowest-Life enemy. Whenever Billie attacks, each summoned bird strikes the lowest-Life enemy for a share of her Attack.",
+      manaCost: 90,
+      targetRule: "Lowest-current-Life enemy",
+      castAnimationSeconds: 1.5,
+    },
+  },
 };
 
 export const TRAITS: Record<TraitId, TraitDefinition> = {
@@ -970,7 +1007,7 @@ function enemyCountForRound(round: number): number {
 
 function generateEnemyMutable(state: GameState): UnitInstance[] {
   const count = enemyCountForRound(state.round);
-  const preferred = ["tide", "boitata", "nix", "vesper", "aster", "morrow", "meat-gaga", "piper", "sol", "bramble", "elphaba"] as HeroId[];
+  const preferred = ["tide", "boitata", "nix", "vesper", "aster", "morrow", "meat-gaga", "billie", "piper", "sol", "bramble", "elphaba"] as HeroId[];
   const openPositions = [2, 5, 10, 13, 17, 20, 22, 7];
   const threeStarCount = state.round >= 9 ? state.round - 8 : 0;
   const twoStarCount = state.round >= 4
@@ -1478,6 +1515,7 @@ function snapshot(units: CombatUnit[]): CombatUnit[] {
     ...unit,
     mana: roundCombatDecimal(unit.mana),
     meatStack: roundCombatDecimal(unit.meatStack),
+    summonedBirds: Math.max(0, Math.round(unit.summonedBirds ?? 0)),
   }));
 }
 
@@ -1619,6 +1657,9 @@ function evaluateAbilityValues(input: AbilityEvaluationInput): AbilityValues {
     startingManaBonus: input.formation.startingManaBonus,
     passiveStackGainPercent: 0,
     passiveStackConsumePercent: 0,
+    summonCount: 0,
+    summonDamage: 0,
+    birdAttackPercent: 0,
     liftDurationSeconds: 0,
     stunDurationSeconds: 0,
     currentHealthDamagePercent: 0,
@@ -1676,6 +1717,13 @@ function evaluateAbilityValues(input: AbilityEvaluationInput): AbilityValues {
     values.damage = scaleDamage(31 + input.attack * 0.65);
     values.maxTargets = input.stars >= 3 ? 3 : 2;
     values.projectiles = values.maxTargets;
+  } else if (input.heroId === "billie") {
+    const index = input.stars - 1;
+    values.summonCount = 2;
+    values.summonDamage = scaleDamage([50, 75, 100][index]);
+    values.birdAttackPercent = [20, 25, 40][index];
+    values.damage = values.summonDamage;
+    values.projectiles = values.summonCount;
   }
 
   const isEnemyDamageAbility = values.damage > 0 || values.currentHealthDamagePercent > 0;
@@ -1702,6 +1750,9 @@ function abilityScalingDescription(byStar: AbilityPreview["byStar"]): string {
   }
   if (heroId === "elphaba") {
     return `Levitates ${triplet((value) => value.maxTargets)} enemy for ${triplet((value) => value.liftDurationSeconds)} seconds. On landing, orthogonally adjacent enemies take ${triplet((value) => value.currentHealthDamagePercent)}% of the fallen enemy's current Life as true damage and are stunned for ${triplet((value) => value.stunDurationSeconds)} seconds at 1★/2★/3★.`;
+  }
+  if (heroId === "billie") {
+    return `Summons 2 birds that each strike the lowest-current-Life enemy for ${triplet((value) => value.summonDamage)} raw damage. On every later basic attack, all summoned birds each deal ${triplet((value) => value.birdAttackPercent)}% of Billie's Attack to the lowest-current-Life enemy at 1★/2★/3★.`;
   }
   if (heroId === "sol") {
     return `Hits ${triplet((value) => `${value.minTargets}–${value.maxTargets}`)} clustered enemies for ${triplet((value) => value.damage)} raw damage each at 1★/2★/3★.`;
@@ -1792,6 +1843,9 @@ export function getAbilityPreview(
   if (unit.heroId === "meat-gaga") {
     outputNotes.push("Passive: Meat Gaga has no Mana, never casts, and empowers only basic attacks after a character falls.");
   }
+  if (unit.heroId === "billie") {
+    outputNotes.push("Birds persist for the combat. Recasting summons two more; each basic attack sends every summoned bird to the lowest-current-Life enemy.");
+  }
   if (hasDamageOutput) {
     outputNotes.push(current.ignoresArmor
       ? "Damage is shown before shields; this ability ignores Armor."
@@ -1841,6 +1895,7 @@ function makeCombatUnits(state: GameState): CombatUnit[] {
       shield: 0,
       fireWallShield: 0,
       meatStack: 0,
+      summonedBirds: 0,
       stunned: 0,
       stunnedUntil: 0,
       levitatingUntil: 0,
@@ -1883,6 +1938,12 @@ function nearestEnemy(actor: CombatUnit, units: CombatUnit[]): CombatUnit | null
       .sort((a, b) => manhattan(actor.position, a.position) - manhattan(actor.position, b.position) || a.hp - b.hp || a.id.localeCompare(b.id))[0] ??
     null
   );
+}
+
+function lowestCurrentLifeEnemy(actor: CombatUnit, units: CombatUnit[]): CombatUnit | null {
+  return units
+    .filter((unit) => unit.side !== actor.side && unit.alive)
+    .sort((a, b) => a.hp - b.hp || a.id.localeCompare(b.id))[0] ?? null;
 }
 
 function openStepToward(
@@ -1930,6 +1991,9 @@ function addEvent(
     | "meatStackConsumed"
     | "meatStackGained"
     | "meatStackAfter"
+    | "birdCount"
+    | "birdDamageEach"
+    | "birdAttackPercent"
     | "liftedTargetIds"
     | "liftDurationSeconds"
     | "stunDurationSeconds"
@@ -1987,6 +2051,10 @@ type PlannedCombatAction =
       targetId: string;
       meatBonusDamage: number;
       meatStackConsumed: number;
+      birdTargetId: string;
+      birdCount: number;
+      birdDamageEach: number;
+      birdAttackPercent: number;
     }
   | {
       kind: "ability";
@@ -2093,6 +2161,10 @@ function plannedAbilityTargetIds(
     const target = allies.sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp || a.id.localeCompare(b.id))[0];
     return target ? [target.id] : [];
   }
+  if (actor.heroId === "billie") {
+    const target = lowestCurrentLifeEnemy(actor, units);
+    return target ? [target.id] : [];
+  }
   return enemies
     .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp || a.id.localeCompare(b.id))
     .slice(0, values.maxTargets)
@@ -2158,6 +2230,13 @@ function planCombatAction(
   if (!target) return { kind: "move", actorId: actor.id, sourceId, targetId: "", destination: null };
   if (manhattan(actor.position, target.position) <= actor.range) {
     const meatStackConsumed = plannedMeatStackConsumption(actor);
+    const birdCount = actor.heroId === "billie"
+      ? Math.max(0, Math.round(actor.summonedBirds ?? 0))
+      : 0;
+    const birdTarget = birdCount > 0 ? lowestCurrentLifeEnemy(actor, units) : null;
+    const birdAttackPercent = birdCount > 0
+      ? combatAbilityValues(actor, units).birdAttackPercent
+      : 0;
     return {
       kind: "attack",
       actorId: actor.id,
@@ -2165,6 +2244,12 @@ function planCombatAction(
       targetId: target.id,
       meatBonusDamage: meatStackConsumed,
       meatStackConsumed,
+      birdTargetId: birdTarget?.id ?? "",
+      birdCount,
+      birdDamageEach: birdCount > 0
+        ? Math.max(0, Math.round(actor.attack * (birdAttackPercent / 100)))
+        : 0,
+      birdAttackPercent,
     };
   }
   const destination = openStepToward(
@@ -2356,6 +2441,11 @@ function damageContributions(
     if (action.kind === "attack") {
       const target = units.find((unit) => unit.id === action.targetId);
       if (!target) continue;
+      const takedownMana = tierValue(
+        "nightbound",
+        traitCountsForSide(units, actor.side).nightbound,
+        [20, 35],
+      );
       contributions.push({
         id: `${action.sourceId}:damage:${target.id}`,
         sourceId: action.sourceId,
@@ -2364,26 +2454,48 @@ function damageContributions(
         potential: mitigatedDamage(target, actor.attack + action.meatBonusDamage, false),
         manaDrain: 0,
         stunTurns: 0,
-        takedownMana: tierValue(
-          "nightbound",
-          traitCountsForSide(units, actor.side).nightbound,
-          [20, 35],
-        ),
+        takedownMana,
       });
+      const birdTarget = action.birdTargetId
+        ? units.find((unit) => unit.id === action.birdTargetId)
+        : null;
+      if (birdTarget && action.birdCount > 0 && action.birdDamageEach > 0) {
+        for (let index = 0; index < action.birdCount; index += 1) {
+          contributions.push({
+            id: `${action.sourceId}:bird:${index + 1}:damage:${birdTarget.id}`,
+            sourceId: `${action.sourceId}:birds`,
+            actorId: action.actorId,
+            targetId: birdTarget.id,
+            potential: mitigatedDamage(birdTarget, action.birdDamageEach, false),
+            manaDrain: 0,
+            stunTurns: 0,
+            takedownMana,
+          });
+        }
+      }
     } else if (action.kind === "ability" && action.values.damage > 0) {
       for (const targetId of action.targetIds) {
         const target = units.find((unit) => unit.id === targetId);
         if (!target) continue;
-        contributions.push({
-          id: `${action.sourceId}:damage:${target.id}`,
-          sourceId: action.sourceId,
-          actorId: action.actorId,
-          targetId: target.id,
-          potential: mitigatedDamage(target, action.values.damage, action.values.ignoresArmor),
-          manaDrain: action.values.manaDrain,
-          stunTurns: action.values.stunTurns,
-          takedownMana: action.values.takedownMana,
-        });
+        const hitCount = action.values.heroId === "billie"
+          ? action.values.summonCount
+          : 1;
+        const rawDamage = action.values.heroId === "billie"
+          ? action.values.summonDamage
+          : action.values.damage;
+        for (let index = 0; index < hitCount; index += 1) {
+          contributions.push({
+            id: `${action.sourceId}:damage:${target.id}:${index + 1}`,
+            sourceId: action.sourceId,
+            actorId: action.actorId,
+            targetId: target.id,
+            potential: mitigatedDamage(target, rawDamage, action.values.ignoresArmor),
+            // Hexer applies once to an ability target, not once per summoned bird.
+            manaDrain: index === 0 ? action.values.manaDrain : 0,
+            stunTurns: index === 0 ? action.values.stunTurns : 0,
+            takedownMana: action.values.takedownMana,
+          });
+        }
       }
     }
   }
@@ -2502,6 +2614,9 @@ function abilityEventText(
     const target = units.find((unit) => unit.id === id);
     return target ? [combatName(target)] : [];
   });
+  if (actor.heroId === "billie") {
+    return `${combatName(actor)} summons two birds${targetNames.length ? ` onto ${targetNames.join(" and ")}` : ""}${amount ? ` for ${Math.round(amount)} damage` : ""}.`;
+  }
   return `${combatName(actor)} casts ${hero.ability.name}${targetNames.length ? ` on ${targetNames.join(" and ")}` : ""}${amount ? ` for ${Math.round(amount)} impact` : ""}.`;
 }
 
@@ -2537,7 +2652,12 @@ function resolveCombatBatch(
   // before drains resolve so same-time cast order cannot erase or preserve one.
   for (const action of abilityActions) {
     const actor = units.find((unit) => unit.id === action.actorId);
-    if (actor) actor.mana = 0;
+    if (!actor) continue;
+    actor.mana = 0;
+    if (action.values.heroId === "billie") {
+      actor.summonedBirds = Math.max(0, Math.round(actor.summonedBirds ?? 0))
+        + action.values.summonCount;
+    }
   }
 
   // A cast is committed from the frozen plan even if its caster is defeated
@@ -2647,6 +2767,15 @@ function resolveCombatBatch(
             : undefined,
           landingAt: action.values.heroId === "elphaba"
             ? roundCombatDecimal(timestamp + action.values.liftDurationSeconds)
+            : undefined,
+          birdCount: action.values.heroId === "billie"
+            ? action.values.summonCount
+            : undefined,
+          birdDamageEach: action.values.heroId === "billie"
+            ? action.values.summonDamage
+            : undefined,
+          birdAttackPercent: action.values.heroId === "billie"
+            ? action.values.birdAttackPercent
             : undefined,
         },
       );
@@ -2806,6 +2935,38 @@ function resolveCombatBatch(
           meatStackAfter: actor.heroId === "meat-gaga" ? actor.meatStack : undefined,
         },
       );
+      if (action.birdCount > 0 && action.birdTargetId) {
+        const birdDamage = damageBySource.get(`${action.sourceId}:birds`) ?? [];
+        const birdTarget = units.find((unit) => unit.id === action.birdTargetId) ?? null;
+        const amounts: Record<string, number> = {};
+        let birdAmount = 0;
+        for (const birdContribution of birdDamage) {
+          const contributionTarget = units.find((unit) => unit.id === birdContribution.targetId);
+          if (!contributionTarget) continue;
+          damageUnit(contributionTarget, birdContribution.amount, true);
+          amounts[contributionTarget.id] = (amounts[contributionTarget.id] ?? 0) + birdContribution.amount;
+          birdAmount += birdContribution.amount;
+        }
+        addEvent(
+          events,
+          units,
+          turn,
+          timestamp,
+          "passive",
+          birdTarget
+            ? `${combatName(actor)}'s ${action.birdCount} birds strike ${combatName(birdTarget)} for ${birdAmount} damage.`
+            : `${combatName(actor)}'s birds find no target.`,
+          {
+            actorId: actor.id,
+            targetIds: birdTarget ? [birdTarget.id] : [],
+            amount: birdAmount,
+            amounts,
+            birdCount: action.birdCount,
+            birdDamageEach: action.birdDamageEach,
+            birdAttackPercent: action.birdAttackPercent,
+          },
+        );
+      }
       continue;
     }
 
@@ -2818,7 +2979,7 @@ function resolveCombatBatch(
       damageUnit(target, contribution.amount, true);
       target.mana = Math.max(0, target.mana - contribution.manaDrain);
       target.stunned = Math.max(target.stunned, contribution.stunTurns);
-      amounts[target.id] = contribution.amount;
+      amounts[target.id] = (amounts[target.id] ?? 0) + contribution.amount;
       amount += contribution.amount;
     }
     if (action.destination !== null) actor.position = action.destination;
@@ -2834,6 +2995,15 @@ function resolveCombatBatch(
         targetIds: action.targetIds,
         amount,
         amounts,
+        birdCount: action.values.heroId === "billie"
+          ? action.values.summonCount
+          : undefined,
+        birdDamageEach: action.values.heroId === "billie"
+          ? action.values.summonDamage
+          : undefined,
+        birdAttackPercent: action.values.heroId === "billie"
+          ? action.values.birdAttackPercent
+          : undefined,
       },
     );
   }

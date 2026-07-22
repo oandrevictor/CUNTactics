@@ -141,8 +141,8 @@ test("Elphaba is a rare three-cost Hexer and Starborn mage", () => {
       targetRule: "Highest-current-Life enemies",
     },
   );
-  assert.equal(Object.values(HEROES).length, 11);
-  assert.equal(new Set(Object.values(HEROES).map((hero) => hero.name)).size, 11);
+  assert.equal(Object.values(HEROES).length, 12);
+  assert.equal(new Set(Object.values(HEROES).map((hero) => hero.name)).size, 12);
 });
 
 test("Defying Gravity previews every exact star value and its dynamic true-damage rules", () => {
