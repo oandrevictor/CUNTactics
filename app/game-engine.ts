@@ -203,6 +203,7 @@ export type CombatEventType =
   | "attack"
   | "ability"
   | "heal"
+  | "shield"
   | "defeat"
   | "outcome";
 
@@ -210,7 +211,7 @@ export interface CombatEvent {
   id: string;
   /** Elapsed combat time in seconds. */
   timestamp: number;
-  /** Monotonic action sequence retained for playback compatibility. */
+  /** Monotonic simultaneous-action batch retained for playback compatibility. */
   turn: number;
   type: CombatEventType;
   actorId?: string;
@@ -1289,11 +1290,17 @@ function adjacent(a: number, b: number): boolean {
   return manhattan(a, b) <= 1;
 }
 
-function snapshot(units: CombatUnit[]): CombatUnit[] {
+function cloneCombatUnits(units: CombatUnit[]): CombatUnit[] {
   return units.map((unit) => ({
     ...unit,
-    mana: roundCombatDecimal(unit.mana),
     itemSlots: unit.itemSlots ? cloneItemSlots(unit.itemSlots) : undefined,
+  }));
+}
+
+function snapshot(units: CombatUnit[]): CombatUnit[] {
+  return cloneCombatUnits(units).map((unit) => ({
+    ...unit,
+    mana: roundCombatDecimal(unit.mana),
   }));
 }
 
@@ -1650,12 +1657,6 @@ function damageUnit(target: CombatUnit, rawDamage: number, ignoreArmor = false):
   return shieldDamage + healthDamage;
 }
 
-function healUnit(target: CombatUnit, amount: number): number {
-  const restored = Math.min(target.maxHp - target.hp, Math.max(0, Math.round(amount)));
-  target.hp += restored;
-  return restored;
-}
-
 function nearestEnemy(actor: CombatUnit, units: CombatUnit[]): CombatUnit | null {
   return (
     units
@@ -1665,7 +1666,12 @@ function nearestEnemy(actor: CombatUnit, units: CombatUnit[]): CombatUnit | null
   );
 }
 
-function openStepToward(actor: CombatUnit, target: CombatUnit, units: CombatUnit[]): number | null {
+function openStepToward(
+  actor: CombatUnit,
+  target: CombatUnit,
+  units: CombatUnit[],
+  reservedPositions: ReadonlySet<number> = new Set(),
+): number | null {
   const occupied = new Set(units.filter((unit) => unit.alive && unit.id !== actor.id).map((unit) => unit.position));
   const x = actor.position % BOARD_COLUMNS;
   const y = Math.floor(actor.position / BOARD_COLUMNS);
@@ -1675,7 +1681,7 @@ function openStepToward(actor: CombatUnit, target: CombatUnit, units: CombatUnit
     y < BOARD_ROWS - 1 ? actor.position + BOARD_COLUMNS : -1,
     y > 0 ? actor.position - BOARD_COLUMNS : -1,
   ]
-    .filter((position) => position >= 0 && !occupied.has(position))
+    .filter((position) => position >= 0 && !occupied.has(position) && !reservedPositions.has(position))
     .sort((a, b) => manhattan(a, target.position) - manhattan(b, target.position) || a - b);
   return candidates[0] ?? null;
 }
@@ -1709,129 +1715,627 @@ function strongestClusterTarget(actor: CombatUnit, units: CombatUnit[]): CombatU
   );
 }
 
-function castAbility(
-  actor: CombatUnit,
-  units: CombatUnit[],
-  events: CombatEvent[],
-  turn: number,
-  timestamp: number,
-): void {
-  const hero = HEROES[actor.heroId];
-  const allies = units.filter((unit) => unit.side === actor.side && unit.alive);
-  const enemies = units.filter((unit) => unit.side !== actor.side && unit.alive);
-  const counts = traitCountsForSide(units, actor.side);
-  const values = evaluateAbilityValues({
+type PlannedCombatAction =
+  | {
+      kind: "stunned";
+      actorId: string;
+    }
+  | {
+      kind: "move";
+      actorId: string;
+      targetId: string;
+      destination: number | null;
+    }
+  | {
+      kind: "attack";
+      actorId: string;
+      targetId: string;
+    }
+  | {
+      kind: "ability";
+      actorId: string;
+      targetIds: string[];
+      allyIds: string[];
+      destination: number | null;
+      values: AbilityValues;
+    };
+
+function combatAbilityValues(actor: CombatUnit, units: CombatUnit[]): AbilityValues {
+  return evaluateAbilityValues({
     heroId: actor.heroId,
     stars: normalizeStars(actor.stars),
     level: actor.level,
     attack: actor.attack,
     maxHp: actor.maxHp,
     armor: actor.armor,
-    formation: formationAbilityBonuses(counts),
+    formation: formationAbilityBonuses(traitCountsForSide(units, actor.side)),
   });
-  const targets: CombatUnit[] = [];
-  let amount = 0;
-  const amounts: Record<string, number> = {};
-  const addTarget = (target: CombatUnit, impact: number) => {
-    targets.push(target);
-    amounts[target.id] = impact;
-    amount += impact;
+}
+
+function plannedAbilityTargetIds(
+  actor: CombatUnit,
+  units: CombatUnit[],
+  values: AbilityValues,
+): string[] {
+  const allies = units.filter((unit) => unit.side === actor.side && unit.alive);
+  const enemies = units.filter((unit) => unit.side !== actor.side && unit.alive);
+
+  if (actor.heroId === "bramble") {
+    return allies
+      .filter((unit) => unit.id !== actor.id && adjacent(unit.position, actor.position))
+      .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp || a.id.localeCompare(b.id))
+      .slice(0, values.maxTargets)
+      .map((unit) => unit.id);
+  }
+  if (actor.heroId === "boitata") return [actor.id];
+  if (actor.heroId === "sol") {
+    const center = strongestClusterTarget(actor, units);
+    return center
+      ? enemies
+          .filter((enemy) => adjacent(enemy.position, center.position))
+          .sort((a, b) => a.id.localeCompare(b.id))
+          .map((enemy) => enemy.id)
+      : [];
+  }
+  if (actor.heroId === "nix") {
+    const target = enemies.sort(
+      (a, b) => manhattan(actor.position, b.position) - manhattan(actor.position, a.position) || a.id.localeCompare(b.id),
+    )[0];
+    return target ? [target.id] : [];
+  }
+  if (actor.heroId === "aster") {
+    const target = nearestEnemy(actor, units);
+    return target ? [target.id] : [];
+  }
+  if (actor.heroId === "morrow" || actor.heroId === "vesper") {
+    const target = enemies.sort((a, b) => b.mana - a.mana || a.hp - b.hp || a.id.localeCompare(b.id))[0];
+    return target ? [target.id] : [];
+  }
+  if (actor.heroId === "tide") {
+    const target = allies.sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp || a.id.localeCompare(b.id))[0];
+    return target ? [target.id] : [];
+  }
+  return enemies
+    .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp || a.id.localeCompare(b.id))
+    .slice(0, values.maxTargets)
+    .map((enemy) => enemy.id);
+}
+
+function planCombatAction(
+  actor: CombatUnit,
+  units: CombatUnit[],
+  reservedPositions: Set<number>,
+): PlannedCombatAction {
+  if (actor.stunned > 0) return { kind: "stunned", actorId: actor.id };
+
+  if (actor.mana >= actor.maxMana) {
+    const values = combatAbilityValues(actor, units);
+    const targetIds = plannedAbilityTargetIds(actor, units, values);
+    const movementTarget = actor.heroId === "nix"
+      ? units.find((unit) => unit.id === targetIds[0]) ?? null
+      : null;
+    const destination = movementTarget
+      ? openStepToward(actor, movementTarget, units, reservedPositions)
+      : null;
+    if (destination !== null) reservedPositions.add(destination);
+    return {
+      kind: "ability",
+      actorId: actor.id,
+      targetIds,
+      allyIds: units
+        .filter((unit) => unit.side === actor.side && unit.alive)
+        .map((unit) => unit.id),
+      destination,
+      values,
+    };
+  }
+
+  const target = nearestEnemy(actor, units);
+  if (!target) return { kind: "move", actorId: actor.id, targetId: "", destination: null };
+  if (manhattan(actor.position, target.position) <= actor.range) {
+    return { kind: "attack", actorId: actor.id, targetId: target.id };
+  }
+  const destination = openStepToward(actor, target, units, reservedPositions);
+  if (destination !== null) reservedPositions.add(destination);
+  return { kind: "move", actorId: actor.id, targetId: target.id, destination };
+}
+
+interface SupportContribution {
+  id: string;
+  actorId: string;
+  targetId: string;
+  healing: number;
+  shield: number;
+  fireWallShield: number;
+  primary: boolean;
+}
+
+interface ResolvedSupportContribution extends SupportContribution {
+  healingApplied: number;
+}
+
+interface DamageContribution {
+  id: string;
+  actorId: string;
+  targetId: string;
+  potential: number;
+  manaDrain: number;
+  stunTurns: number;
+}
+
+interface ResolvedDamageContribution extends DamageContribution {
+  amount: number;
+}
+
+function allocateCappedAmounts(
+  entries: readonly { id: string; amount: number }[],
+  capacity: number,
+): Map<string, number> {
+  const allocations = new Map(entries.map((entry) => [entry.id, 0]));
+  const total = entries.reduce((sum, entry) => sum + Math.max(0, entry.amount), 0);
+  const applied = Math.min(Math.max(0, Math.round(capacity)), total);
+  if (applied <= 0 || total <= 0) return allocations;
+  if (applied === total) {
+    for (const entry of entries) allocations.set(entry.id, Math.max(0, entry.amount));
+    return allocations;
+  }
+
+  const shares = entries.map((entry) => {
+    const exact = (Math.max(0, entry.amount) * applied) / total;
+    const base = Math.floor(exact);
+    allocations.set(entry.id, base);
+    return { id: entry.id, fraction: exact - base };
+  });
+  let remainder = applied - [...allocations.values()].reduce((sum, amount) => sum + amount, 0);
+  shares.sort((a, b) => b.fraction - a.fraction || a.id.localeCompare(b.id));
+  for (const share of shares) {
+    if (remainder <= 0) break;
+    allocations.set(share.id, (allocations.get(share.id) ?? 0) + 1);
+    remainder -= 1;
+  }
+  return allocations;
+}
+
+function resolveSupportContributions(
+  units: CombatUnit[],
+  contributions: SupportContribution[],
+): ResolvedSupportContribution[] {
+  const allocations = new Map<string, number>();
+  const targetIds = [...new Set(contributions.map((contribution) => contribution.targetId))];
+  for (const targetId of targetIds) {
+    const target = units.find((unit) => unit.id === targetId);
+    if (!target) continue;
+    const healing = contributions
+      .filter((contribution) => contribution.targetId === targetId && contribution.healing > 0)
+      .map((contribution) => ({ id: contribution.id, amount: contribution.healing }));
+    const targetAllocations = allocateCappedAmounts(healing, target.maxHp - target.hp);
+    for (const [id, amount] of targetAllocations) allocations.set(id, amount);
+  }
+  return contributions.map((contribution) => ({
+    ...contribution,
+    healingApplied: allocations.get(contribution.id) ?? 0,
+  }));
+}
+
+function applySupportContribution(
+  units: CombatUnit[],
+  contribution: ResolvedSupportContribution,
+): void {
+  const target = units.find((unit) => unit.id === contribution.targetId);
+  if (!target) return;
+  target.hp = Math.min(target.maxHp, target.hp + contribution.healingApplied);
+  target.shield += contribution.shield;
+  target.fireWallShield += contribution.fireWallShield;
+}
+
+function applyHealingContribution(
+  units: CombatUnit[],
+  contribution: ResolvedSupportContribution,
+): void {
+  const target = units.find((unit) => unit.id === contribution.targetId);
+  if (!target) return;
+  target.hp = Math.min(target.maxHp, target.hp + contribution.healingApplied);
+}
+
+function applyShieldContribution(
+  units: CombatUnit[],
+  contribution: ResolvedSupportContribution,
+): void {
+  const target = units.find((unit) => unit.id === contribution.targetId);
+  if (!target) return;
+  target.shield += contribution.shield;
+  target.fireWallShield += contribution.fireWallShield;
+}
+
+function baseSupportContributions(actions: PlannedCombatAction[]): SupportContribution[] {
+  const contributions: SupportContribution[] = [];
+  let contributionIndex = 0;
+  const add = (
+    action: Extract<PlannedCombatAction, { kind: "ability" }>,
+    targetId: string,
+    healing: number,
+    shield: number,
+    fireWallShield: number,
+    primary: boolean,
+  ) => {
+    if (healing <= 0 && shield <= 0) return;
+    contributionIndex += 1;
+    contributions.push({
+      id: `${action.actorId}-support-${contributionIndex}`,
+      actorId: action.actorId,
+      targetId,
+      healing: Math.max(0, Math.round(healing)),
+      shield: Math.max(0, Math.round(shield)),
+      fireWallShield: Math.max(0, Math.round(fireWallShield)),
+      primary,
+    });
   };
 
-  actor.mana = 0;
-  if (actor.heroId === "bramble") {
-    actor.shield += values.shield;
-    const woundedAllies = allies
-      .filter((unit) => unit.id !== actor.id && adjacent(unit.position, actor.position))
-      .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)
-      .slice(0, values.maxTargets);
-    for (const ally of woundedAllies) {
-      addTarget(ally, healUnit(ally, values.healing));
-    }
-  } else if (actor.heroId === "boitata") {
-    const gainedShield = values.shield;
-    actor.shield += gainedShield;
-    actor.fireWallShield += gainedShield;
-    addTarget(actor, gainedShield);
-  } else if (actor.heroId === "sol") {
-    const center = strongestClusterTarget(actor, units);
-    if (center) {
-      for (const target of enemies.filter((enemy) => adjacent(enemy.position, center.position))) {
-        const impact = damageUnit(target, values.damage);
-        target.mana = Math.max(0, target.mana - values.manaDrain);
-        addTarget(target, impact);
+  for (const action of actions) {
+    if (action.kind !== "ability") continue;
+    if (action.values.teamHealing > 0) {
+      for (const allyId of action.allyIds) {
+        add(action, allyId, action.values.teamHealing, 0, 0, false);
       }
     }
-  } else if (actor.heroId === "nix") {
-    const target = enemies.sort((a, b) => manhattan(actor.position, b.position) - manhattan(actor.position, a.position))[0];
-    if (target) {
-      const impact = damageUnit(target, values.damage, values.ignoresArmor);
-      target.mana = Math.max(0, target.mana - values.manaDrain);
-      const step = openStepToward(actor, target, units);
-      if (step !== null) actor.position = step;
-      addTarget(target, impact);
+    if (action.values.heroId === "bramble") {
+      add(action, action.actorId, 0, action.values.shield, 0, false);
+      for (const targetId of action.targetIds) {
+        add(action, targetId, action.values.healing, 0, 0, true);
+      }
+    } else if (action.values.heroId === "boitata") {
+      add(action, action.actorId, 0, action.values.shield, action.values.shield, true);
+    } else if (action.values.heroId === "aster") {
+      add(action, action.actorId, 0, action.values.shield, 0, false);
+    } else if (action.values.heroId === "tide") {
+      const targetId = action.targetIds[0];
+      if (targetId) {
+        add(action, targetId, action.values.healing, 0, 0, true);
+        add(action, targetId, 0, action.values.shield, 0, false);
+      }
     }
-  } else if (actor.heroId === "aster") {
-    const target = nearestEnemy(actor, units);
-    if (target) {
-      const impact = damageUnit(target, values.damage);
-      target.mana = Math.max(0, target.mana - values.manaDrain);
-      actor.shield += values.shield;
-      addTarget(target, impact);
+  }
+  return contributions;
+}
+
+function mitigatedDamage(target: CombatUnit, rawDamage: number, ignoreArmor: boolean): number {
+  return ignoreArmor
+    ? Math.max(0, Math.round(rawDamage))
+    : Math.max(1, Math.round((rawDamage * 100) / (100 + target.armor)));
+}
+
+function damageContributions(
+  actions: PlannedCombatAction[],
+  units: CombatUnit[],
+): DamageContribution[] {
+  const contributions: DamageContribution[] = [];
+  for (const action of actions) {
+    const actor = units.find((unit) => unit.id === action.actorId);
+    if (!actor) continue;
+    if (action.kind === "attack") {
+      const target = units.find((unit) => unit.id === action.targetId);
+      if (!target) continue;
+      contributions.push({
+        id: `${action.actorId}-damage-${target.id}`,
+        actorId: action.actorId,
+        targetId: target.id,
+        potential: mitigatedDamage(target, actor.attack, false),
+        manaDrain: 0,
+        stunTurns: 0,
+      });
+    } else if (action.kind === "ability" && action.values.damage > 0) {
+      for (const targetId of action.targetIds) {
+        const target = units.find((unit) => unit.id === targetId);
+        if (!target) continue;
+        contributions.push({
+          id: `${action.actorId}-damage-${target.id}`,
+          actorId: action.actorId,
+          targetId: target.id,
+          potential: mitigatedDamage(target, action.values.damage, action.values.ignoresArmor),
+          manaDrain: action.values.manaDrain,
+          stunTurns: action.values.stunTurns,
+        });
+      }
     }
-  } else if (actor.heroId === "morrow") {
-    const target = enemies.sort((a, b) => b.mana - a.mana || a.hp - b.hp)[0];
-    if (target) {
-      const impact = damageUnit(target, values.damage);
-      target.mana = Math.max(0, target.mana - values.manaDrain);
-      healUnit(actor, impact * (values.selfHealPercent / 100));
-      addTarget(target, impact);
+  }
+  return contributions;
+}
+
+function resolveDamageContributions(
+  units: CombatUnit[],
+  contributions: DamageContribution[],
+): ResolvedDamageContribution[] {
+  const allocations = new Map<string, number>();
+  const targetIds = [...new Set(contributions.map((contribution) => contribution.targetId))];
+  for (const targetId of targetIds) {
+    const target = units.find((unit) => unit.id === targetId);
+    if (!target) continue;
+    const damage = contributions
+      .filter((contribution) => contribution.targetId === targetId)
+      .map((contribution) => ({ id: contribution.id, amount: contribution.potential }));
+    const targetAllocations = allocateCappedAmounts(damage, target.hp + target.shield);
+    for (const [id, amount] of targetAllocations) allocations.set(id, amount);
+  }
+  return contributions.map((contribution) => ({
+    ...contribution,
+    amount: allocations.get(contribution.id) ?? 0,
+  }));
+}
+
+function abilityEventText(
+  actor: CombatUnit,
+  targetIds: readonly string[],
+  units: CombatUnit[],
+  amount: number,
+): string {
+  const hero = HEROES[actor.heroId];
+  if (actor.heroId === "boitata") {
+    return `${combatName(actor)} coils into ${hero.ability.name} and gains ${Math.round(amount)} shield.`;
+  }
+  const targetNames = targetIds.flatMap((id) => {
+    const target = units.find((unit) => unit.id === id);
+    return target ? [combatName(target)] : [];
+  });
+  return `${combatName(actor)} casts ${hero.ability.name}${targetNames.length ? ` on ${targetNames.join(" and ")}` : ""}${amount ? ` for ${Math.round(amount)} impact` : ""}.`;
+}
+
+function resolveCombatBatch(
+  actions: PlannedCombatAction[],
+  units: CombatUnit[],
+  events: CombatEvent[],
+  turn: number,
+  timestamp: number,
+): void {
+  const aliveAtStart = new Set(units.filter((unit) => unit.alive).map((unit) => unit.id));
+  const abilityActions = actions.filter(
+    (action): action is Extract<PlannedCombatAction, { kind: "ability" }> => action.kind === "ability",
+  );
+
+  // Every cast was already committed by the frozen plan. Reset all caster Mana
+  // before drains resolve so same-time cast order cannot erase or preserve one.
+  for (const action of abilityActions) {
+    const actor = units.find((unit) => unit.id === action.actorId);
+    if (actor) actor.mana = 0;
+  }
+
+  const support = baseSupportContributions(actions);
+  const supportPreview = cloneCombatUnits(units);
+  for (const contribution of resolveSupportContributions(supportPreview, support)) {
+    applySupportContribution(supportPreview, contribution);
+  }
+  const preliminaryDamage = resolveDamageContributions(
+    supportPreview,
+    damageContributions(actions, supportPreview),
+  );
+  for (const action of abilityActions) {
+    if (action.values.selfHealPercent <= 0) continue;
+    const dealt = preliminaryDamage
+      .filter((contribution) => contribution.actorId === action.actorId)
+      .reduce((total, contribution) => total + contribution.amount, 0);
+    const healing = Math.round(dealt * (action.values.selfHealPercent / 100));
+    if (healing <= 0) continue;
+    support.push({
+      id: `${action.actorId}-support-lifesteal`,
+      actorId: action.actorId,
+      targetId: action.actorId,
+      healing,
+      shield: 0,
+      fireWallShield: 0,
+      primary: false,
+    });
+  }
+
+  const resolvedSupport = resolveSupportContributions(units, support);
+  const supportByActor = new Map<string, ResolvedSupportContribution[]>();
+  for (const contribution of resolvedSupport) {
+    const actorSupport = supportByActor.get(contribution.actorId) ?? [];
+    actorSupport.push(contribution);
+    supportByActor.set(contribution.actorId, actorSupport);
+  }
+
+  // Support resolves before simultaneous damage. Applying it one actor at a
+  // time preserves cumulative snapshots and exact per-character statistics.
+  for (const action of abilityActions) {
+    const actor = units.find((unit) => unit.id === action.actorId)!;
+    const actorSupport = supportByActor.get(action.actorId) ?? [];
+    const healing = actorSupport.reduce((total, contribution) => total + contribution.healingApplied, 0);
+    const shield = actorSupport.reduce((total, contribution) => total + contribution.shield, 0);
+    const primaryAmount = actorSupport
+      .filter((contribution) => contribution.primary)
+      .reduce((total, contribution) => total + contribution.healingApplied + contribution.shield, 0);
+    const primaryAmounts = Object.fromEntries(
+      action.targetIds.map((targetId) => [
+        targetId,
+        actorSupport
+          .filter((contribution) => contribution.primary && contribution.targetId === targetId)
+          .reduce((total, contribution) => total + contribution.healingApplied + contribution.shield, 0),
+      ]),
+    );
+    if (action.values.damage <= 0) {
+      for (const contribution of actorSupport) applySupportContribution(units, contribution);
+      addEvent(
+        events,
+        units,
+        turn,
+        timestamp,
+        "ability",
+        abilityEventText(actor, action.targetIds, units, primaryAmount),
+        {
+          actorId: actor.id,
+          targetIds: action.targetIds,
+          amount: primaryAmount,
+          amounts: primaryAmounts,
+        },
+      );
+      continue;
     }
-  } else if (actor.heroId === "tide") {
-    const target = allies.sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
-    if (target) {
-      const impact = healUnit(target, values.healing);
-      target.shield += values.shield;
-      addTarget(target, impact);
+    if (healing > 0) {
+      for (const contribution of actorSupport) applyHealingContribution(units, contribution);
+      const recipients = [...new Set(actorSupport
+        .filter((contribution) => contribution.healingApplied > 0)
+        .map((contribution) => contribution.targetId))];
+      const amounts = Object.fromEntries(recipients.map((targetId) => [
+        targetId,
+        actorSupport
+          .filter((contribution) => contribution.targetId === targetId)
+          .reduce((total, contribution) => total + contribution.healingApplied, 0),
+      ]));
+      addEvent(
+        events,
+        units,
+        turn,
+        timestamp,
+        "heal",
+        `${combatName(actor)} prepares ${healing} healing before the strike.`,
+        {
+          actorId: actor.id,
+          targetIds: recipients,
+          amount: healing,
+          amounts,
+        },
+      );
     }
-  } else if (actor.heroId === "vesper") {
-    const target = enemies.sort((a, b) => b.mana - a.mana || a.hp - b.hp)[0];
-    if (target) {
-      const impact = damageUnit(target, values.damage);
-      target.mana = Math.max(0, target.mana - values.manaDrain);
-      target.stunned = Math.max(target.stunned, values.stunTurns);
-      addTarget(target, impact);
-    }
-  } else if (actor.heroId === "piper") {
-    for (const target of enemies.sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp).slice(0, values.maxTargets)) {
-      const impact = damageUnit(target, values.damage);
-      target.mana = Math.max(0, target.mana - values.manaDrain);
-      addTarget(target, impact);
+    if (shield > 0) {
+      for (const contribution of actorSupport) applyShieldContribution(units, contribution);
+      const recipients = [...new Set(actorSupport
+        .filter((contribution) => contribution.shield > 0)
+        .map((contribution) => contribution.targetId))];
+      const amounts = Object.fromEntries(recipients.map((targetId) => [
+        targetId,
+        actorSupport
+          .filter((contribution) => contribution.targetId === targetId)
+          .reduce((total, contribution) => total + contribution.shield, 0),
+      ]));
+      addEvent(
+        events,
+        units,
+        turn,
+        timestamp,
+        "shield",
+        `${combatName(actor)} prepares ${shield} shield before the strike.`,
+        {
+          actorId: actor.id,
+          targetIds: recipients,
+          amount: shield,
+          amounts,
+        },
+      );
     }
   }
 
-  if (values.teamHealing > 0) {
-    for (const ally of allies) healUnit(ally, values.teamHealing);
+  const resolvedDamage = resolveDamageContributions(units, damageContributions(actions, units));
+  const damageByActor = new Map<string, ResolvedDamageContribution[]>();
+  for (const contribution of resolvedDamage) {
+    const actorDamage = damageByActor.get(contribution.actorId) ?? [];
+    actorDamage.push(contribution);
+    damageByActor.set(contribution.actorId, actorDamage);
   }
-  const abilityText = actor.heroId === "boitata"
-    ? `${combatName(actor)} coils into ${hero.ability.name} and gains ${Math.round(amount)} shield.`
-    : `${combatName(actor)} casts ${hero.ability.name}${targets.length ? ` on ${targets.map(combatName).join(" and ")}` : ""}${amount ? ` for ${Math.round(amount)} impact` : ""}.`;
-  addEvent(
-    events,
-    units,
-    turn,
-    timestamp,
-    "ability",
-    abilityText,
-    { actorId: actor.id, targetIds: targets.map((target) => target.id), amount, amounts },
-  );
-  const defeatedEnemies = targets.filter((unit) => unit.side !== actor.side && !unit.alive);
-  if (defeatedEnemies.length > 0) {
-    actor.mana = Math.min(actor.maxMana, actor.mana + values.takedownMana * defeatedEnemies.length);
+
+  for (const action of actions) {
+    const actor = units.find((unit) => unit.id === action.actorId)!;
+    if (action.kind === "stunned") {
+      addEvent(
+        events,
+        units,
+        turn,
+        timestamp,
+        "move",
+        `${combatName(actor)} is stunned and skips the action.`,
+        { actorId: actor.id },
+      );
+      continue;
+    }
+    if (action.kind === "move") {
+      const targetIds = action.targetId ? [action.targetId] : undefined;
+      if (action.destination !== null) actor.position = action.destination;
+      addEvent(
+        events,
+        units,
+        turn,
+        timestamp,
+        "move",
+        action.destination !== null ? `${combatName(actor)} advances.` : `${combatName(actor)} holds position.`,
+        { actorId: actor.id, targetIds },
+      );
+      continue;
+    }
+
+    const actorDamage = damageByActor.get(action.actorId) ?? [];
+    if (action.kind === "attack") {
+      const contribution = actorDamage[0];
+      const target = contribution
+        ? units.find((unit) => unit.id === contribution.targetId)
+        : null;
+      const amount = contribution?.amount ?? 0;
+      if (target) damageUnit(target, amount, true);
+      addEvent(
+        events,
+        units,
+        turn,
+        timestamp,
+        "attack",
+        target
+          ? `${combatName(actor)} strikes ${combatName(target)} for ${amount} damage.`
+          : `${combatName(actor)} strikes at an empty space.`,
+        {
+          actorId: actor.id,
+          targetIds: target ? [target.id] : [],
+          amount,
+        },
+      );
+      continue;
+    }
+
+    if (action.values.damage <= 0) continue;
+    const amounts: Record<string, number> = {};
+    let amount = 0;
+    for (const contribution of actorDamage) {
+      const target = units.find((unit) => unit.id === contribution.targetId);
+      if (!target) continue;
+      damageUnit(target, contribution.amount, true);
+      target.mana = Math.max(0, target.mana - contribution.manaDrain);
+      target.stunned = Math.max(target.stunned, contribution.stunTurns);
+      amounts[target.id] = contribution.amount;
+      amount += contribution.amount;
+    }
+    if (action.destination !== null) actor.position = action.destination;
+    addEvent(
+      events,
+      units,
+      turn,
+      timestamp,
+      "ability",
+      abilityEventText(actor, action.targetIds, units, amount),
+      {
+        actorId: actor.id,
+        targetIds: action.targetIds,
+        amount,
+        amounts,
+      },
+    );
   }
-  for (const target of defeatedEnemies) {
+
+  const newlyDefeated = units
+    .filter((unit) => aliveAtStart.has(unit.id) && !unit.alive)
+    .sort((a, b) => a.id.localeCompare(b.id));
+  for (const target of newlyDefeated) {
+    const ownerDamage = resolvedDamage
+      .filter((contribution) => contribution.targetId === target.id && contribution.amount > 0)
+      .sort((a, b) => b.amount - a.amount || a.actorId.localeCompare(b.actorId))[0];
+    if (!ownerDamage) continue;
+    const owner = units.find((unit) => unit.id === ownerDamage.actorId);
+    if (!owner) continue;
+    const ownerAction = actions.find((action) => action.actorId === owner.id);
+    const takedownMana = ownerAction?.kind === "ability"
+      ? ownerAction.values.takedownMana
+      : tierValue(
+          "nightbound",
+          traitCountsForSide(units, owner.side).nightbound,
+          [20, 35],
+        );
+    owner.mana = Math.min(owner.maxMana, owner.mana + takedownMana);
     addEvent(events, units, turn, timestamp, "defeat", `${combatName(target)} is defeated.`, {
-      actorId: actor.id,
+      actorId: owner.id,
       targetIds: [target.id],
     });
   }
@@ -1890,6 +2394,7 @@ export function resolveCombat(state: GameState): GameActionResult {
     `Round ${state.round} begins. ${deployed.length} allies face ${state.enemyUnits.length} enemies.`,
   );
   let turn = 0;
+  let actionCount = 0;
   let elapsedTime = 0;
   let reachedTimeLimit = false;
   const completedOpportunities = new Map(units.map((unit) => [unit.id, 0]));
@@ -1898,21 +2403,16 @@ export function resolveCombat(state: GameState): GameActionResult {
   );
 
   while (
-    turn < MAX_COMBAT_ACTIONS &&
+    actionCount < MAX_COMBAT_ACTIONS &&
     units.some((unit) => unit.side === "player" && unit.alive) &&
     units.some((unit) => unit.side === "enemy" && unit.alive)
   ) {
-    const actor = units
+    const actionTime = units
       .filter((unit) => unit.alive)
-      .sort((a, b) => {
-        const timeDelta = (nextActionAt.get(a.id) ?? Infinity) - (nextActionAt.get(b.id) ?? Infinity);
-        if (timeDelta !== 0) return timeDelta;
-        if (a.side !== b.side) return a.side === "player" ? -1 : 1;
-        return a.id.localeCompare(b.id);
-      })[0];
-    if (!actor) break;
-
-    const actionTime = nextActionAt.get(actor.id) ?? Infinity;
+      .reduce(
+        (earliest, unit) => Math.min(earliest, nextActionAt.get(unit.id) ?? Infinity),
+        Infinity,
+      );
     if (actionTime > COMBAT_DURATION_SECONDS) {
       regenerateMana(units, COMBAT_DURATION_SECONDS - elapsedTime);
       elapsedTime = COMBAT_DURATION_SECONDS;
@@ -1922,67 +2422,45 @@ export function resolveCombat(state: GameState): GameActionResult {
     regenerateMana(units, actionTime - elapsedTime);
     elapsedTime = actionTime;
     turn += 1;
-    const actorOpportunities = (completedOpportunities.get(actor.id) ?? 0) + 1;
-    completedOpportunities.set(actor.id, actorOpportunities);
-    nextActionAt.set(actor.id, nextOpportunityTime(actor, actorOpportunities));
-
-    if (actor.stunned > 0) {
-      actor.stunned -= 1;
-      addEvent(
-        events,
-        units,
-        turn,
-        elapsedTime,
-        "move",
-        `${combatName(actor)} is stunned and skips the action.`,
-        { actorId: actor.id },
-      );
-      continue;
-    }
-    if (actor.mana >= actor.maxMana) {
-      castAbility(actor, units, events, turn, elapsedTime);
-      continue;
-    }
-    const target = nearestEnemy(actor, units);
-    if (!target) break;
-    if (manhattan(actor.position, target.position) > actor.range) {
-      const step = openStepToward(actor, target, units);
-      if (step !== null) {
-        actor.position = step;
-        addEvent(events, units, turn, elapsedTime, "move", `${combatName(actor)} advances.`, {
-          actorId: actor.id,
-          targetIds: [target.id],
-        });
-      } else {
-        addEvent(events, units, turn, elapsedTime, "move", `${combatName(actor)} holds position.`, {
-          actorId: actor.id,
-        });
-      }
-      continue;
-    }
-
-    const damage = damageUnit(target, actor.attack);
-    addEvent(
-      events,
-      units,
-      turn,
-      elapsedTime,
-      "attack",
-      `${combatName(actor)} strikes ${combatName(target)} for ${damage} damage.`,
-      {
-        actorId: actor.id,
-        targetIds: [target.id],
-        amount: damage,
-      },
-    );
-    if (!target.alive) {
-      const counts = traitCountsForSide(units, actor.side);
-      actor.mana = Math.min(actor.maxMana, actor.mana + tierValue("nightbound", counts.nightbound, [20, 35]));
-      addEvent(events, units, turn, elapsedTime, "defeat", `${combatName(target)} is defeated.`, {
-        actorId: actor.id,
-        targetIds: [target.id],
+    const batchActors = units
+      .filter((unit) => (
+        unit.alive && Math.abs((nextActionAt.get(unit.id) ?? Infinity) - actionTime) <= COMBAT_EPSILON
+      ))
+      .sort((a, b) => {
+        if (a.side !== b.side) return a.side === "player" ? -1 : 1;
+        return a.id.localeCompare(b.id);
       });
+    if (batchActors.length === 0) break;
+
+    const planningUnits = cloneCombatUnits(units);
+    const reservedPositions = new Set<number>();
+    const plannedByActorId = new Map([...batchActors]
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((actor) => {
+        const planningActor = planningUnits.find((unit) => unit.id === actor.id)!;
+        return [
+          actor.id,
+          planCombatAction(planningActor, planningUnits, reservedPositions),
+        ] as const;
+      }));
+    const plannedActions = batchActors.map((actor) => plannedByActorId.get(actor.id)!);
+
+    for (const actor of batchActors) {
+      const actorOpportunities = (completedOpportunities.get(actor.id) ?? 0) + 1;
+      completedOpportunities.set(actor.id, actorOpportunities);
+      nextActionAt.set(actor.id, nextOpportunityTime(actor, actorOpportunities));
     }
+    actionCount += batchActors.length;
+
+    // Consume pre-existing stuns before resolving this batch so a stun applied
+    // during the batch remains available for the target's next opportunity.
+    for (const action of plannedActions) {
+      if (action.kind !== "stunned") continue;
+      const actor = units.find((unit) => unit.id === action.actorId)!;
+      actor.stunned = Math.max(0, actor.stunned - 1);
+    }
+
+    resolveCombatBatch(plannedActions, units, events, turn, elapsedTime);
   }
 
   const playerAlive = units.filter((unit) => unit.side === "player" && unit.alive);
@@ -1990,7 +2468,7 @@ export function resolveCombat(state: GameState): GameActionResult {
   const playerHealth = playerAlive.reduce((total, unit) => total + unit.hp, 0);
   const enemyHealth = enemyAlive.reduce((total, unit) => total + unit.hp, 0);
   const outcome: Outcome = playerAlive.length > 0 && (enemyAlive.length === 0 || playerHealth >= enemyHealth) ? "victory" : "defeat";
-  const reachedActionLimit = turn >= MAX_COMBAT_ACTIONS && playerAlive.length > 0 && enemyAlive.length > 0;
+  const reachedActionLimit = actionCount >= MAX_COMBAT_ACTIONS && playerAlive.length > 0 && enemyAlive.length > 0;
   const reachedCombatLimit = reachedTimeLimit || reachedActionLimit;
   const playerDamage =
     outcome === "defeat" ? Math.max(3, enemyAlive.reduce((total, unit) => total + unit.stars * 2 + 1, 0)) : 0;

@@ -71,7 +71,8 @@ const MOBILE_BOARD_HEIGHT_RATIO = 6.3 / 8;
 const CRAFTED_ITEM_DRAG_TYPE = "application/x-hexfall-crafted-item";
 const ITEM_COMPONENT_DRAG_TYPE = "application/x-hexfall-item-component";
 const LEGACY_COMBAT_EVENT_SECONDS = 0.82;
-const SAME_TIME_EVENT_SECONDS = 0.24;
+const COMBAT_TIMESTAMP_EPSILON_SECONDS = 0.0005;
+const MIN_COMBAT_MOMENT_SECONDS = 0.08;
 const DEFAULT_COMBAT_BEAT_SECONDS = 0.68;
 
 type LoadoutDrag =
@@ -115,6 +116,26 @@ type DisplayUnit = {
 
 type CombatEffectKind = "attack" | "ability" | "heal" | "shield";
 
+type CombatMoment = {
+  key: string;
+  timestamp: number;
+  events: CombatEvent[];
+  snapshotEvent: CombatEvent;
+};
+
+type CombatLinkCue = {
+  key: string;
+  kind: CombatEffectKind | "move";
+  style: CSSProperties;
+};
+
+type SolStarfallCue = {
+  event: CombatEvent;
+  actor: CombatUnit;
+  targets: CombatUnit[];
+  style: CSSProperties;
+};
+
 function clampPercent(value: number, maximum: number): number {
   if (!Number.isFinite(value) || !Number.isFinite(maximum) || maximum <= 0) return 0;
   return Math.min(100, Math.max(0, (value / maximum) * 100));
@@ -133,12 +154,32 @@ function combatEventTimestamp(event: CombatEvent, index: number): number {
   return Math.max(0, index * LEGACY_COMBAT_EVENT_SECONDS);
 }
 
-function combatEventInterval(currentTimestamp: number, nextTimestamp: number | undefined): number {
+function groupCombatEventsByTimestamp(events: readonly CombatEvent[]): CombatMoment[] {
+  const moments: CombatMoment[] = [];
+  events.forEach((event, index) => {
+    const timestamp = combatEventTimestamp(event, index);
+    const current = moments.at(-1);
+    if (current && Math.abs(current.timestamp - timestamp) <= COMBAT_TIMESTAMP_EPSILON_SECONDS) {
+      current.events.push(event);
+      current.snapshotEvent = event;
+      return;
+    }
+    moments.push({
+      key: `${timestamp.toFixed(3)}:${event.id}`,
+      timestamp,
+      events: [event],
+      snapshotEvent: event,
+    });
+  });
+  return moments;
+}
+
+function combatMomentInterval(currentTimestamp: number, nextTimestamp: number | undefined): number {
   if (nextTimestamp === undefined) return DEFAULT_COMBAT_BEAT_SECONDS;
   const interval = nextTimestamp - currentTimestamp;
   return Number.isFinite(interval) && interval > 0
-    ? Math.max(SAME_TIME_EVENT_SECONDS, interval)
-    : SAME_TIME_EVENT_SECONDS;
+    ? Math.max(MIN_COMBAT_MOMENT_SECONDS, interval)
+    : MIN_COMBAT_MOMENT_SECONDS;
 }
 
 function formatCombatTime(seconds: number): string {
@@ -152,6 +193,8 @@ function formatRate(value: number): string {
 
 function combatEffectKind(event: CombatEvent | null): CombatEffectKind | null {
   if (event?.type === "attack") return "attack";
+  if (event?.type === "heal") return "heal";
+  if (event?.type === "shield") return "shield";
   if (event?.type !== "ability") return null;
   const actor = event.actorId ? event.snapshot.find((unit) => unit.id === event.actorId) : null;
   if (actor?.heroId === "boitata") return "shield";
@@ -373,8 +416,8 @@ function UnitToken({
   unit,
   selected,
   highlighted,
-  currentEvent,
-  previousEvent,
+  currentEvents,
+  previousSnapshotEvent,
   draggable,
   onDragStart,
   onDragEnd,
@@ -383,8 +426,8 @@ function UnitToken({
   unit: DisplayUnit;
   selected: boolean;
   highlighted: boolean;
-  currentEvent: CombatEvent | null;
-  previousEvent: CombatEvent | null;
+  currentEvents: readonly CombatEvent[];
+  previousSnapshotEvent: CombatEvent | null;
   draggable: boolean;
   onDragStart?: (event: DragEvent<HTMLDivElement>) => void;
   onDragEnd?: (event: DragEvent<HTMLDivElement>) => void;
@@ -392,37 +435,65 @@ function UnitToken({
 }) {
   const hero = HEROES[unit.heroId];
   const isCreatureToken = unit.heroId === "boitata";
-  const isTarget = currentEvent?.targetIds?.includes(unit.id) ?? false;
-  const effectKind = combatEffectKind(currentEvent);
-  const eventActor = currentEvent?.actorId
-    ? currentEvent.snapshot.find((candidate) => candidate.id === currentEvent.actorId) ?? null
-    : null;
-  const isSolStarfall = currentEvent?.type === "ability" && eventActor?.heroId === "sol";
-  const isActor = !!effectKind && currentEvent?.actorId === unit.id;
-  const isHealingAbility = effectKind === "heal";
-  const isDamaged = isTarget && (effectKind === "attack" || effectKind === "ability");
-  const isHealed = isTarget && effectKind === "heal";
-  const isShielded = isTarget && effectKind === "shield";
-  const previousUnit = previousEvent?.snapshot.find((candidate) => candidate.id === unit.id) ?? null;
+  const actorEvent = currentEvents.find((event) =>
+    event.actorId === unit.id
+      && (event.type === "move" || event.type === "attack" || event.type === "ability"),
+  ) ?? currentEvents.find((event) => event.actorId === unit.id && combatEffectKind(event) !== null) ?? null;
+  const actorEffectKind = combatEffectKind(actorEvent);
+  const isActor = !!actorEvent;
+  const previousUnit = previousSnapshotEvent?.snapshot.find((candidate) => candidate.id === unit.id) ?? null;
+  const isMoveEvent = actorEvent?.type === "move";
+  const didMove = isMoveEvent && previousUnit !== null && previousUnit.position !== unit.position;
+  const isStunnedAction = isMoveEvent && actorEvent.text.includes("stunned");
+  const targetEffects = currentEvents.flatMap((event) => {
+    const kind = combatEffectKind(event);
+    return kind && event.targetIds?.includes(unit.id) ? [{ event, kind }] : [];
+  });
+  const isDamaged = targetEffects.some(({ kind }) => kind === "attack" || kind === "ability");
+  const isHealed = targetEffects.some(({ kind }) => kind === "heal");
+  const isShielded = targetEffects.some(({ kind }) => kind === "shield");
+  const isSolStarfall = currentEvents.some((event) => {
+    if (event.type !== "ability" || !event.targetIds?.includes(unit.id) || !event.actorId) return false;
+    return event.snapshot.find((candidate) => candidate.id === event.actorId)?.heroId === "sol";
+  });
+  const actorIsSol = actorEvent?.type === "ability" && actorEvent.actorId
+    ? actorEvent.snapshot.find((candidate) => candidate.id === actorEvent.actorId)?.heroId === "sol"
+    : false;
   const shieldLost = Math.max(0, (previousUnit?.shield ?? 0) - unit.shield);
   const fireWallShieldLost = Math.max(0, (previousUnit?.fireWallShield ?? 0) - unit.fireWallShield);
-  const healthLost = Math.max(0, (previousUnit?.hp ?? unit.hp) - unit.hp);
   const fireWallBroke = !!previousUnit && previousUnit.fireWallShield > 0 && unit.fireWallShield === 0;
   const hasFireWall = unit.heroId === "boitata" && (unit.fireWallShield > 0 || fireWallBroke || isShielded);
-  const targetAmount = currentEvent?.amounts?.[unit.id] ?? currentEvent?.amount;
-  const visibleDamage = previousUnit ? healthLost : targetAmount ?? 0;
-  const feedback = isShielded && targetAmount
-    ? `+${targetAmount} SHIELD`
-    : isHealed && targetAmount
-      ? `+${targetAmount}`
-      : isDamaged && visibleDamage > 0
-        ? `−${visibleDamage}`
-        : null;
+  const feedback = targetEffects.flatMap(({ event, kind }) => {
+    const targetAmount = event.amounts?.[unit.id]
+      ?? (event.targetIds?.length === 1 ? event.amount : undefined);
+    if (!targetAmount || targetAmount <= 0) return [];
+    return [{
+      key: `${event.id}:${unit.id}`,
+      kind,
+      text: kind === "shield" ? `+${targetAmount} SHIELD` : kind === "heal" ? `+${targetAmount}` : `−${targetAmount}`,
+      starfall: event.type === "ability" && event.actorId
+        ? event.snapshot.find((candidate) => candidate.id === event.actorId)?.heroId === "sol"
+        : false,
+    }];
+  });
   const blockFeedback = shieldLost > 0 ? `BLOCK ${shieldLost}` : null;
+  const actorLabel = isMoveEvent
+    ? didMove
+      ? "MOVE"
+      : isStunnedAction
+        ? "STUNNED"
+        : "HOLD"
+    : actorIsSol
+      ? "STARFALL"
+      : actorEffectKind === "shield"
+        ? "WALL"
+        : actorEvent?.type === "ability"
+          ? "CAST"
+          : "ATTACK";
 
   return (
     <div
-      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${isActor ? `unit-event-actor unit-event-actor-${effectKind}` : ""} ${isActor && isSolStarfall ? "unit-event-actor-sol" : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isDamaged && isSolStarfall ? "unit-impact-starfall" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""} ${loadoutDropStatus ? `unit-loadout-drop-${loadoutDropStatus}` : ""}`}
+      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${actorEffectKind ? `unit-event-actor unit-event-actor-${actorEffectKind}` : ""} ${isMoveEvent ? `unit-event-actor ${didMove ? "unit-event-move" : "unit-event-wait"}` : ""} ${actorIsSol ? "unit-event-actor-sol" : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isDamaged && isSolStarfall ? "unit-impact-starfall" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""} ${loadoutDropStatus ? `unit-loadout-drop-${loadoutDropStatus}` : ""}`}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
@@ -440,7 +511,7 @@ function UnitToken({
         ))}
       </span>
       <span className="unit-name">{hero.name}</span>
-      {isActor ? <span className="combat-role" aria-hidden="true">{isSolStarfall ? "STARFALL" : effectKind === "shield" ? "WALL" : currentEvent?.type === "ability" ? "CAST" : "ATTACK"}</span> : null}
+      {isActor ? <span className="combat-role" aria-hidden="true">{actorLabel}</span> : null}
       <span className="unit-bars">
         <span
           className="meter meter-life"
@@ -456,7 +527,15 @@ function UnitToken({
         ><span className="meter-fill" /></span>
       </span>
       {unit.stunned > 0 ? <span className="status-mark" aria-label="Silenced">×</span> : null}
-      {feedback ? <span className={`floating-text ${isHealingAbility ? "floating-heal" : isShielded ? "floating-shield" : "floating-damage"} ${isDamaged && isSolStarfall ? "floating-starfall" : ""}`}>{feedback}</span> : null}
+      {feedback.map((entry, index) => (
+        <span
+          className={`floating-text ${entry.kind === "heal" ? "floating-heal" : entry.kind === "shield" ? "floating-shield" : "floating-damage"} ${entry.starfall ? "floating-starfall" : ""}`}
+          key={entry.key}
+          style={{ "--feedback-offset": `${index * 12}px` } as CSSProperties}
+        >
+          {entry.text}
+        </span>
+      ))}
       {blockFeedback ? <span className="floating-text floating-block">{blockFeedback}</span> : null}
     </div>
   );
@@ -545,9 +624,10 @@ export function GameClient() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [highlightedTrait, setHighlightedTrait] = useState<TraitId | null>(null);
   const [toast, setToast] = useState("Welcome to HEXFALL. Set your formation, then begin battle.");
-  const [combatIndex, setCombatIndex] = useState(0);
+  const [combatMomentIndex, setCombatMomentIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [steppedMomentKey, setSteppedMomentKey] = useState<string | null>(null);
   const [boardHeightRatio, setBoardHeightRatio] = useState(DESKTOP_BOARD_HEIGHT_RATIO);
   const [boitata3DReady, setBoitata3DReady] = useState(false);
   const [tutorialStage, setTutorialStage] = useState(0);
@@ -557,7 +637,7 @@ export function GameClient() {
   const [selectedCraftedItemId, setSelectedCraftedItemId] = useState<string | null>(null);
   const [draggedLoadout, setDraggedLoadout] = useState<LoadoutDrag | null>(null);
   const [draggedUnitId, setDraggedUnitId] = useState<string | null>(null);
-  const playbackEventIdRef = useRef<string | null>(null);
+  const playbackMomentKeyRef = useRef<string | null>(null);
   const playbackRemainingSecondsRef = useRef<number | null>(null);
   const forgeToggleRef = useRef<HTMLButtonElement>(null);
   const forgeDrawerRef = useRef<HTMLElement>(null);
@@ -607,47 +687,63 @@ export function GameClient() {
   }, []);
 
   const combatEvents = useMemo(() => game.combatReport?.events ?? [], [game.combatReport]);
-  const currentEvent = game.phase === "combat" ? combatEvents[Math.min(combatIndex, Math.max(0, combatEvents.length - 1))] ?? null : null;
-  const previousEvent = game.phase === "combat" && combatIndex > 0 ? combatEvents[combatIndex - 1] ?? null : null;
-  const atCombatEnd = game.phase === "combat" && combatEvents.length > 0 && combatIndex >= combatEvents.length - 1;
-  const currentEffectKind = combatEffectKind(currentEvent);
-  const combatTimestamps = useMemo(
-    () => combatEvents.map((event, index) => combatEventTimestamp(event, index)),
+  const combatMoments = useMemo(
+    () => groupCombatEventsByTimestamp(combatEvents),
     [combatEvents],
   );
-  const currentCombatTime = combatTimestamps[combatIndex] ?? 0;
-  const totalCombatTime = combatTimestamps.reduce((maximum, timestamp) => Math.max(maximum, timestamp), 0);
-  const currentEventInterval = combatEventInterval(currentCombatTime, combatTimestamps[combatIndex + 1]);
-  const combatLogStart = Math.max(0, combatIndex - 5);
+  const currentMoment = game.phase === "combat"
+    ? combatMoments[Math.min(combatMomentIndex, Math.max(0, combatMoments.length - 1))] ?? null
+    : null;
+  const previousMoment = game.phase === "combat" && combatMomentIndex > 0
+    ? combatMoments[combatMomentIndex - 1] ?? null
+    : null;
+  const currentEvents = currentMoment?.events ?? [];
+  const currentSnapshotEvent = currentMoment?.snapshotEvent ?? null;
+  const previousSnapshotEvent = previousMoment?.snapshotEvent ?? null;
+  const atCombatEnd = game.phase === "combat"
+    && (combatMoments.length === 0 || combatMomentIndex >= combatMoments.length - 1);
+  const currentCombatTime = currentMoment?.timestamp ?? 0;
+  const totalCombatTime = combatMoments.at(-1)?.timestamp ?? 0;
+  const currentMomentInterval = combatMomentInterval(
+    currentCombatTime,
+    combatMoments[combatMomentIndex + 1]?.timestamp,
+  );
+  const combatLogStart = Math.max(0, combatMomentIndex - 5);
+  const visibleCombatMoments = combatMoments.slice(combatLogStart, combatMomentIndex + 1);
+  const isSteppedMoment = !playing && steppedMomentKey !== null && currentMoment?.key === steppedMomentKey;
+  const currentMomentActionCount = currentEvents.filter((event) =>
+    event.type === "move" || event.type === "attack" || event.type === "ability",
+  ).length;
 
   useEffect(() => {
-    if (game.phase !== "combat" || atCombatEnd || !currentEvent) {
-      playbackEventIdRef.current = null;
+    if (game.phase !== "combat" || atCombatEnd || !currentMoment) {
+      playbackMomentKeyRef.current = null;
       playbackRemainingSecondsRef.current = null;
       return;
     }
 
-    if (playbackEventIdRef.current !== currentEvent.id) {
-      playbackEventIdRef.current = currentEvent.id;
-      playbackRemainingSecondsRef.current = currentEventInterval;
+    if (playbackMomentKeyRef.current !== currentMoment.key) {
+      playbackMomentKeyRef.current = currentMoment.key;
+      playbackRemainingSecondsRef.current = currentMomentInterval;
     }
     if (!playing) return;
 
-    const remainingSeconds = playbackRemainingSecondsRef.current ?? currentEventInterval;
+    const remainingSeconds = playbackRemainingSecondsRef.current ?? currentMomentInterval;
     const startedAt = performance.now();
     const timeout = window.setTimeout(() => {
-      playbackEventIdRef.current = null;
+      playbackMomentKeyRef.current = null;
       playbackRemainingSecondsRef.current = null;
-      setCombatIndex((index) => Math.min(index + 1, combatEvents.length - 1));
+      setSteppedMomentKey(null);
+      setCombatMomentIndex((index) => Math.min(index + 1, combatMoments.length - 1));
     }, Math.max(1, Math.round((remainingSeconds * 1000) / speed)));
 
     return () => {
       window.clearTimeout(timeout);
-      if (playbackEventIdRef.current !== currentEvent.id) return;
+      if (playbackMomentKeyRef.current !== currentMoment.key) return;
       const elapsedSeconds = ((performance.now() - startedAt) / 1000) * speed;
       playbackRemainingSecondsRef.current = Math.max(0, remainingSeconds - elapsedSeconds);
     };
-  }, [game.phase, playing, atCombatEnd, currentEvent, currentEventInterval, combatEvents.length, speed]);
+  }, [game.phase, playing, atCombatEnd, currentMoment, currentMomentInterval, combatMoments.length, speed]);
 
   useEffect(() => {
     const handleKey = (event: globalThis.KeyboardEvent) => {
@@ -663,25 +759,30 @@ export function GameClient() {
       }
       if (game.phase === "combat" && !atCombatEnd && !isFormControl && event.code === "Space") {
         event.preventDefault();
+        setSteppedMomentKey(null);
         setPlaying((value) => !value);
       }
-      if (game.phase === "combat" && !isFormControl && event.key === "ArrowRight") {
+      if (game.phase === "combat" && !atCombatEnd && !isFormControl && event.key === "ArrowRight") {
         event.preventDefault();
+        const nextIndex = Math.min(combatMomentIndex + 1, combatMoments.length - 1);
+        playbackMomentKeyRef.current = null;
+        playbackRemainingSecondsRef.current = null;
         setPlaying(false);
-        setCombatIndex((index) => Math.min(index + 1, combatEvents.length - 1));
+        setSteppedMomentKey(combatMoments[nextIndex]?.key ?? null);
+        setCombatMomentIndex(nextIndex);
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [game.phase, atCombatEnd, combatEvents.length, forgeOpen]);
+  }, [game.phase, atCombatEnd, combatMomentIndex, combatMoments, forgeOpen]);
 
   const displayUnits = useMemo<DisplayUnit[]>(() => {
-    if (game.phase === "combat" && currentEvent) {
+    if (game.phase === "combat" && currentSnapshotEvent) {
       const persistent = new Map([...game.units, ...game.enemyUnits].map((unit) => [unit.id, unit]));
-      return currentEvent.snapshot.map((unit) => combatDisplay(unit, persistent.get(unit.id)));
+      return currentSnapshotEvent.snapshot.map((unit) => combatDisplay(unit, persistent.get(unit.id)));
     }
     return [...game.units, ...game.enemyUnits].map(persistentDisplay);
-  }, [game.phase, game.units, game.enemyUnits, currentEvent]);
+  }, [game.phase, game.units, game.enemyUnits, currentSnapshotEvent]);
 
   const boardUnits = displayUnits.filter((unit) => unit.position !== null);
   const boitataBoardUnits = boardUnits.filter((unit) => unit.heroId === "boitata");
@@ -720,35 +821,62 @@ export function GameClient() {
   const interest = getInterest(game.gold);
   const projectedStreak = getStreakBonus(game.streak === 0 ? 1 : game.streak + Math.sign(game.streak));
   const projectedIncome = 5 + interest + projectedStreak;
-  const currentActor = currentEffectKind && currentEvent?.actorId
-    ? currentEvent.snapshot.find((unit) => unit.id === currentEvent.actorId) ?? null
-    : null;
-  const combatLinks = currentActor && currentEvent?.targetIds
-    ? currentEvent.targetIds.flatMap((targetId) => {
-        const target = currentEvent.snapshot.find((unit) => unit.id === targetId);
-        if (!target || target.position === currentActor.position) return [];
-        return [{ targetId, style: combatLinkStyle(currentActor.position, target.position, boardHeightRatio) }];
-      })
-    : [];
-  const isSolStarfall = currentEvent?.type === "ability" && currentActor?.heroId === "sol";
-  const solStarfallTargets = isSolStarfall && currentEvent?.targetIds
-    ? currentEvent.targetIds.flatMap((targetId) => {
-        const target = currentEvent.snapshot.find((unit) => unit.id === targetId);
-        return target ? [target] : [];
-      })
-    : [];
-  const solStarfallStyle = isSolStarfall && currentActor && solStarfallTargets.length
-    ? starfallClusterStyle(
-        currentActor.position,
-        solStarfallTargets.map((target) => target.position),
+  const solStarfalls = currentEvents.flatMap<SolStarfallCue>((event) => {
+    if (event.type !== "ability" || !event.actorId || !event.targetIds?.length) return [];
+    const actor = event.snapshot.find((unit) => unit.id === event.actorId);
+    if (actor?.heroId !== "sol") return [];
+    const targets = event.targetIds.flatMap((targetId) => {
+      const target = event.snapshot.find((unit) => unit.id === targetId);
+      return target ? [target] : [];
+    });
+    if (!targets.length) return [];
+    return [{
+      event,
+      actor,
+      targets,
+      style: starfallClusterStyle(
+        actor.position,
+        targets.map((target) => target.position),
         boardHeightRatio,
-      )
-    : undefined;
+      ),
+    }];
+  });
+  const actionLinks = currentEvents.flatMap<CombatLinkCue>((event) => {
+    const kind = combatEffectKind(event);
+    if (!kind || !event.actorId || !event.targetIds?.length) return [];
+    const actor = event.snapshot.find((unit) => unit.id === event.actorId);
+    if (!actor || (event.type === "ability" && actor.heroId === "sol")) return [];
+    return event.targetIds.flatMap((targetId) => {
+      const target = event.snapshot.find((unit) => unit.id === targetId);
+      if (!target || target.position === actor.position) return [];
+      return [{
+        key: `${event.id}:${targetId}`,
+        kind,
+        style: combatLinkStyle(actor.position, target.position, boardHeightRatio),
+      }];
+    });
+  });
+  const movementLinks = currentEvents.flatMap<CombatLinkCue>((event) => {
+    if (event.type !== "move" || !event.actorId || !currentSnapshotEvent || !previousSnapshotEvent) return [];
+    const before = previousSnapshotEvent.snapshot.find((unit) => unit.id === event.actorId);
+    const after = currentSnapshotEvent.snapshot.find((unit) => unit.id === event.actorId);
+    if (!before || !after || before.position === after.position) return [];
+    return [{
+      key: `${event.id}:move`,
+      kind: "move",
+      style: combatLinkStyle(before.position, after.position, boardHeightRatio),
+    }];
+  });
+  const combatLinks = [...actionLinks, ...movementLinks];
   const combatBeatMilliseconds = Math.min(
     680,
-    Math.max(80, Math.round(currentEventInterval * 820)),
+    Math.max(80, Math.round(currentMomentInterval * 820)),
   );
-  const combatBeatStyle = { "--combat-beat": `${Math.round(combatBeatMilliseconds / speed)}ms` } as CSSProperties;
+  const renderedCombatBeatMilliseconds = Math.round(combatBeatMilliseconds / speed);
+  const combatBeatStyle = {
+    "--combat-beat": `${renderedCombatBeatMilliseconds}ms`,
+    "--combat-preview-delay": isSteppedMoment ? `-${Math.round(renderedCombatBeatMilliseconds * 0.46)}ms` : "0ms",
+  } as CSSProperties;
   const combatStatistics = useMemo(
     () => game.combatReport ? getCombatStatistics(game.combatReport) : null,
     [game.combatReport],
@@ -890,9 +1018,10 @@ export function GameClient() {
   function handleBeginCombat() {
     const result = resolveCombat(game);
     commit(result, () => {
-      playbackEventIdRef.current = null;
+      playbackMomentKeyRef.current = null;
       playbackRemainingSecondsRef.current = null;
-      setCombatIndex(0);
+      setCombatMomentIndex(0);
+      setSteppedMomentKey(null);
       setPlaying(true);
       setForgeOpen(false);
       setSelectedId(null);
@@ -913,9 +1042,10 @@ export function GameClient() {
     setForgeComponents([]);
     setForgeOpen(false);
     setBoitata3DReady(false);
-    playbackEventIdRef.current = null;
+    playbackMomentKeyRef.current = null;
     playbackRemainingSecondsRef.current = null;
-    setCombatIndex(0);
+    setCombatMomentIndex(0);
+    setSteppedMomentKey(null);
     setPlaying(false);
     setToast("A new campaign begins.");
   }
@@ -1005,20 +1135,20 @@ export function GameClient() {
           <div className="board-wrap">
             <div className="territory-label territory-enemy">Enemy territory</div>
             <div className="arena-plane">
-              <div className={`board-grid ${boitata3DReady ? "boitata-3d-ready" : ""} ${game.phase === "combat" && !playing ? "combat-paused" : ""}`} role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
-              {currentEffectKind && combatLinks.length && !isSolStarfall ? (
+              <div className={`board-grid ${boitata3DReady ? "boitata-3d-ready" : ""} ${game.phase === "combat" && !playing ? "combat-paused" : ""} ${isSteppedMoment ? "combat-step-preview" : ""}`} role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
+              {combatLinks.length ? (
                 <div className="combat-links" aria-hidden="true" data-testid="combat-links">
                   {combatLinks.map((link) => (
                     <span
-                      className={`combat-link combat-link-${currentEffectKind}`}
-                      key={`${currentEvent?.id}-${link.targetId}`}
+                      className={`combat-link combat-link-${link.kind}`}
+                      key={link.key}
                       style={link.style}
                     />
                   ))}
                 </div>
               ) : null}
-              {isSolStarfall && solStarfallTargets.length ? (
-                <div className="sol-starfall-layer" aria-hidden="true" data-testid="sol-starfall-layer" key={currentEvent?.id} style={solStarfallStyle}>
+              {solStarfalls.map((starfall) => (
+                <div className="sol-starfall-layer" aria-hidden="true" data-testid="sol-starfall-layer" key={starfall.event.id} style={starfall.style}>
                   <span className="sol-starfall-sky" />
                   <span className="sol-starfall-trail"><i /></span>
                   <span className="sol-starfall-sigil">
@@ -1026,18 +1156,18 @@ export function GameClient() {
                     <span className="sol-starfall-sigil-ring" />
                     <span className="sol-starfall-sigil-rays" />
                   </span>
-                  {solStarfallTargets.map((target, index) => (
+                  {starfall.targets.map((target, index) => (
                     <span
                       className="sol-starfall-hit"
                       data-testid={`sol-starfall-target-${target.id}`}
-                      key={target.id}
+                      key={`${starfall.event.id}:${target.id}`}
                       style={starfallImpactStyle(target.position, index, speed)}
                     >
                       <span className="sol-starfall-hit-star">✦</span>
                     </span>
                   ))}
                 </div>
-              ) : null}
+              ))}
               {Array.from({ length: BOARD_SIZE }, (_, index) => {
                 const row = Math.floor(index / BOARD_COLUMNS);
                 const column = index % BOARD_COLUMNS;
@@ -1077,12 +1207,12 @@ export function GameClient() {
                     <span className="board-coord" aria-hidden="true">{String.fromCharCode(65 + column)}{row + 1}</span>
                     {unit ? (
                       <UnitToken
-                        key={`${unit.id}-${currentEvent?.id ?? "idle"}`}
+                        key={`${unit.id}-${currentMoment?.key ?? "idle"}`}
                         unit={unit}
                         selected={unit.id === selectedId}
                         highlighted={highlighted}
-                        currentEvent={currentEvent}
-                        previousEvent={previousEvent}
+                        currentEvents={currentEvents}
+                        previousSnapshotEvent={previousSnapshotEvent}
                         draggable={game.phase === "planning" && unit.side === "player"}
                         loadoutDropStatus={loadoutDropStatus}
                         onDragStart={(event) => {
@@ -1100,8 +1230,8 @@ export function GameClient() {
                 {boitataBoardUnits.length > 0 ? (
                   <Boitata3DLayer
                     units={boitataBoardUnits}
-                    currentEvent={currentEvent}
-                    previousEvent={previousEvent}
+                    currentEvents={currentEvents}
+                    previousSnapshotEvent={previousSnapshotEvent}
                     phase={game.phase}
                     playing={playing}
                     speed={speed}
@@ -1232,8 +1362,8 @@ export function GameClient() {
                             unit={display}
                             selected={display.id === selectedId}
                             highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)}
-                            currentEvent={null}
-                            previousEvent={null}
+                            currentEvents={[]}
+                            previousSnapshotEvent={null}
                             draggable={game.phase === "planning"}
                             loadoutDropStatus={loadoutDropStatus}
                             onDragStart={(event) => {
@@ -1387,10 +1517,12 @@ export function GameClient() {
               </section>
             ) : null}
           </div>
-          {game.phase === "combat" && currentEvent ? (
-            <div className="combat-caption" aria-live="polite">
+          {game.phase === "combat" && currentMoment ? (
+            <div className="combat-caption" aria-live="polite" aria-atomic="true">
               <span>{formatCombatTime(currentCombatTime)}</span>
-              <strong>{currentEvent.text}</strong>
+              <div className="combat-caption-copy">
+                {currentEvents.map((event) => <strong key={event.id}>{event.text}</strong>)}
+              </div>
             </div>
           ) : (
             <p className="placement-hint">Click any character to inspect. Drag allies between teal tiles and the bench to place or swap.</p>
@@ -1567,9 +1699,9 @@ export function GameClient() {
             <section className="combat-log" data-testid="combat-log">
               <div className="panel-heading"><div><span className="eyebrow">Live chronicle</span><h2 className="panel-title">Combat log</h2></div></div>
               <div className="log-list">
-                {combatEvents.slice(combatLogStart, combatIndex + 1).map((event, offset) => (
-                  <p className={`log-entry log-${event.type}`} key={event.id} data-testid={`combat-event-${event.id}`}><span className="log-time">{formatCombatTime(combatEventTimestamp(event, combatLogStart + offset))}</span>{event.text}</p>
-                ))}
+                {visibleCombatMoments.flatMap((moment) => moment.events.map((event) => (
+                  <p className={`log-entry log-${event.type}`} key={event.id} data-testid={`combat-event-${event.id}`}><span className="log-time">{formatCombatTime(moment.timestamp)}</span>{event.text}</p>
+                )))}
               </div>
             </section>
           ) : (
@@ -1632,11 +1764,18 @@ export function GameClient() {
             </>
           ) : game.phase === "combat" ? (
             <div className="combat-controls" data-testid="combat-controls">
-              <div className="income-line"><span>Combat time</span><strong>{formatCombatTime(currentCombatTime)} / {formatCombatTime(totalCombatTime)}</strong><small>{atCombatEnd ? `Outcome ready · Event ${combatIndex + 1}/${combatEvents.length}` : `Event ${combatIndex + 1}/${combatEvents.length} · ${speed}× playback`}</small></div>
-              <button className="game-button button-secondary" type="button" data-testid="combat-play-pause" disabled={atCombatEnd} onClick={() => setPlaying((value) => !value)}>{atCombatEnd ? "Complete" : playing ? "Pause" : "Play"}</button>
-              <button className="game-button button-secondary" type="button" data-testid="combat-step" disabled={atCombatEnd} onClick={() => { playbackEventIdRef.current = null; playbackRemainingSecondsRef.current = null; setPlaying(false); setCombatIndex((index) => Math.min(index + 1, combatEvents.length - 1)); }}>Next event</button>
+              <div className="income-line"><span>Combat time</span><strong>{formatCombatTime(currentCombatTime)} / {formatCombatTime(totalCombatTime)}</strong><small>{atCombatEnd ? `Outcome ready · Moment ${combatMomentIndex + 1}/${combatMoments.length}` : `Moment ${combatMomentIndex + 1}/${combatMoments.length} · ${currentMomentActionCount} ${currentMomentActionCount === 1 ? "action" : "actions"} · ${speed}× playback`}</small></div>
+              <button className="game-button button-secondary" type="button" data-testid="combat-play-pause" disabled={atCombatEnd} onClick={() => { setSteppedMomentKey(null); setPlaying((value) => !value); }}>{atCombatEnd ? "Complete" : playing ? "Pause" : "Play"}</button>
+              <button className="game-button button-secondary" type="button" data-testid="combat-step" disabled={atCombatEnd} onClick={() => {
+                const nextIndex = Math.min(combatMomentIndex + 1, combatMoments.length - 1);
+                playbackMomentKeyRef.current = null;
+                playbackRemainingSecondsRef.current = null;
+                setPlaying(false);
+                setSteppedMomentKey(combatMoments[nextIndex]?.key ?? null);
+                setCombatMomentIndex(nextIndex);
+              }}>Next moment</button>
               <label className="speed-control">Speed<select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} data-testid="combat-speed"><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option></select></label>
-              {!atCombatEnd ? <button className="game-button button-ghost" type="button" data-testid="combat-skip" onClick={() => { playbackEventIdRef.current = null; playbackRemainingSecondsRef.current = null; setPlaying(false); setCombatIndex(combatEvents.length - 1); }}>Skip to result</button> : <button className="game-button button-primary" type="button" onClick={() => commit(applyCombatResult(game))}>Claim result</button>}
+              {!atCombatEnd ? <button className="game-button button-ghost" type="button" data-testid="combat-skip" onClick={() => { playbackMomentKeyRef.current = null; playbackRemainingSecondsRef.current = null; setSteppedMomentKey(null); setPlaying(false); setCombatMomentIndex(combatMoments.length - 1); }}>Skip to result</button> : <button className="game-button button-primary" type="button" onClick={() => commit(applyCombatResult(game))}>Claim result</button>}
             </div>
           ) : (
             <div className="income-line"><span>Round resolved</span><strong>{game.roundResult?.outcome === "victory" ? "Victory" : "Defeat"}</strong><small>Review the result to continue</small></div>

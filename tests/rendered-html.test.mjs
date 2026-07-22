@@ -44,7 +44,7 @@ test("integrates the bench into the arena surface without panel chrome", async (
   );
   const arenaSurface = boardSection.slice(
     boardSection.indexOf('<div className="board-wrap">'),
-    boardSection.indexOf('{game.phase === "combat" && currentEvent ? ('),
+    boardSection.indexOf('{game.phase === "combat" && currentMoment ? ('),
   );
 
   assert.match(arenaSurface, /className="arena-plane"/);
@@ -86,34 +86,39 @@ test("ships the bespoke social card and no starter preview dependency", async ()
   assert.match(layout, /x-forwarded-host/);
 });
 
-test("combat playback follows event timestamps and preserves remaining time across pause and speed changes", async () => {
+test("combat playback batches equal timestamps and preserves remaining time across pause and speed changes", async () => {
   const client = await readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8");
 
   assert.match(client, /const LEGACY_COMBAT_EVENT_SECONDS = 0\.82/);
-  assert.match(client, /const SAME_TIME_EVENT_SECONDS = 0\.24/);
+  assert.match(client, /const COMBAT_TIMESTAMP_EPSILON_SECONDS = 0\.0005/);
+  assert.match(client, /const MIN_COMBAT_MOMENT_SECONDS = 0\.08/);
   assert.match(client, /function combatEventTimestamp\(event: CombatEvent, index: number\)/);
   assert.match(client, /\(event as Partial<CombatEvent>\)\.timestamp/);
   assert.match(client, /event\.turn \* LEGACY_COMBAT_EVENT_SECONDS/);
   assert.match(client, /index \* LEGACY_COMBAT_EVENT_SECONDS/);
+  assert.match(client, /function groupCombatEventsByTimestamp\(events: readonly CombatEvent\[\]\)/);
+  assert.match(client, /Math\.abs\(current\.timestamp - timestamp\) <= COMBAT_TIMESTAMP_EPSILON_SECONDS/);
+  assert.match(client, /current\.events\.push\(event\)/);
+  assert.match(client, /current\.snapshotEvent = event/);
   assert.match(client, /const interval = nextTimestamp - currentTimestamp/);
   assert.match(
     client,
-    /interval > 0\s*\? Math\.max\(SAME_TIME_EVENT_SECONDS, interval\)\s*: SAME_TIME_EVENT_SECONDS/,
+    /interval > 0\s*\? Math\.max\(MIN_COMBAT_MOMENT_SECONDS, interval\)\s*: MIN_COMBAT_MOMENT_SECONDS/,
   );
   assert.match(
     client,
-    /combatEvents\.map\(\(event, index\) => combatEventTimestamp\(event, index\)\)/,
+    /groupCombatEventsByTimestamp\(combatEvents\)/,
   );
   assert.match(
     client,
-    /combatEventInterval\(currentCombatTime, combatTimestamps\[combatIndex \+ 1\]\)/,
+    /combatMoments\[combatMomentIndex \+ 1\]\?\.timestamp/,
   );
 
-  assert.match(client, /playbackEventIdRef = useRef<string \| null>\(null\)/);
+  assert.match(client, /playbackMomentKeyRef = useRef<string \| null>\(null\)/);
   assert.match(client, /playbackRemainingSecondsRef = useRef<number \| null>\(null\)/);
   assert.match(
     client,
-    /const remainingSeconds = playbackRemainingSecondsRef\.current \?\? currentEventInterval/,
+    /const remainingSeconds = playbackRemainingSecondsRef\.current \?\? currentMomentInterval/,
   );
   assert.match(client, /const startedAt = performance\.now\(\)/);
   assert.match(client, /Math\.round\(\(remainingSeconds \* 1000\) \/ speed\)/);
@@ -128,14 +133,17 @@ test("combat playback follows event timestamps and preserves remaining time acro
   assert.match(client, /window\.clearTimeout\(timeout\)/);
   assert.match(
     client,
-    /\[game\.phase, playing, atCombatEnd, currentEvent, currentEventInterval, combatEvents\.length, speed\]/,
+    /\[game\.phase, playing, atCombatEnd, currentMoment, currentMomentInterval, combatMoments\.length, speed\]/,
   );
   assert.doesNotMatch(client, /Math\.round\(820 \/ speed\)/);
 
   assert.match(client, /<span>\{formatCombatTime\(currentCombatTime\)\}<\/span>/);
-  assert.match(client, /<span className="log-time">\{formatCombatTime\(combatEventTimestamp\(event, combatLogStart \+ offset\)\)\}<\/span>/);
+  assert.match(client, /visibleCombatMoments\.flatMap/);
+  assert.match(client, /<span className="log-time">\{formatCombatTime\(moment\.timestamp\)\}<\/span>/);
+  assert.match(client, /combat-step-preview/);
+  assert.match(client, /--combat-preview-delay/);
   assert.match(client, /<span>Combat time<\/span>/);
-  assert.match(client, />Next event<\/button>/);
+  assert.match(client, />Next moment<\/button>/);
 });
 
 test("unit inspector exposes effective attack cadence and passive mana regeneration", async () => {
@@ -210,10 +218,17 @@ test("combat actions expose directional links, actor emphasis, impacts, and redu
   ]);
 
   assert.match(client, /data-testid="combat-links"/);
+  assert.match(client, /currentEvents\.flatMap<CombatLinkCue>/);
   assert.match(client, /unit-event-actor/);
+  assert.match(client, /unit-event-move/);
   assert.match(client, /unit-impact-damage/);
+  assert.match(client, /if \(event\?\.type === "shield"\) return "shield"/);
+  assert.match(client, /event\.type === "move" \|\| event\.type === "attack" \|\| event\.type === "ability"/);
   assert.match(styles, /@keyframes combat-strike-line/);
   assert.match(styles, /@keyframes combat-impact/);
+  assert.match(styles, /\.combat-link-move\s*\{/);
+  assert.match(styles, /\.combat-step-preview/);
+  assert.match(styles, /\.log-shield\s*\{/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
@@ -223,8 +238,9 @@ test("Sol's Starfall traces the cluster and marks every damaged character", asyn
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(client, /currentEvent\?\.type === "ability" && currentActor\?\.heroId === "sol"/);
-  assert.match(client, /combatLinks\.length && !isSolStarfall/);
+  assert.match(client, /currentEvents\.flatMap<SolStarfallCue>/);
+  assert.match(client, /solStarfalls\.map\(\(starfall\) =>/);
+  assert.match(client, /actor\?\.heroId !== "sol"/);
   assert.match(client, /data-testid="sol-starfall-layer"/);
   assert.match(client, /data-testid=\{`sol-starfall-target-\$\{target\.id\}`\}/);
   assert.match(client, /"STARFALL"/);

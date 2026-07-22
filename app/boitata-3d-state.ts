@@ -26,6 +26,7 @@ export type BoitataMotionState = BoitataBodyMotionState | BoitataShieldMotionSta
 export interface BoitataVisualState {
   unitId: string;
   motion: BoitataBodyMotionState;
+  isHit: boolean;
   shieldMotion: BoitataShieldMotionState;
   bodyCueKey: string;
   shieldCueKey: string;
@@ -73,6 +74,19 @@ function firstOtherTargetPosition(event: CombatEvent | null, unitId: string): nu
   return null;
 }
 
+function damageAmountForTarget(event: CombatEvent, unitId: string): number {
+  if (!event.targetIds?.includes(unitId)) return 0;
+  if (event.type !== "attack" && event.type !== "ability") return 0;
+  if (event.type === "ability") {
+    const actor = event.actorId ? snapshotUnit(event, event.actorId) : null;
+    if (actor?.heroId === "bramble" || actor?.heroId === "tide" || actor?.heroId === "boitata") return 0;
+  }
+  const amount = event.amounts?.[unitId]
+    ?? (event.targetIds.length === 1 ? event.amount : undefined)
+    ?? 0;
+  return Number.isFinite(amount) ? Math.max(0, amount) : 0;
+}
+
 /**
  * Converts post-action combat snapshots into deterministic renderer cues.
  *
@@ -83,36 +97,52 @@ function firstOtherTargetPosition(event: CombatEvent | null, unitId: string): nu
  */
 export function deriveBoitataVisualState(
   unit: BoitataRenderUnit,
-  currentEvent: CombatEvent | null,
-  previousEvent: CombatEvent | null = null,
+  currentEvents: readonly CombatEvent[],
+  previousSnapshotEvent: CombatEvent | null = null,
 ): BoitataVisualState {
-  const previousUnit = snapshotUnit(previousEvent, unit.id);
-  const currentSnapshot = snapshotUnit(currentEvent, unit.id);
+  const currentSnapshotEvent = currentEvents.at(-1) ?? null;
+  const previousUnit = snapshotUnit(previousSnapshotEvent, unit.id);
+  const currentSnapshot = snapshotUnit(currentSnapshotEvent, unit.id);
   const currentPosition = unit.position ?? currentSnapshot?.position ?? null;
   const previousPosition = previousUnit?.position ?? currentPosition;
   const healthDamage = Math.max(0, (previousUnit?.hp ?? unit.hp) - unit.hp);
   const previousFireWall = previousUnit?.fireWallShield ?? unit.fireWallShield;
   const shieldDamage = Math.max(0, previousFireWall - unit.fireWallShield);
-  const isActor = currentEvent?.actorId === unit.id;
-  const isTarget = currentEvent?.targetIds?.includes(unit.id) ?? false;
+  const actorEvent = currentEvents.find((event) =>
+    event.actorId === unit.id && (event.type === "move" || event.type === "attack" || event.type === "ability"),
+  ) ?? null;
+  const incomingDamageEvents = currentEvents.filter((event) =>
+    event.actorId !== unit.id && damageAmountForTarget(event, unit.id) > 0,
+  );
+  const incomingEvent = incomingDamageEvents[0]
+    ?? currentEvents.find((event) => event.actorId !== unit.id && event.targetIds?.includes(unit.id))
+    ?? null;
+  const isTarget = currentEvents.some((event) => event.targetIds?.includes(unit.id) ?? false);
+  const incomingDamage = incomingDamageEvents.reduce(
+    (total, event) => total + damageAmountForTarget(event, unit.id),
+    0,
+  );
+  const isHit = isTarget && (healthDamage > 0 || incomingDamage > 0);
   const newlyDead = !unit.alive && previousUnit?.alive !== false;
-  const eventKey = currentEvent?.id ?? "rest";
+  const eventKey = currentEvents.length
+    ? `${currentEvents[0].id}:${currentEvents.at(-1)?.id ?? currentEvents[0].id}`
+    : "rest";
 
   let motion: BoitataBodyMotionState = "idle";
   if (!unit.alive) {
     motion = "death";
-  } else if (isActor && currentEvent?.type === "ability") {
+  } else if (actorEvent?.type === "ability") {
     motion = "cast";
-  } else if (isActor && currentEvent?.type === "attack") {
+  } else if (actorEvent?.type === "attack") {
     motion = "attack";
-  } else if (isActor && currentEvent?.type === "move" && previousPosition !== currentPosition) {
+  } else if (actorEvent?.type === "move" && previousPosition !== currentPosition) {
     motion = "move";
-  } else if (isTarget && healthDamage > 0) {
+  } else if (isHit) {
     motion = "hit";
   }
 
   let shieldMotion: BoitataShieldMotionState = "hidden";
-  if (isActor && currentEvent?.type === "ability" && unit.fireWallShield > previousFireWall) {
+  if (actorEvent?.type === "ability" && unit.fireWallShield > previousFireWall) {
     shieldMotion = "cast";
   } else if (previousFireWall > 0 && unit.fireWallShield <= 0) {
     shieldMotion = "shield-break";
@@ -122,16 +152,17 @@ export function deriveBoitataVisualState(
     shieldMotion = "active";
   }
 
-  const actor = currentEvent?.actorId ? snapshotUnit(currentEvent, currentEvent.actorId) : null;
-  const facingPosition = isActor
-    ? firstOtherTargetPosition(currentEvent, unit.id)
-    : isTarget
-      ? actor?.position ?? null
+  const incomingActor = incomingEvent?.actorId ? snapshotUnit(incomingEvent, incomingEvent.actorId) : null;
+  const facingPosition = actorEvent
+    ? firstOtherTargetPosition(actorEvent, unit.id)
+    : incomingEvent
+      ? incomingActor?.position ?? null
       : null;
 
   return {
     unitId: unit.id,
     motion,
+    isHit,
     shieldMotion,
     bodyCueKey: motion === "death" ? `death:${unit.id}` : `${eventKey}:${motion}`,
     shieldCueKey: shieldMotion === "active" || shieldMotion === "hidden"

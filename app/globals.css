@@ -687,6 +687,21 @@ button:disabled,
   animation-play-state: paused !important;
 }
 
+.board-grid.combat-paused.combat-step-preview .unit-token,
+.board-grid.combat-paused.combat-step-preview .unit-token::before,
+.board-grid.combat-paused.combat-step-preview .unit-token::after,
+.board-grid.combat-paused.combat-step-preview .unit-token *,
+.board-grid.combat-paused.combat-step-preview .unit-token *::before,
+.board-grid.combat-paused.combat-step-preview .unit-token *::after,
+.board-grid.combat-paused.combat-step-preview .combat-links *,
+.board-grid.combat-paused.combat-step-preview .combat-links *::before,
+.board-grid.combat-paused.combat-step-preview .combat-links *::after,
+.board-grid.combat-paused.combat-step-preview .sol-starfall-layer *,
+.board-grid.combat-paused.combat-step-preview .sol-starfall-layer *::before,
+.board-grid.combat-paused.combat-step-preview .sol-starfall-layer *::after {
+  animation-delay: var(--combat-preview-delay, -280ms) !important;
+}
+
 .unit-event-actor {
   --combat-accent: var(--gold);
   animation: combat-attacker var(--combat-beat, 680ms) cubic-bezier(0.2, 0.85, 0.25, 1) both;
@@ -702,6 +717,14 @@ button:disabled,
 
 .unit-event-actor-shield {
   --combat-accent: #ff9d42;
+}
+
+.unit-event-move {
+  --combat-accent: var(--teal);
+}
+
+.unit-event-wait {
+  --combat-accent: var(--dim);
 }
 
 .unit-event-actor::before {
@@ -780,6 +803,18 @@ button:disabled,
 
 .combat-link-heal {
   --strike-color: var(--life);
+}
+
+.combat-link-move {
+  --strike-color: var(--teal);
+  height: 2px;
+  background: repeating-linear-gradient(90deg, transparent 0 5px, var(--strike-color) 5px 12px);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--strike-color) 72%, transparent);
+}
+
+.combat-link-move::before {
+  border-color: rgb(255 255 255 / 82%);
+  background: var(--teal);
 }
 
 .combat-link::before {
@@ -1536,7 +1571,7 @@ button:disabled,
 .floating-text {
   position: absolute;
   z-index: 5;
-  top: -28px;
+  top: calc(-28px - var(--feedback-offset, 0px));
   left: 50%;
   color: #ff9a9f;
   font-size: 13px;
@@ -1604,6 +1639,16 @@ button:disabled,
 .combat-caption strong {
   font-size: 12px;
   font-weight: 600;
+}
+
+.combat-caption-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.combat-caption-copy strong + strong {
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .placement-hint {
@@ -2342,6 +2387,14 @@ button:disabled,
 
 .log-ability {
   color: var(--mana);
+}
+
+.log-heal {
+  color: var(--life);
+}
+
+.log-shield {
+  color: #ffb567;
 }
 
 .log-defeat,

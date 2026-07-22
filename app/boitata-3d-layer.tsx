@@ -35,8 +35,8 @@ declare global {
 
 export interface Boitata3DLayerProps {
   units: readonly BoitataRenderUnit[];
-  currentEvent: CombatEvent | null;
-  previousEvent: CombatEvent | null;
+  currentEvents: readonly CombatEvent[];
+  previousSnapshotEvent: CombatEvent | null;
   phase: GameState["phase"];
   playing: boolean;
   speed: number;
@@ -143,8 +143,8 @@ function shortestAngle(from: number, to: number): number {
  */
 export function Boitata3DLayer({
   units,
-  currentEvent,
-  previousEvent,
+  currentEvents,
+  previousSnapshotEvent,
   phase,
   playing,
   speed,
@@ -156,8 +156,8 @@ export function Boitata3DLayer({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const latestRef = useRef<LatestProps>({
     units,
-    currentEvent,
-    previousEvent,
+    currentEvents,
+    previousSnapshotEvent,
     phase,
     playing,
     speed,
@@ -166,7 +166,7 @@ export function Boitata3DLayer({
   const callbacksRef = useRef({ onReady, onFallback, onReducedMotionChange });
 
   useEffect(() => {
-    latestRef.current = { units, currentEvent, previousEvent, phase, playing, speed, boardHeightRatio };
+    latestRef.current = { units, currentEvents, previousSnapshotEvent, phase, playing, speed, boardHeightRatio };
     callbacksRef.current = { onReady, onFallback, onReducedMotionChange };
   });
 
@@ -464,7 +464,7 @@ export function Boitata3DLayer({
           const motion = entity.visual.motion;
           const attackStretch = motion === "attack" ? Math.sin(actionProgress * Math.PI) : 0;
           const castLift = motion === "cast" ? Math.sin(actionProgress * Math.PI) : 0;
-          const hitShake = motion === "hit"
+          const hitShake = entity.visual.isHit
             ? Math.sin(actionProgress * Math.PI * 7) * (1 - actionProgress) * 0.17
             : 0;
           const deathProgress = motion === "death" ? smoothStep(actionProgress) : 0;
@@ -595,8 +595,8 @@ export function Boitata3DLayer({
 
           const latest = latestRef.current;
           const hasAction = latest.units.some((unit) => {
-            const visual = deriveBoitataVisualState(unit, latest.currentEvent, latest.previousEvent);
-            return visual.motion !== "idle" || (visual.shieldMotion !== "hidden" && visual.shieldMotion !== "active");
+            const visual = deriveBoitataVisualState(unit, latest.currentEvents, latest.previousSnapshotEvent);
+            return visual.motion !== "idle" || visual.isHit || (visual.shieldMotion !== "hidden" && visual.shieldMotion !== "active");
           });
           const fps = reducedMotion ? 12 : hasAction && latest.playing ? 60 : 30;
           if (now - lastRender < 1000 / fps) return;
@@ -617,7 +617,7 @@ export function Boitata3DLayer({
           for (const unit of latest.units) {
             if (unit.heroId !== "boitata" || unit.position === null) continue;
             seen.add(unit.id);
-            const visual = deriveBoitataVisualState(unit, latest.currentEvent, latest.previousEvent);
+            const visual = deriveBoitataVisualState(unit, latest.currentEvents, latest.previousSnapshotEvent);
             let entity = entities.get(unit.id);
             if (!entity) {
               entity = createEntity(unit, visual);

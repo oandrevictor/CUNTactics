@@ -21,6 +21,7 @@ import {
   getCraftedItemBonuses,
   getCraftedItemDefinition,
   getAbilityPreview,
+  getCombatStatistics,
   getInterest,
   getItemComponentRewardForRound,
   getUnitStats,
@@ -561,7 +562,7 @@ test("combat timestamps and action sequence remain monotonic through simultaneou
   assert.equal(outcome.turn, defeat.turn + 1);
 });
 
-test("equal attack-speed opportunities resolve player first and then by stable side order", () => {
+test("equal attack-speed opportunities share one simultaneous batch in stable presentation order", () => {
   const report = resolveCombat(
     deterministicTimingDuel("bramble", "bramble", { stars: 3, level: 5 }),
   ).report!;
@@ -571,11 +572,347 @@ test("equal attack-speed opportunities resolve player first and then by stable s
     actions.slice(0, 4).map((event) => [event.timestamp, event.turn, event.actorId]),
     [
       [1.538, 1, "timing-player"],
-      [1.538, 2, "timing-enemy"],
-      [3.077, 3, "timing-player"],
-      [3.077, 4, "timing-enemy"],
+      [1.538, 1, "timing-enemy"],
+      [3.077, 2, "timing-player"],
+      [3.077, 2, "timing-enemy"],
     ],
   );
+});
+
+test("an actor killed in a simultaneous batch still completes its frozen lethal cast", () => {
+  const initial = createInitialGame(91);
+  const lethalSpellfang = (id: string): CraftedItem => ({
+    id,
+    itemId: "spellfang",
+    tier: "enhanced",
+    enhancement: "ember",
+  });
+  const loadout = (side: string): UnitItemSlots => [
+    lethalSpellfang(`${side}-spellfang-1`),
+    lethalSpellfang(`${side}-spellfang-2`),
+    lethalSpellfang(`${side}-spellfang-3`),
+  ];
+  const state: GameState = {
+    ...initial,
+    commanderLevel: 8,
+    units: [{
+      ...initial.units[0],
+      id: "simultaneous-player",
+      heroId: "nix",
+      position: 40,
+      benchIndex: null,
+      itemSlots: loadout("player"),
+    }],
+    enemyUnits: [{
+      ...initial.enemyUnits[0],
+      id: "simultaneous-enemy",
+      heroId: "nix",
+      position: 32,
+      benchIndex: null,
+      itemSlots: loadout("enemy"),
+    }],
+  };
+
+  const report = resolveCombat(state).report!;
+  const casts = report.events.filter((event) => event.type === "ability");
+  assert.deepEqual(
+    casts.map((event) => [event.timestamp, event.turn, event.actorId, event.targetIds]),
+    [
+      [0.952, 1, "simultaneous-player", ["simultaneous-enemy"]],
+      [0.952, 1, "simultaneous-enemy", ["simultaneous-player"]],
+    ],
+  );
+  assert.equal(casts[0].snapshot.find((unit) => unit.id === "simultaneous-enemy")?.alive, false);
+  assert.equal(casts[1].snapshot.find((unit) => unit.id === "simultaneous-player")?.alive, false);
+  assert.ok(report.finalUnits.every((unit) => !unit.alive));
+  assert.equal(report.outcome, "defeat");
+});
+
+test("a stun applied during a batch affects the target's next opportunity, not its frozen cast", () => {
+  const initial = createInitialGame(92);
+  const loadedVesper = (
+    base: UnitInstance,
+    id: string,
+    position: number,
+  ): UnitInstance => ({
+    ...base,
+    id,
+    heroId: "vesper",
+    position,
+    benchIndex: null,
+    itemSlots: [
+      fullItem(`${id}-lantern-1`, "spirit-lantern"),
+      fullItem(`${id}-lantern-2`, "spirit-lantern"),
+      null,
+    ],
+  });
+  const report = resolveCombat({
+    ...initial,
+    commanderLevel: 8,
+    units: [loadedVesper(initial.units[0], "stun-player", 40)],
+    enemyUnits: [loadedVesper(initial.enemyUnits[0], "stun-enemy", 32)],
+  }).report!;
+  const actions = report.events.filter((event) => COMBAT_ACTION_TYPES.has(event.type));
+
+  assert.deepEqual(
+    actions.slice(0, 4).map((event) => [event.timestamp, event.turn, event.type, event.actorId]),
+    [
+      [1.333, 1, "ability", "stun-player"],
+      [1.333, 1, "ability", "stun-enemy"],
+      [2.667, 2, "move", "stun-player"],
+      [2.667, 2, "move", "stun-enemy"],
+    ],
+  );
+  assert.match(actions[2].text, /stunned and skips the action/);
+  assert.match(actions[3].text, /stunned and skips the action/);
+});
+
+test("simultaneous movers reserve distinct destinations from one frozen board", () => {
+  const initial = createInitialGame(93);
+  const playerOne = {
+    ...initial.units[0],
+    id: "moving-player-1",
+    heroId: "bramble" as const,
+    position: 32,
+    benchIndex: null,
+  };
+  const playerTwo = {
+    ...initial.units[1],
+    id: "moving-player-2",
+    heroId: "bramble" as const,
+    position: 34,
+    benchIndex: null,
+  };
+  const enemy = {
+    ...initial.enemyUnits[0],
+    id: "moving-enemy",
+    heroId: "bramble" as const,
+    position: 41,
+    benchIndex: null,
+  };
+  const report = resolveCombat({
+    ...initial,
+    commanderLevel: 8,
+    units: [playerOne, playerTwo],
+    enemyUnits: [enemy],
+  }).report!;
+  const firstBatch = report.events.filter(
+    (event) => event.turn === 1 && COMBAT_ACTION_TYPES.has(event.type),
+  );
+  const batchSnapshot = firstBatch.at(-1)!.snapshot;
+  const positions = batchSnapshot.filter((unit) => unit.alive).map((unit) => unit.position);
+
+  assert.equal(firstBatch.length, 3);
+  assert.ok(firstBatch.every((event) => event.timestamp === 1.538));
+  assert.equal(new Set(positions).size, positions.length);
+  assert.deepEqual(
+    ["moving-player-1", "moving-player-2"].map(
+      (id) => batchSnapshot.find((unit) => unit.id === id)?.position,
+    ),
+    [40, 42],
+  );
+});
+
+test("same-time Wall of Fire absorbs the same hit regardless of which side owns Boitata", () => {
+  const run = (casterSide: "player" | "enemy") => {
+    const initial = createInitialGame(94);
+    const lanterns = (prefix: string): UnitItemSlots => [
+      fullItem(`${prefix}-lantern-1`, "spirit-lantern"),
+      fullItem(`${prefix}-lantern-2`, "spirit-lantern"),
+      fullItem(`${prefix}-lantern-3`, "spirit-lantern"),
+    ];
+    const unit = (
+      base: UnitInstance,
+      id: "shield-caster" | "shield-attacker",
+      side: "player" | "enemy",
+      loaded: boolean,
+    ): UnitInstance => ({
+      ...base,
+      id,
+      side,
+      heroId: "boitata",
+      position: side === "player" ? 40 : 32,
+      benchIndex: null,
+      itemSlots: loaded ? lanterns(id) : [null, null, null],
+    });
+    const attackerSide = casterSide === "player" ? "enemy" : "player";
+    const caster = unit(
+      casterSide === "player" ? initial.units[0] : initial.enemyUnits[0],
+      "shield-caster",
+      casterSide,
+      true,
+    );
+    const attacker = unit(
+      attackerSide === "player" ? initial.units[0] : initial.enemyUnits[0],
+      "shield-attacker",
+      attackerSide,
+      false,
+    );
+    const report = resolveCombat({
+      ...initial,
+      commanderLevel: 8,
+      units: [casterSide === "player" ? caster : attacker],
+      enemyUnits: [casterSide === "enemy" ? caster : attacker],
+    }).report!;
+    const firstBatch = report.events.filter((event) => event.turn === 1);
+    const casterAfter = firstBatch.at(-1)!.snapshot.find((candidate) => candidate.id === caster.id)!;
+    const statistics = getCombatStatistics(report);
+    const unitStatistics = (id: string) => {
+      const stats = statistics.units.find((candidate) => candidate.unitId === id)!;
+      return {
+        damageDealt: stats.damageDealt,
+        shieldGranted: stats.shieldGranted,
+        healingDone: stats.healingDone,
+      };
+    };
+    return {
+      eventOrder: firstBatch
+        .filter((event) => COMBAT_ACTION_TYPES.has(event.type))
+        .map((event) => [event.type, event.actorId]),
+      caster: {
+        hp: casterAfter.hp,
+        shield: casterAfter.shield,
+        fireWallShield: casterAfter.fireWallShield,
+        alive: casterAfter.alive,
+      },
+      casterStatistics: unitStatistics(caster.id),
+      attackerStatistics: unitStatistics(attacker.id),
+    };
+  };
+
+  const alliedCaster = run("player");
+  const enemyCaster = run("enemy");
+  assert.deepEqual(alliedCaster, enemyCaster);
+  assert.deepEqual(alliedCaster.eventOrder, [
+    ["ability", "shield-caster"],
+    ["attack", "shield-attacker"],
+  ]);
+  assert.equal(alliedCaster.caster.hp, 216);
+  assert.ok(alliedCaster.caster.shield > 0);
+  assert.equal(alliedCaster.caster.shield, alliedCaster.caster.fireWallShield);
+});
+
+test("simultaneous Morrow damage and self-healing are invariant when sides swap", () => {
+  const run = (roleASide: "player" | "enemy") => {
+    const initial = createInitialGame(95);
+    const aegis = (prefix: string): UnitItemSlots => [
+      fullItem(`${prefix}-aegis`, "blazing-aegis"),
+      null,
+      null,
+    ];
+    const unit = (
+      base: UnitInstance,
+      id: "morrow-a" | "morrow-b",
+      side: "player" | "enemy",
+    ): UnitInstance => ({
+      ...base,
+      id,
+      side,
+      heroId: "morrow",
+      stars: 1,
+      position: side === "player" ? 40 : 32,
+      benchIndex: null,
+      itemSlots: aegis(id),
+    });
+    const roleBSide = roleASide === "player" ? "enemy" : "player";
+    const roleA = unit(
+      roleASide === "player" ? initial.units[0] : initial.enemyUnits[0],
+      "morrow-a",
+      roleASide,
+    );
+    const roleB = unit(
+      roleBSide === "player" ? initial.units[0] : initial.enemyUnits[0],
+      "morrow-b",
+      roleBSide,
+    );
+    const report = resolveCombat({
+      ...initial,
+      commanderLevel: 8,
+      units: [roleASide === "player" ? roleA : roleB],
+      enemyUnits: [roleASide === "enemy" ? roleA : roleB],
+    }).report!;
+    const firstCast = report.events.find(
+      (event) => event.type === "ability" && (event.actorId === roleA.id || event.actorId === roleB.id),
+    )!;
+    const castBatch = report.events.filter((event) => event.turn === firstCast.turn);
+    const finalSnapshot = castBatch.at(-1)!.snapshot;
+    const statistics = getCombatStatistics(report);
+    const resultFor = (id: string) => {
+      const combatUnit = finalSnapshot.find((candidate) => candidate.id === id)!;
+      const stats = statistics.units.find((candidate) => candidate.unitId === id)!;
+      return {
+        hp: combatUnit.hp,
+        mana: combatUnit.mana,
+        alive: combatUnit.alive,
+        damageDealt: stats.damageDealt,
+        healingDone: stats.healingDone,
+        shieldGranted: stats.shieldGranted,
+      };
+    };
+    return {
+      timestamp: firstCast.timestamp,
+      roleA: resultFor(roleA.id),
+      roleB: resultFor(roleB.id),
+      support: castBatch
+        .filter((event) => event.type === "heal")
+        .map((event) => [event.actorId, event.amount])
+        .sort(([first], [second]) => String(first).localeCompare(String(second))),
+    };
+  };
+
+  const roleAAllied = run("player");
+  const roleAEnemy = run("enemy");
+  assert.deepEqual(roleAAllied, roleAEnemy);
+  assert.equal(roleAAllied.timestamp, 7.143);
+  assert.deepEqual(roleAAllied.support, [
+    ["morrow-a", 43],
+    ["morrow-b", 43],
+  ]);
+  assert.ok(roleAAllied.roleA.alive && roleAAllied.roleB.alive);
+  assert.equal(roleAAllied.roleA.hp, 41);
+  assert.equal(roleAAllied.roleB.hp, 41);
+});
+
+test("mixed abilities expose shield support separately from their offensive event", () => {
+  const initial = createInitialGame(96);
+  const lanterns: UnitItemSlots = [
+    fullItem("aster-lantern-1", "spirit-lantern"),
+    fullItem("aster-lantern-2", "spirit-lantern"),
+    fullItem("aster-lantern-3", "spirit-lantern"),
+  ];
+  const report = resolveCombat({
+    ...initial,
+    commanderLevel: 8,
+    units: [{
+      ...initial.units[0],
+      id: "mixed-aster",
+      heroId: "aster",
+      position: 40,
+      benchIndex: null,
+      itemSlots: lanterns,
+    }],
+    enemyUnits: [{
+      ...initial.enemyUnits[0],
+      id: "mixed-aster-target",
+      heroId: "aster",
+      position: 32,
+      benchIndex: null,
+      itemSlots: [null, null, null],
+    }],
+  }).report!;
+  const firstBatch = report.events.filter((event) => event.turn === 1);
+  const shield = firstBatch.find((event) => event.type === "shield")!;
+  const cast = firstBatch.find(
+    (event) => event.type === "ability" && event.actorId === "mixed-aster",
+  )!;
+
+  assert.equal(shield.actorId, "mixed-aster");
+  assert.deepEqual(shield.targetIds, ["mixed-aster"]);
+  assert.equal(shield.amounts?.["mixed-aster"], shield.amount);
+  assert.ok((shield.amount ?? 0) > 0);
+  assert.deepEqual(cast.targetIds, ["mixed-aster-target"]);
+  assert.ok((cast.amount ?? 0) > 0);
+  assert.ok(firstBatch.indexOf(shield) < firstBatch.indexOf(cast));
 });
 
 test("stuns consume the target's next scheduled action while passive mana keeps regenerating", () => {

@@ -11,6 +11,7 @@ import {
 
 const BOITATA_ID = "boitata-test";
 const ENEMY_ID = "enemy-test";
+const HEALER_ID = "healer-test";
 
 function combatUnit(overrides: Partial<CombatUnit> = {}): CombatUnit {
   return {
@@ -56,7 +57,7 @@ function event(
   id: string,
   type: CombatEventType,
   snapshot: CombatUnit[],
-  options: Pick<CombatEvent, "actorId" | "targetIds"> = {},
+  options: Pick<CombatEvent, "actorId" | "targetIds" | "amount" | "amounts"> = {},
 ): CombatEvent {
   return {
     id,
@@ -84,7 +85,7 @@ test("derives movement from post-action snapshots and faces the actor target", (
     { actorId: BOITATA_ID, targetIds: [ENEMY_ID] },
   );
 
-  const state = deriveBoitataVisualState(renderUnit({ position: 32 }), after, before);
+  const state = deriveBoitataVisualState(renderUnit({ position: 32 }), [after], before);
   assert.equal(state.motion, "move");
   assert.equal(state.fromPosition, 40);
   assert.equal(state.position, 32);
@@ -106,13 +107,73 @@ test("derives an attack without replacing an already-active wall", () => {
 
   const state = deriveBoitataVisualState(
     renderUnit({ fireWallShield: 70 }),
-    after,
+    [after],
     before,
   );
   assert.equal(state.motion, "attack");
   assert.equal(state.shieldMotion, "active");
   assert.equal(state.facingPosition, 24);
   assert.equal(state.shieldDamage, 0);
+});
+
+test("keeps an attack cue while reacting to a simultaneous incoming hit", () => {
+  const enemy = combatUnit({ id: ENEMY_ID, heroId: "nix", side: "enemy", position: 24 });
+  const before = event("before-simultaneous", "start", [combatUnit({ hp: 200 }), enemy]);
+  const finalSnapshot = [combatUnit({ hp: 170 }), enemy];
+  const ownAttack = event(
+    "boitata-attacks",
+    "attack",
+    finalSnapshot,
+    { actorId: BOITATA_ID, targetIds: [ENEMY_ID] },
+  );
+  const incomingAttack = event(
+    "enemy-attacks",
+    "attack",
+    finalSnapshot,
+    { actorId: ENEMY_ID, targetIds: [BOITATA_ID] },
+  );
+
+  const state = deriveBoitataVisualState(
+    renderUnit({ hp: 170 }),
+    [ownAttack, incomingAttack],
+    before,
+  );
+
+  assert.equal(state.motion, "attack");
+  assert.equal(state.isHit, true);
+  assert.equal(state.healthDamage, 30);
+  assert.equal(state.facingPosition, 24);
+  assert.match(state.bodyCueKey, /boitata-attacks:enemy-attacks/);
+});
+
+test("reacts to incoming damage even when simultaneous healing masks the net health loss", () => {
+  const enemy = combatUnit({ id: ENEMY_ID, heroId: "nix", side: "enemy", position: 32 });
+  const healer = combatUnit({ id: HEALER_ID, heroId: "tide", side: "player", position: 41 });
+  const before = event("before-masked-hit", "start", [combatUnit({ hp: 200 }), enemy, healer]);
+  const finalSnapshot = [combatUnit({ hp: 200 }), enemy, healer];
+  const incomingAttack = event(
+    "masked-attack",
+    "attack",
+    finalSnapshot,
+    { actorId: ENEMY_ID, targetIds: [BOITATA_ID], amount: 30 },
+  );
+  const simultaneousHeal = event(
+    "masking-heal",
+    "ability",
+    finalSnapshot,
+    { actorId: HEALER_ID, targetIds: [BOITATA_ID], amount: 30, amounts: { [BOITATA_ID]: 30 } },
+  );
+
+  const state = deriveBoitataVisualState(
+    renderUnit({ hp: 200 }),
+    [incomingAttack, simultaneousHeal],
+    before,
+  );
+
+  assert.equal(state.healthDamage, 0);
+  assert.equal(state.isHit, true);
+  assert.equal(state.motion, "hit");
+  assert.equal(state.facingPosition, 32);
 });
 
 test("keeps body and Wall of Fire cues independent", () => {
@@ -125,7 +186,7 @@ test("keeps body and Wall of Fire cues independent", () => {
   );
   const castState = deriveBoitataVisualState(
     renderUnit({ fireWallShield: 95 }),
-    cast,
+    [cast],
     beforeCast,
   );
   assert.equal(castState.motion, "cast");
@@ -145,7 +206,7 @@ test("keeps body and Wall of Fire cues independent", () => {
   );
   const shieldHitState = deriveBoitataVisualState(
     renderUnit({ fireWallShield: 55 }),
-    shieldHit,
+    [shieldHit],
     beforeHit,
   );
   assert.equal(shieldHitState.motion, "idle");
@@ -170,7 +231,7 @@ test("prioritizes wall break while retaining the creature hit reaction", () => {
 
   const state = deriveBoitataVisualState(
     renderUnit({ hp: 188, fireWallShield: 0 }),
-    after,
+    [after],
     before,
   );
   assert.equal(state.motion, "hit");
@@ -188,12 +249,12 @@ test("uses one stable death cue instead of retriggering on later events", () => 
     { actorId: ENEMY_ID, targetIds: [BOITATA_ID] },
   );
   const corpse = renderUnit({ hp: 0, alive: false });
-  const first = deriveBoitataVisualState(corpse, defeated, alive);
+  const first = deriveBoitataVisualState(corpse, [defeated], alive);
   assert.equal(first.motion, "death");
   assert.equal(first.newlyDead, true);
 
   const outcome = event("outcome", "outcome", [combatUnit({ hp: 0, alive: false })]);
-  const held = deriveBoitataVisualState(corpse, outcome, defeated);
+  const held = deriveBoitataVisualState(corpse, [outcome], defeated);
   assert.equal(held.motion, "death");
   assert.equal(held.newlyDead, false);
   assert.equal(held.bodyCueKey, first.bodyCueKey);
