@@ -13,7 +13,7 @@ import type {
   Vector2,
   WebGLRenderer,
 } from "three";
-import { BOARD_COLUMNS, BOARD_ROWS, type CombatEvent, type GameState } from "./game-engine";
+import { BOARD_COLUMNS, BOARD_ROWS, attackAnimationSeconds, movementTravelSeconds, type CombatEvent, type GameState } from "./game-engine";
 import {
   MEAT_GAGA_ANIMATION_CLIPS,
   chooseMeatGagaRenderMode,
@@ -83,6 +83,8 @@ interface MeatGagaEntity {
 const MEAT_GAGA_MODEL_URL = "/characters/meat-gaga/meat-gaga-animated.glb";
 const MODEL_TARGET_HEIGHT = 1.28;
 const MODEL_FOOT_OFFSET = -0.38;
+const MEAT_GAGA_MODEL_FORWARD_TILT_RADIANS = (40 * Math.PI) / 180;
+const MEAT_GAGA_MODEL_YAW_RADIANS = (180 * Math.PI) / 180;
 const MIN_ONE_SHOT_SECONDS = 0.56;
 const IDLE_POSE_PROGRESS = 0.24;
 
@@ -108,6 +110,10 @@ function boardPoint(position: number | null, boardHeightRatio: number): [number,
     column + 0.5 - BOARD_COLUMNS / 2,
     boardHeight / 2 - ((row + 0.5) * boardHeight) / BOARD_ROWS,
   ];
+}
+
+function sideYaw(side: MeatGagaRenderUnit["side"]): number {
+  return side === "player" ? 0 : Math.PI;
 }
 
 function targetYaw(from: Vector2, facingPosition: number | null, boardHeightRatio: number): number {
@@ -264,11 +270,18 @@ export function MeatGaga3DLayer({
           if (!clips.has(requiredClip)) throw new Error(`Meat Gaga is missing ${requiredClip}`);
         }
 
+        // Orient before bounds so scale/foot anchoring match the on-board rest pose.
+        rigTemplate.rotation.set(
+          MEAT_GAGA_MODEL_FORWARD_TILT_RADIANS,
+          MEAT_GAGA_MODEL_YAW_RADIANS,
+          0,
+        );
         rigTemplate.updateMatrixWorld(true);
         const rigBounds = new THREE.Box3().setFromObject(rigTemplate);
         const rigSize = rigBounds.getSize(new THREE.Vector3());
         const rigCenter = rigBounds.getCenter(new THREE.Vector3());
-        if (!Number.isFinite(rigSize.y) || rigSize.y <= 0) {
+        const rigLongestSide = Math.max(rigSize.x, rigSize.y, rigSize.z);
+        if (!Number.isFinite(rigLongestSide) || rigLongestSide <= 0) {
           throw new Error("Meat Gaga rig has invalid bounds");
         }
         let templateHasSkinnedMesh = false;
@@ -276,20 +289,43 @@ export function MeatGaga3DLayer({
           if (isSkinnedMesh(object)) templateHasSkinnedMesh = true;
         });
         if (!templateHasSkinnedMesh) throw new Error("Meat Gaga rig has no skinned mesh");
-        const rigNormalizationScale = MODEL_TARGET_HEIGHT / rigSize.y;
+        const rigNormalizationScale = MODEL_TARGET_HEIGHT / rigLongestSide;
 
         renderer = new THREE.WebGLRenderer({
           canvas,
           alpha: true,
-          antialias: window.devicePixelRatio <= 1.5,
+          antialias: window.devicePixelRatio <= 2,
           powerPreference: "high-performance",
           premultipliedAlpha: true,
         });
         renderer.setClearColor(0x000000, 0);
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
+        // Match retina boards; 1.25 made the shared canvas look soft on the tile.
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         renderer.outputColorSpace = THREE.SRGBColorSpace;
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        renderer.toneMappingExposure = 0.88;
+        renderer.toneMappingExposure = 1.05;
+        const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+        const textureKeys = [
+          "map",
+          "normalMap",
+          "roughnessMap",
+          "metalnessMap",
+          "emissiveMap",
+          "aoMap",
+        ] as const;
+        rigTemplate.traverse((object) => {
+          if (!(object instanceof THREE.Mesh)) return;
+          const materials = Array.isArray(object.material) ? object.material : [object.material];
+          for (const material of materials) {
+            for (const key of textureKeys) {
+              const texture = (material as MeshStandardMaterial)[key];
+              if (isTexture(texture)) {
+                texture.anisotropy = maxAnisotropy;
+                texture.needsUpdate = true;
+              }
+            }
+          }
+        });
         const disposeRigAfterRenderer = cleanupFailedInitialization;
         cleanupFailedInitialization = () => {
           disposeRigAfterRenderer();
@@ -404,7 +440,7 @@ export function MeatGaga3DLayer({
             moveFrom,
             moveTo,
             currentPosition: moveFrom.clone(),
-            facingYaw: 0,
+            facingYaw: sideYaw(unit.side),
             level: unit.level,
             seed: [...unit.id].reduce((total, character) => total + character.charCodeAt(0), 0) * 0.031,
             bodyDrawn: false,
@@ -421,14 +457,23 @@ export function MeatGaga3DLayer({
         const hasRenderableBody = (entity: MeatGagaEntity) => {
           entity.model.updateMatrixWorld(true);
           const jointPosition = new THREE.Vector3();
+          let minimumX = Infinity;
+          let maximumX = -Infinity;
           let minimumY = Infinity;
           let maximumY = -Infinity;
+          let minimumZ = Infinity;
+          let maximumZ = -Infinity;
           for (const bone of entity.skinnedMeshes[0]?.skeleton.bones ?? []) {
             bone.getWorldPosition(jointPosition);
+            minimumX = Math.min(minimumX, jointPosition.x);
+            maximumX = Math.max(maximumX, jointPosition.x);
             minimumY = Math.min(minimumY, jointPosition.y);
             maximumY = Math.max(maximumY, jointPosition.y);
+            minimumZ = Math.min(minimumZ, jointPosition.z);
+            maximumZ = Math.max(maximumZ, jointPosition.z);
           }
-          const bodyHeight = maximumY - minimumY;
+          // Pitch/yaw can move height off Y; accept the longest bone span.
+          const bodyHeight = Math.max(maximumX - minimumX, maximumY - minimumY, maximumZ - minimumZ);
           return entity.bodyDrawn
             && Number.isFinite(bodyHeight)
             && bodyHeight >= MODEL_TARGET_HEIGHT * 0.45
@@ -450,6 +495,7 @@ export function MeatGaga3DLayer({
 
         const startAuthoredAction = (
           entity: MeatGagaEntity,
+          unit: MeatGagaRenderUnit,
           visual: MeatGagaVisualState,
           latest: LatestProps,
         ) => {
@@ -476,11 +522,17 @@ export function MeatGaga3DLayer({
           action.clampWhenFinished = visual.motion !== "move";
           if (visual.motion === "move") {
             action.setLoop(THREE.LoopRepeat, Infinity);
-            entity.clipDuration = Math.max(0.08, latest.actionDuration);
+            entity.clipDuration = Math.max(
+              0.08,
+              movementTravelSeconds(unit.moveSpeed, visual.fromPosition, visual.position),
+            );
             action.setDuration(entity.clipDuration);
           } else {
             action.setLoop(THREE.LoopOnce, 1);
-            entity.clipDuration = Math.max(MIN_ONE_SHOT_SECONDS, latest.actionDuration);
+            const actionSeconds = visual.motion === "attack" || visual.motion === "throw"
+              ? attackAnimationSeconds(unit.attackSpeed)
+              : latest.actionDuration;
+            entity.clipDuration = Math.max(MIN_ONE_SHOT_SECONDS, actionSeconds);
             action.setDuration(entity.clipDuration);
           }
           action.play();
@@ -505,7 +557,7 @@ export function MeatGaga3DLayer({
             action.time = action.getClip().duration * previewProgress;
             action.paused = true;
             entity.bodyElapsed = visual.motion === "move"
-              ? Math.max(0.08, latest.actionDuration) * previewProgress
+              ? entity.clipDuration * previewProgress
               : entity.bodyElapsed;
             entity.clipElapsed = reducedMotion
               ? entity.clipDuration
@@ -531,7 +583,7 @@ export function MeatGaga3DLayer({
             } else {
               entity.moveFrom.copy(entity.currentPosition);
             }
-            startAuthoredAction(entity, visual, latest);
+            startAuthoredAction(entity, unit, visual, latest);
           }
           const [toX, toY] = boardPoint(visual.position, latest.boardHeightRatio);
           entity.moveTo.set(toX, toY);
@@ -577,7 +629,7 @@ export function MeatGaga3DLayer({
             const hasAction = latest.units.some((unit) =>
               deriveMeatGagaVisualState(unit, latest.currentEvents, latest.previousSnapshotEvent).motion !== "idle",
             );
-            const fps = reducedMotion ? 10 : hasAction && latest.playing ? 48 : 24;
+            const fps = reducedMotion ? 10 : hasAction && latest.playing ? 60 : 30;
             if (now - lastRender < 1000 / fps) return;
             const delta = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
             lastFrame = now;
@@ -604,7 +656,7 @@ export function MeatGaga3DLayer({
 
               entity.bodyElapsed += delta * motionScale;
               entity.clipElapsed += delta * motionScale;
-              const actionSeconds = Math.max(0.08, latest.actionDuration);
+              const actionSeconds = Math.max(0.08, entity.clipDuration || latest.actionDuration);
               const actionProgress = latest.phase === "combat" && !latest.playing && latest.previewing
                 ? 0.46
                 : Math.min(1, entity.bodyElapsed / actionSeconds);
@@ -628,7 +680,8 @@ export function MeatGaga3DLayer({
               }
               entity.mixer.update(delta * motionScale);
 
-              const nextYaw = targetYaw(entity.currentPosition, visual.facingPosition, latest.boardHeightRatio);
+              const nextYaw = sideYaw(unit.side)
+                + targetYaw(entity.currentPosition, visual.facingPosition, latest.boardHeightRatio);
               entity.facingYaw = THREE.MathUtils.lerp(
                 entity.facingYaw,
                 nextYaw,

@@ -185,7 +185,7 @@ test("combat playback batches equal timestamps while its visible clock advances 
   assert.match(client, /sampleLinearCombatClock\(\{/);
   assert.match(
     client,
-    /const remainingSeconds = playbackRemainingSecondsRef\.current \?\? currentMomentInterval/,
+    /const remainingSeconds = playbackRemainingSecondsRef\.current \?\? currentMomentPlaybackInterval/,
   );
   assert.match(client, /const startedAt = performance\.now\(\)/);
   assert.match(client, /Math\.round\(\(remainingSeconds \* 1000\) \/ speed\)/);
@@ -219,9 +219,22 @@ test("combat playback batches equal timestamps while its visible clock advances 
   assert.match(client, />\{t\("Next moment"\)\}<\/button>/);
   assert.match(client, /setCombatClockSeconds\(combatMoments\[nextIndex\]\?\.timestamp \?\? currentCombatTime\)/);
   assert.match(client, /setCombatClockSeconds\(totalCombatTime\)/);
+  assert.match(client, /const movementBeatMilliseconds = currentEvents\.reduce/);
+  assert.match(client, /movementTravelSeconds\(after\.moveSpeed, before\.position, after\.position\)/);
+  assert.match(client, /const actionBeatMilliseconds = currentEvents\.reduce/);
+  assert.match(client, /attackAnimationSeconds\(actor\.attackSpeed\)/);
+  assert.match(client, /HEROES\[actor\.heroId\]\.ability\.castAnimationSeconds/);
+  assert.match(client, /const currentMomentPlaybackInterval = Math\.max\([\s\S]*?currentMomentInterval,[\s\S]*?desiredCombatBeatMilliseconds \/ 1000/);
+  assert.match(client, /segmentDuration: currentMomentPlaybackInterval/);
+  assert.match(client, /"--move-from-x"/);
+  assert.match(client, /"--move-from-y"/);
+  assert.match(client, /"--move-duration"/);
+  assert.match(client, /movementTravelSeconds\(unit\.moveSpeed, previousUnit\.position, unit\.position\)/);
+  assert.match(client, /"--action-duration"/);
+  assert.match(client, /style=\{tokenStyle\}/);
 });
 
-test("unit inspector exposes effective attack cadence and passive mana regeneration", async () => {
+test("unit inspector exposes effective attack, movement, and mana rates", async () => {
   const client = await readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8");
 
   const displayUnit = client.slice(
@@ -229,6 +242,7 @@ test("unit inspector exposes effective attack cadence and passive mana regenerat
     client.indexOf("type CombatEffectKind"),
   );
   assert.match(displayUnit, /attackSpeed: number/);
+  assert.match(displayUnit, /moveSpeed: number/);
   assert.match(displayUnit, /manaRegen: number/);
 
   const persistentDisplay = client.slice(
@@ -236,6 +250,7 @@ test("unit inspector exposes effective attack cadence and passive mana regenerat
     client.indexOf("function combatDisplay"),
   );
   assert.match(persistentDisplay, /attackSpeed: stats\.attackSpeed/);
+  assert.match(persistentDisplay, /moveSpeed: stats\.moveSpeed/);
   assert.match(persistentDisplay, /manaRegen: stats\.manaRegen/);
 
   const combatDisplay = client.slice(
@@ -249,6 +264,10 @@ test("unit inspector exposes effective attack cadence and passive mana regenerat
   );
   assert.match(
     combatDisplay,
+    /moveSpeed: Number\.isFinite\(unit\.moveSpeed\) \? unit\.moveSpeed : fallbackStats\.moveSpeed/,
+  );
+  assert.match(
+    combatDisplay,
     /manaRegen: Number\.isFinite\(unit\.manaRegen\) \? unit\.manaRegen : fallbackStats\.manaRegen/,
   );
 
@@ -258,6 +277,8 @@ test("unit inspector exposes effective attack cadence and passive mana regenerat
   );
   assert.match(inspector, /unit-attack-speed-\$\{selectedDisplay\.id\}/);
   assert.match(inspector, /<small>\{t\("Attack speed"\)\}<\/small><strong>\{formatRate\(selectedDisplay\.attackSpeed, locale\)\}\/\{t\("sec"\)\}<\/strong>/);
+  assert.match(inspector, /unit-move-speed-\$\{selectedDisplay\.id\}/);
+  assert.match(inspector, /<small>\{t\("Move speed"\)\}<\/small><strong>\{formatRate\(selectedDisplay\.moveSpeed, locale\)\} \{t\("tiles"\)\}\/\{t\("sec"\)\}<\/strong>/);
   assert.match(inspector, /unit-mana-regen-\$\{selectedDisplay\.id\}/);
   assert.match(inspector, /<small>\{t\("Mana regen"\)\}<\/small><strong>\{formatRate\(selectedDisplay\.manaRegen, locale\)\}\/\{t\("sec"\)\}<\/strong>/);
 });

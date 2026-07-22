@@ -16,7 +16,7 @@ import type {
   Vector2,
   WebGLRenderer,
 } from "three";
-import { BOARD_COLUMNS, BOARD_ROWS, type CombatEvent, type GameState } from "./game-engine";
+import { BOARD_COLUMNS, BOARD_ROWS, HEROES, attackAnimationSeconds, movementTravelSeconds, type CombatEvent, type GameState } from "./game-engine";
 import {
   chooseBoitataRenderMode,
   deriveBoitataVisualState,
@@ -40,6 +40,7 @@ export interface Boitata3DLayerProps {
   phase: GameState["phase"];
   playing: boolean;
   speed: number;
+  actionDuration: number;
   boardHeightRatio: number;
   onReady?: () => void;
   onFallback?: (reason: BoitataRendererFallbackReason) => void;
@@ -82,7 +83,6 @@ interface BoitataEntity {
   side: "player" | "enemy";
 }
 
-const ACTION_SECONDS = 0.68;
 const BOITATA_MODEL_URL = "/characters/boitata/boitata-rigged.glb";
 const BOITATA_MODEL_VERTICAL_ANCHOR_BIAS = 0.08;
 const BOITATA_MODEL_YAW_FLIP_RADIANS = Math.PI;
@@ -148,6 +148,7 @@ export function Boitata3DLayer({
   phase,
   playing,
   speed,
+  actionDuration,
   boardHeightRatio,
   onReady,
   onFallback,
@@ -161,12 +162,13 @@ export function Boitata3DLayer({
     phase,
     playing,
     speed,
+    actionDuration,
     boardHeightRatio,
   });
   const callbacksRef = useRef({ onReady, onFallback, onReducedMotionChange });
 
   useEffect(() => {
-    latestRef.current = { units, currentEvents, previousSnapshotEvent, phase, playing, speed, boardHeightRatio };
+    latestRef.current = { units, currentEvents, previousSnapshotEvent, phase, playing, speed, actionDuration, boardHeightRatio };
     callbacksRef.current = { onReady, onFallback, onReducedMotionChange };
   });
 
@@ -627,12 +629,20 @@ export function Boitata3DLayer({
 
             entity.bodyElapsed += delta * motionScale;
             entity.shieldElapsed += delta * motionScale;
+            const actionSeconds = Math.max(0.08, latest.actionDuration);
+            const bodyActionSeconds = visual.motion === "move"
+              ? Math.max(0.08, movementTravelSeconds(unit.moveSpeed, visual.fromPosition, visual.position))
+              : visual.motion === "attack"
+                ? Math.max(0.08, attackAnimationSeconds(unit.attackSpeed))
+                : visual.motion === "cast"
+                  ? HEROES.boitata.ability.castAnimationSeconds
+                  : actionSeconds;
             const bodyProgress = latest.phase === "combat" && !latest.playing && visual.motion !== "idle"
               ? visual.motion === "death" ? 0.72 : 0.46
-              : Math.min(1, entity.bodyElapsed / ACTION_SECONDS);
+              : Math.min(1, entity.bodyElapsed / bodyActionSeconds);
             const shieldProgress = latest.phase === "combat" && !latest.playing && visual.shieldMotion !== "active" && visual.shieldMotion !== "hidden"
               ? visual.shieldMotion === "shield-break" ? 0.72 : 0.46
-              : Math.min(1, entity.shieldElapsed / ACTION_SECONDS);
+              : Math.min(1, entity.shieldElapsed / actionSeconds);
 
             if (visual.motion === "move") {
               const travel = smoothStep(bodyProgress);

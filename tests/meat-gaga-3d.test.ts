@@ -28,7 +28,8 @@ function combatUnit(overrides: Partial<CombatUnit> = {}): CombatUnit {
     attack: 34,
     armor: 12,
     range: 4,
-    attackSpeed: 0.72,
+    attackSpeed: 0.46,
+    moveSpeed: 0.34,
     manaRegen: 0,
     shield: 0,
     fireWallShield: 0,
@@ -340,6 +341,21 @@ test("the shared animated layer is decorative and preserves the interactive port
 
   assert.match(layer, /GLTFLoader/);
   assert.match(layer, /SkeletonUtils\.clone/);
+  assert.match(layer, /const MEAT_GAGA_MODEL_FORWARD_TILT_RADIANS = \(-?\d+ \* Math\.PI\) \/ 180;/);
+  assert.match(layer, /const MEAT_GAGA_MODEL_YAW_RADIANS = \((-?\d+ \* Math\.PI\) \/ 180|0);/);
+  assert.match(
+    layer,
+    /rigTemplate\.rotation\.set\(\s*MEAT_GAGA_MODEL_FORWARD_TILT_RADIANS,\s*MEAT_GAGA_MODEL_YAW_RADIANS,\s*0,\s*\)/s,
+  );
+  assert.ok(
+    layer.indexOf("rigTemplate.rotation.set(") < layer.indexOf("rigTemplate.updateMatrixWorld(true)"),
+    "orientation must be applied before measuring rig bounds",
+  );
+  assert.match(layer, /MODEL_TARGET_HEIGHT \/ rigLongestSide/);
+  assert.match(layer, /function sideYaw\(side: MeatGagaRenderUnit\["side"\]\): number/);
+  assert.match(layer, /side === "player" \? 0 : Math\.PI/);
+  assert.match(layer, /facingYaw: sideYaw\(unit\.side\)/);
+  assert.match(layer, /sideYaw\(unit\.side\)\s*\+\s*targetYaw\(/);
   assert.match(layer, /new THREE\.AnimationMixer/);
   assert.match(layer, /LoopRepeat/);
   assert.match(layer, /LoopOnce/);
