@@ -81,7 +81,7 @@ function firstOtherTargetPosition(event: CombatEvent | null, unitId: string): nu
 
 function damageAmountForTarget(event: CombatEvent, unitId: string): number {
   if (!event.targetIds?.includes(unitId)) return 0;
-  if (event.type !== "attack" && event.type !== "ability") return 0;
+  if (event.type !== "attack" && event.type !== "ability" && event.type !== "landing") return 0;
   if (event.type === "ability") {
     const actor = event.actorId ? snapshotUnit(event, event.actorId) : null;
     if (actor?.heroId === "bramble" || actor?.heroId === "tide" || actor?.heroId === "boitata") return 0;

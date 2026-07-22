@@ -275,6 +275,25 @@ test("incoming damage still triggers hit feedback when simultaneous healing mask
   assert.equal(state.healthDamage, 0);
 });
 
+test("Defying Gravity landing damage triggers the authored hit feedback", () => {
+  const elphaba = combatUnit({ id: ENEMY_ID, heroId: "elphaba", side: "enemy", position: 24 });
+  const before = event("before-gravity-landing", "start", [combatUnit({ hp: 180 }), elphaba]);
+  const snapshot = [combatUnit({ hp: 180 }), elphaba];
+  const landing = event(
+    "gravity-landing",
+    "landing",
+    snapshot,
+    { actorId: ENEMY_ID, targetIds: [GAGA_ID], amounts: { [GAGA_ID]: 21 } },
+  );
+
+  const state = deriveMeatGagaVisualState(renderUnit({ hp: 180 }), [landing], before);
+
+  assert.equal(state.motion, "hit");
+  assert.equal(state.isHit, true);
+  assert.equal(state.healthDamage, 0);
+  assert.equal(state.facingPosition, 24);
+});
+
 test("death uses one stable procedural cue across later combat moments", () => {
   const before = event("before-death", "attack", [combatUnit({ hp: 8, alive: true })]);
   const defeated = event(
@@ -342,7 +361,8 @@ test("the shared animated layer is decorative and preserves the interactive port
   assert.match(client, /onReady=\{\(\) => setMeatGaga3DReady\(true\)\}/);
   assert.match(client, /onFallback=\{\(\) => setMeatGaga3DReady\(false\)\}/);
   assert.match(client, /onDisposed=\{\(\) => setMeatGaga3DReady\(false\)\}/);
-  assert.match(client, /aria-label="Stunned"/);
+  assert.match(client, /aria-label=\{isTimedStunned \?/);
+  assert.match(client, /`Stunned until \$\{formatAbilitySeconds\(unit\.stunnedUntil\)\}` : "Stunned"/);
   assert.match(styles, /\.meat-gaga-3d-ready \.unit-token-meat-gaga \.unit-avatar\.hero-art-image/);
   assert.match(styles, /opacity: 0/);
   assert.match(styles, /\.meat-gaga-3d-layer/);

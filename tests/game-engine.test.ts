@@ -357,11 +357,11 @@ test("normalizing a legacy v1 state backfills item collections and slots", () =>
   assert.deepEqual(validateState(normalized), []);
 });
 
-test("roster exposes ten distinct heroes, abilities, and real trait hooks", () => {
+test("roster exposes eleven distinct heroes, abilities, and real trait hooks", () => {
   const heroes = Object.values(HEROES);
-  assert.equal(heroes.length, 10);
-  assert.equal(new Set(heroes.map((hero) => hero.name)).size, 10);
-  assert.equal(new Set(heroes.map((hero) => hero.ability.name)).size, 10);
+  assert.equal(heroes.length, 11);
+  assert.equal(new Set(heroes.map((hero) => hero.name)).size, 11);
+  assert.equal(new Set(heroes.map((hero) => hero.ability.name)).size, 11);
   assert.ok(heroes.every((hero) => hero.traits.length >= 2));
   assert.equal(HEROES.boitata.portrait, "/characters/boitata.png");
   assert.equal(HEROES.boitata.ability.id, "wall-of-fire");

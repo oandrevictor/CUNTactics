@@ -177,6 +177,25 @@ test("reacts to incoming damage even when simultaneous healing masks the net hea
   assert.equal(state.facingPosition, 32);
 });
 
+test("reacts to Defying Gravity landing damage even when a shield masks the health delta", () => {
+  const elphaba = combatUnit({ id: ENEMY_ID, heroId: "elphaba", side: "enemy", position: 32 });
+  const before = event("before-gravity-landing", "start", [combatUnit({ hp: 200 }), elphaba]);
+  const snapshot = [combatUnit({ hp: 200 }), elphaba];
+  const landing = event(
+    "gravity-landing",
+    "landing",
+    snapshot,
+    { actorId: ENEMY_ID, targetIds: [BOITATA_ID], amounts: { [BOITATA_ID]: 24 } },
+  );
+
+  const state = deriveBoitataVisualState(renderUnit({ hp: 200 }), [landing], before);
+
+  assert.equal(state.motion, "hit");
+  assert.equal(state.isHit, true);
+  assert.equal(state.healthDamage, 0);
+  assert.equal(state.facingPosition, 32);
+});
+
 test("keeps body and Wall of Fire cues independent", () => {
   const beforeCast = event("before-cast", "attack", [combatUnit()]);
   const cast = event(

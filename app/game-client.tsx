@@ -117,6 +117,8 @@ type DisplayUnit = {
   shield: number;
   fireWallShield: number;
   stunned: number;
+  levitatingUntil: number;
+  stunnedUntil: number;
   alive: boolean;
 };
 
@@ -147,6 +149,29 @@ type MeatProjectileCue = {
   targetId: string;
   bonusDamage: number;
   style: CSSProperties;
+};
+
+type ElphabaAbilityPhase = "lift" | "landing";
+
+type ElphabaGravityEvent = CombatEvent & {
+  liftedTargetIds?: string[];
+  liftDurationSeconds?: number;
+  stunDurationSeconds?: number;
+  currentHealthDamagePercent?: number;
+  landingAt?: number;
+};
+
+type ElphabaGravityCue = {
+  event: ElphabaGravityEvent;
+  phase: ElphabaAbilityPhase;
+  actor: CombatUnit;
+  liftedTargets: CombatUnit[];
+  impactedTargets: CombatUnit[];
+};
+
+type TimedCombatUnit = CombatUnit & {
+  levitatingUntil?: number;
+  stunnedUntil?: number;
 };
 
 function clampPercent(value: number, maximum: number): number {
@@ -202,11 +227,25 @@ function formatRate(value: number): string {
   return value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
 }
 
+function formatAbilitySeconds(value: number): string {
+  return `${formatRate(value)}s`;
+}
+
+function elphabaAbilityPhase(event: CombatEvent | null): ElphabaAbilityPhase | null {
+  if (!event?.actorId || (event.type !== "ability" && event.type !== "landing")) return null;
+  const actor = event.snapshot.find((unit) => unit.id === event.actorId);
+  if (actor?.heroId !== "elphaba") return null;
+  if (event.type === "landing") return "landing";
+  return event.liftedTargetIds?.length ? "lift" : null;
+}
+
 function combatEffectKind(event: CombatEvent | null): CombatEffectKind | null {
   if (event?.type === "attack") return "attack";
   if (event?.type === "heal") return "heal";
   if (event?.type === "shield") return "shield";
+  if (event?.type === "landing") return "ability";
   if (event?.type !== "ability") return null;
+  if (elphabaAbilityPhase(event) === "lift") return null;
   const actor = event.actorId ? event.snapshot.find((unit) => unit.id === event.actorId) : null;
   if (actor?.heroId === "boitata") return "shield";
   return actor?.heroId === "tide" || actor?.heroId === "bramble" ? "heal" : "ability";
@@ -273,6 +312,17 @@ function starfallClusterStyle(
   } as CSSProperties;
 }
 
+function gravityPointStyle(position: number, index = 0, speed = 1): CSSProperties {
+  const rowCount = BOARD_SIZE / BOARD_COLUMNS;
+  const column = position % BOARD_COLUMNS;
+  const row = Math.floor(position / BOARD_COLUMNS);
+  return {
+    "--gravity-left": `${((column + 0.5) / BOARD_COLUMNS) * 100}%`,
+    "--gravity-top": `${((row + 0.5) / rowCount) * 100}%`,
+    "--gravity-delay": `${Math.round((index * 34) / Math.max(0.25, speed))}ms`,
+  } as CSSProperties;
+}
+
 function persistentDisplay(unit: UnitInstance): DisplayUnit {
   const stats = getUnitStats(unit);
   return {
@@ -290,17 +340,22 @@ function persistentDisplay(unit: UnitInstance): DisplayUnit {
     shield: 0,
     fireWallShield: 0,
     stunned: 0,
+    levitatingUntil: 0,
+    stunnedUntil: 0,
     alive: true,
   };
 }
 
 function combatDisplay(unit: CombatUnit, persistent?: UnitInstance): DisplayUnit {
   const fallbackStats = getUnitStats(persistent ?? unit);
+  const timedUnit = unit as TimedCombatUnit;
   return {
     ...unit,
     attackSpeed: Number.isFinite(unit.attackSpeed) ? unit.attackSpeed : fallbackStats.attackSpeed,
     manaRegen: Number.isFinite(unit.manaRegen) ? unit.manaRegen : fallbackStats.manaRegen,
     meatStack: Number.isFinite(unit.meatStack) ? unit.meatStack : 0,
+    levitatingUntil: Number.isFinite(timedUnit.levitatingUntil) ? timedUnit.levitatingUntil! : 0,
+    stunnedUntil: Number.isFinite(timedUnit.stunnedUntil) ? timedUnit.stunnedUntil! : 0,
     xp: persistent?.xp ?? 0,
     benchIndex: null,
     itemSlots: persistent?.itemSlots ?? [null, null, null],
@@ -374,6 +429,7 @@ function abilityMetricDefinitions(preview: AbilityPreview): AbilityMetric[] {
     vesper: "Enemies hit",
     piper: "Enemies hit",
     "meat-gaga": "Target",
+    elphaba: "Enemies levitated",
   };
   return [
     {
@@ -382,6 +438,13 @@ function abilityMetricDefinitions(preview: AbilityPreview): AbilityMetric[] {
       kind: preview.current.ignoresArmor ? "true-damage" : "raw-damage",
       applies: (values) => values.damage > 0,
       format: (values) => String(values.damage),
+    },
+    {
+      id: "current-health-true-damage",
+      label: "Landing true damage",
+      kind: "true-damage",
+      applies: (values) => values.currentHealthDamagePercent > 0,
+      format: (values) => `${formatRate(values.currentHealthDamagePercent)}% current Life`,
     },
     {
       id: "healing",
@@ -403,6 +466,20 @@ function abilityMetricDefinitions(preview: AbilityPreview): AbilityMetric[] {
       kind: "targets",
       applies: (values) => values.maxTargets > 0,
       format: preview.current.heroId === "boitata" ? () => "Self" : targetCountText,
+    },
+    {
+      id: "levitation",
+      label: "Levitation",
+      kind: "duration",
+      applies: (values) => values.liftDurationSeconds > 0,
+      format: (values) => formatAbilitySeconds(values.liftDurationSeconds),
+    },
+    {
+      id: "landing-stun",
+      label: "Landing stun",
+      kind: "stun",
+      applies: (values) => values.stunDurationSeconds > 0,
+      format: (values) => formatAbilitySeconds(values.stunDurationSeconds),
     },
     {
       id: "projectiles",
@@ -459,6 +536,7 @@ function UnitToken({
   highlighted,
   currentEvents,
   previousSnapshotEvent,
+  combatTime,
   draggable,
   onDragStart,
   onDragEnd,
@@ -469,6 +547,7 @@ function UnitToken({
   highlighted: boolean;
   currentEvents: readonly CombatEvent[];
   previousSnapshotEvent: CombatEvent | null;
+  combatTime: number;
   draggable: boolean;
   onDragStart?: (event: DragEvent<HTMLDivElement>) => void;
   onDragEnd?: (event: DragEvent<HTMLDivElement>) => void;
@@ -477,10 +556,14 @@ function UnitToken({
   const hero = HEROES[unit.heroId];
   const isCreatureToken = unit.heroId === "boitata";
   const isMeatGaga = unit.heroId === "meat-gaga";
-  const actorEvent = currentEvents.find((event) =>
+  const gravityActorEvent = currentEvents.find((event) => (
+    event.actorId === unit.id && elphabaAbilityPhase(event) !== null
+  )) ?? null;
+  const actorEvent = gravityActorEvent ?? currentEvents.find((event) =>
     event.actorId === unit.id
       && (event.type === "move" || event.type === "attack" || event.type === "ability" || event.type === "passive"),
   ) ?? currentEvents.find((event) => event.actorId === unit.id && combatEffectKind(event) !== null) ?? null;
+  const actorGravityPhase = elphabaAbilityPhase(gravityActorEvent);
   const actorEffectKind = combatEffectKind(actorEvent);
   const isMeatAttack = isMeatGagaEnhancedAttack(actorEvent);
   const meatHarvestEvent = isMeatGaga
@@ -492,6 +575,19 @@ function UnitToken({
   const isMoveEvent = actorEvent?.type === "move";
   const didMove = isMoveEvent && previousUnit !== null && previousUnit.position !== unit.position;
   const isStunnedAction = isMoveEvent && actorEvent.text.includes("stunned");
+  const gravityLiftEvent = currentEvents.find((event) => (
+    elphabaAbilityPhase(event) === "lift"
+      && (event as ElphabaGravityEvent).liftedTargetIds?.includes(unit.id)
+  )) as ElphabaGravityEvent | undefined;
+  const gravityLandingCenterEvent = currentEvents.find((event) => (
+    elphabaAbilityPhase(event) === "landing"
+      && (event as ElphabaGravityEvent).liftedTargetIds?.includes(unit.id)
+  )) as ElphabaGravityEvent | undefined;
+  const gravityImpactEvent = currentEvents.find((event) => (
+    elphabaAbilityPhase(event) === "landing" && event.targetIds?.includes(unit.id)
+  )) as ElphabaGravityEvent | undefined;
+  const isLevitating = unit.alive && unit.levitatingUntil > combatTime + COMBAT_TIMESTAMP_EPSILON_SECONDS;
+  const isTimedStunned = unit.alive && unit.stunnedUntil > combatTime + COMBAT_TIMESTAMP_EPSILON_SECONDS;
   const targetEffects = currentEvents.flatMap((event) => {
     const kind = combatEffectKind(event);
     return kind && event.targetIds?.includes(unit.id) ? [{ event, kind }] : [];
@@ -500,6 +596,7 @@ function UnitToken({
   const isMeatSplattered = targetEffects.some(({ event }) => isMeatGagaEnhancedAttack(event));
   const isHealed = targetEffects.some(({ kind }) => kind === "heal");
   const isShielded = targetEffects.some(({ kind }) => kind === "shield");
+  const isGravityImpact = gravityImpactEvent !== undefined;
   const isSolStarfall = currentEvents.some((event) => {
     if (event.type !== "ability" || !event.targetIds?.includes(unit.id) || !event.actorId) return false;
     return event.snapshot.find((candidate) => candidate.id === event.actorId)?.heroId === "sol";
@@ -529,6 +626,7 @@ function UnitToken({
       starfall: event.type === "ability" && event.actorId
         ? event.snapshot.find((candidate) => candidate.id === event.actorId)?.heroId === "sol"
         : false,
+      gravity: elphabaAbilityPhase(event) === "landing",
     }];
   });
   const blockFeedback = shieldLost > 0 ? `BLOCK ${shieldLost}` : null;
@@ -538,31 +636,45 @@ function UnitToken({
       : isStunnedAction
         ? "STUNNED"
         : "HOLD"
-    : actorIsSol
-      ? "STARFALL"
-      : isMeatAttack
-        ? "MEAT THROW"
-        : actorEvent?.type === "passive"
-          ? `HARVEST +${Math.round(meatHarvestEvent?.meatStackGained ?? 0)}`
-          : actorEffectKind === "shield"
-            ? "WALL"
-            : actorEvent?.type === "ability"
-              ? "CAST"
-              : "ATTACK";
+    : actorGravityPhase === "lift"
+      ? "DEFY GRAVITY"
+      : actorGravityPhase === "landing"
+        ? "GRAVITY"
+        : actorIsSol
+          ? "STARFALL"
+          : isMeatAttack
+            ? "MEAT THROW"
+            : actorEvent?.type === "passive"
+              ? `HARVEST +${Math.round(meatHarvestEvent?.meatStackGained ?? 0)}`
+              : actorEffectKind === "shield"
+                ? "WALL"
+                : actorEvent?.type === "ability"
+                  ? "CAST"
+                  : "ATTACK";
   const equippedItemTitle = equippedItemSummary(unit.itemSlots);
 
   return (
     <div
-      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${isMeatGaga ? "unit-token-meat-gaga" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${actorEffectKind ? `unit-event-actor unit-event-actor-${actorEffectKind}` : ""} ${isMoveEvent ? `unit-event-actor ${didMove ? "unit-event-move" : "unit-event-wait"}` : ""} ${actorIsSol ? "unit-event-actor-sol" : ""} ${isMeatAttack ? "unit-event-actor-meat" : ""} ${isMeatHarvest ? "unit-event-actor unit-event-meat-harvest" : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isDamaged && isSolStarfall ? "unit-impact-starfall" : ""} ${isMeatSplattered ? "unit-impact-meat" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""} ${loadoutDropStatus ? `unit-loadout-drop-${loadoutDropStatus}` : ""}`}
+      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${isMeatGaga ? "unit-token-meat-gaga" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${actorEffectKind ? `unit-event-actor unit-event-actor-${actorEffectKind}` : ""} ${isMoveEvent ? `unit-event-actor ${didMove ? "unit-event-move" : "unit-event-wait"}` : ""} ${actorGravityPhase ? "unit-event-actor unit-event-actor-elphaba" : ""} ${actorIsSol ? "unit-event-actor-sol" : ""} ${isMeatAttack ? "unit-event-actor-meat" : ""} ${isMeatHarvest ? "unit-event-actor unit-event-meat-harvest" : ""} ${isLevitating ? "unit-levitating" : ""} ${gravityLiftEvent ? "unit-gravity-lift-start" : ""} ${gravityLandingCenterEvent ? "unit-gravity-landing-center" : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isDamaged && isSolStarfall ? "unit-impact-starfall" : ""} ${isGravityImpact ? "unit-impact-gravity" : ""} ${isMeatSplattered ? "unit-impact-meat" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""} ${loadoutDropStatus ? `unit-loadout-drop-${loadoutDropStatus}` : ""}`}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       data-testid={`unit-${unit.id}`}
       data-unit-id={unit.id}
       data-hero-id={unit.heroId}
+      data-levitating-until={unit.levitatingUntil || undefined}
+      data-stunned-until={unit.stunnedUntil || undefined}
       title={equippedItemTitle || undefined}
     >
       <span className="unit-stars" data-testid={`unit-stars-${unit.id}`} aria-label={`${unit.stars} star`}>{starsLabel(unit.stars)}</span>
+      {isLevitating || gravityLiftEvent || gravityLandingCenterEvent ? (
+        <span
+          className="gravity-lift-aura"
+          data-testid={`elphaba-levitation-state-${unit.id}`}
+          data-gravity-state={gravityLandingCenterEvent ? "landing" : isLevitating ? "levitating" : "lifting"}
+          aria-hidden="true"
+        ><i /><b /></span>
+      ) : null}
       <HeroArt heroId={unit.heroId} className="unit-avatar" />
       {hasFireWall ? <span className={`fire-wall ${isShielded ? "fire-wall-cast" : ""} ${fireWallShieldLost > 0 ? "fire-wall-absorb" : ""} ${fireWallBroke ? "fire-wall-break" : ""}`} aria-hidden="true" /> : null}
       <span className="unit-level">L{unit.level}</span>
@@ -616,10 +728,13 @@ function UnitToken({
           ><span className="meter-fill" /></span>
         )}
       </span>
-      {unit.stunned > 0 ? <span className="status-mark" aria-label="Stunned">×</span> : null}
+      {isLevitating ? <span className="levitation-mark" aria-label={`Levitating until ${formatAbilitySeconds(unit.levitatingUntil)}`}>↑</span> : null}
+      {unit.stunned > 0 || isTimedStunned ? (
+        <span className="status-mark" aria-label={isTimedStunned ? `Stunned until ${formatAbilitySeconds(unit.stunnedUntil)}` : "Stunned"}>×</span>
+      ) : null}
       {feedback.map((entry, index) => (
         <span
-          className={`floating-text ${entry.kind === "heal" ? "floating-heal" : entry.kind === "shield" ? "floating-shield" : "floating-damage"} ${entry.starfall ? "floating-starfall" : ""} ${entry.meat ? "floating-meat" : ""}`}
+          className={`floating-text ${entry.kind === "heal" ? "floating-heal" : entry.kind === "shield" ? "floating-shield" : "floating-damage"} ${entry.starfall ? "floating-starfall" : ""} ${entry.gravity ? "floating-gravity" : ""} ${entry.meat ? "floating-meat" : ""}`}
           key={entry.key}
           style={{ "--feedback-offset": `${index * 12}px` } as CSSProperties}
         >
@@ -809,7 +924,10 @@ export function GameClient() {
   const visibleCombatMoments = combatMoments.slice(combatLogStart, combatMomentIndex + 1);
   const isSteppedMoment = !playing && steppedMomentKey !== null && currentMoment?.key === steppedMomentKey;
   const currentMomentActionCount = currentEvents.filter((event) =>
-    event.type === "move" || event.type === "attack" || event.type === "ability",
+    event.type === "move"
+      || event.type === "attack"
+      || event.type === "ability"
+      || event.type === "landing",
   ).length;
 
   useEffect(() => {
@@ -977,6 +1095,24 @@ export function GameClient() {
       ),
     }];
   });
+  const elphabaGravityCues = currentEvents.flatMap<ElphabaGravityCue>((event) => {
+    const phase = elphabaAbilityPhase(event);
+    if (!phase || !event.actorId) return [];
+    const gravityEvent = event as ElphabaGravityEvent;
+    const actor = event.snapshot.find((unit) => unit.id === event.actorId);
+    if (!actor) return [];
+    const liftedTargets = (gravityEvent.liftedTargetIds ?? []).flatMap((targetId) => {
+      const target = event.snapshot.find((unit) => unit.id === targetId);
+      return target ? [target] : [];
+    });
+    const impactedTargets = phase === "landing"
+      ? (event.targetIds ?? []).flatMap((targetId) => {
+          const target = event.snapshot.find((unit) => unit.id === targetId);
+          return target ? [target] : [];
+        })
+      : [];
+    return [{ event: gravityEvent, phase, actor, liftedTargets, impactedTargets }];
+  });
   const meatProjectiles = currentEvents.flatMap<MeatProjectileCue>((event) => {
     if (!isMeatGagaEnhancedAttack(event) || !event.actorId || !event.targetIds?.length) return [];
     const actor = event.snapshot.find((unit) => unit.id === event.actorId);
@@ -996,6 +1132,7 @@ export function GameClient() {
     const kind = combatEffectKind(event);
     if (!kind || !event.actorId || !event.targetIds?.length) return [];
     if (isMeatGagaEnhancedAttack(event)) return [];
+    if (elphabaAbilityPhase(event)) return [];
     const actor = event.snapshot.find((unit) => unit.id === event.actorId);
     if (!actor || (event.type === "ability" && actor.heroId === "sol")) return [];
     return event.targetIds.flatMap((targetId) => {
@@ -1338,6 +1475,57 @@ export function GameClient() {
                   ))}
                 </div>
               ))}
+              {elphabaGravityCues.map((cue) => (
+                <div
+                  className={`elphaba-gravity-layer elphaba-gravity-${cue.phase}`}
+                  aria-hidden="true"
+                  data-testid="elphaba-gravity-layer"
+                  data-event-id={cue.event.id}
+                  data-ability-phase={cue.phase}
+                  data-lifted-count={cue.liftedTargets.length}
+                  data-impact-count={cue.impactedTargets.length}
+                  data-lift-duration-seconds={cue.event.liftDurationSeconds}
+                  data-stun-duration-seconds={cue.event.stunDurationSeconds}
+                  data-current-health-damage-percent={cue.event.currentHealthDamagePercent}
+                  data-landing-at={cue.event.landingAt}
+                  key={cue.event.id}
+                >
+                  <span className="elphaba-gravity-wash" />
+                  <span className="elphaba-gravity-caster" style={gravityPointStyle(cue.actor.position)}><i>✦</i></span>
+                  {cue.phase === "lift" ? cue.liftedTargets.map((target, index) => (
+                    <span className="elphaba-gravity-lift-group" key={`${cue.event.id}:lift:${target.id}`}>
+                      <span className="elphaba-gravity-link" style={combatLinkStyle(cue.actor.position, target.position, boardHeightRatio)} />
+                      <span
+                        className="elphaba-gravity-lift-target"
+                        data-testid={`elphaba-lift-target-${target.id}`}
+                        data-target-id={target.id}
+                        data-levitating-until={(target as TimedCombatUnit).levitatingUntil}
+                        style={gravityPointStyle(target.position, index, speed)}
+                      ><i /><b /><em>↑</em></span>
+                    </span>
+                  )) : null}
+                  {cue.phase === "landing" ? cue.liftedTargets.map((target, index) => (
+                    <span
+                      className="elphaba-gravity-landing-center"
+                      data-testid={`elphaba-landing-center-${target.id}`}
+                      data-target-id={target.id}
+                      key={`${cue.event.id}:landing:${target.id}`}
+                      style={gravityPointStyle(target.position, index, speed)}
+                    ><i /><b /></span>
+                  )) : null}
+                  {cue.phase === "landing" ? cue.impactedTargets.map((target, index) => (
+                    <span
+                      className="elphaba-gravity-impact-target"
+                      data-testid={`elphaba-impact-target-${target.id}`}
+                      data-target-id={target.id}
+                      data-damage={cue.event.amounts?.[target.id] ?? 0}
+                      data-stun-duration-seconds={cue.event.stunDurationSeconds ?? 0}
+                      key={`${cue.event.id}:impact:${target.id}`}
+                      style={gravityPointStyle(target.position, index, speed)}
+                    ><i>×</i></span>
+                  )) : null}
+                </div>
+              ))}
               {Array.from({ length: BOARD_SIZE }, (_, index) => {
                 const row = Math.floor(index / BOARD_COLUMNS);
                 const column = index % BOARD_COLUMNS;
@@ -1384,6 +1572,7 @@ export function GameClient() {
                         highlighted={highlighted}
                         currentEvents={currentEvents}
                         previousSnapshotEvent={previousSnapshotEvent}
+                        combatTime={currentCombatTime}
                         draggable={game.phase === "planning" && unit.side === "player"}
                         loadoutDropStatus={loadoutDropStatus}
                         onDragStart={(event) => {
@@ -1551,6 +1740,7 @@ export function GameClient() {
                             highlighted={!!highlightedTrait && HEROES[display.heroId].traits.includes(highlightedTrait)}
                             currentEvents={[]}
                             previousSnapshotEvent={null}
+                            combatTime={0}
                             draggable={game.phase === "planning"}
                             loadoutDropStatus={loadoutDropStatus}
                             onDragStart={(event) => {

@@ -26,6 +26,7 @@ export type HeroId =
   | "bramble"
   | "boitata"
   | "meat-gaga"
+  | "elphaba"
   | "sol"
   | "nix"
   | "aster"
@@ -112,6 +113,9 @@ export interface AbilityValues {
   startingManaBonus: number;
   passiveStackGainPercent: number;
   passiveStackConsumePercent: number;
+  liftDurationSeconds: number;
+  stunDurationSeconds: number;
+  currentHealthDamagePercent: number;
   ignoresArmor: boolean;
 }
 
@@ -208,7 +212,12 @@ export interface CombatUnit {
   fireWallShield: number;
   /** Stored maximum-Life essence used by Meat Gaga's empowered attacks. */
   meatStack: number;
+  /** Legacy action-count stun used by Vesper. */
   stunned: number;
+  /** Absolute combat timestamp until which this unit is unable to act. */
+  stunnedUntil?: number;
+  /** Absolute combat timestamp until which this unit is levitating. */
+  levitatingUntil?: number;
   alive: boolean;
   itemSlots?: UnitItemSlots;
 }
@@ -220,6 +229,7 @@ export type CombatEventType =
   | "ability"
   | "heal"
   | "shield"
+  | "landing"
   | "passive"
   | "defeat"
   | "outcome";
@@ -241,6 +251,12 @@ export interface CombatEvent {
   meatStackConsumed?: number;
   meatStackGained?: number;
   meatStackAfter?: number;
+  /** Original Defying Gravity anchors, distinct from landing impact targets. */
+  liftedTargetIds?: string[];
+  liftDurationSeconds?: number;
+  stunDurationSeconds?: number;
+  currentHealthDamagePercent?: number;
+  landingAt?: number;
   text: string;
   snapshot: CombatUnit[];
 }
@@ -554,6 +570,29 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Passively harvests fallen characters' maximum Life, then hurls part of the stored meat as bonus damage on each basic attack.",
       manaCost: 0,
       targetRule: "Passive · Every fallen character",
+    },
+  },
+  elphaba: {
+    id: "elphaba",
+    name: "Elphaba",
+    title: "The Emerald Witch",
+    glyph: "E",
+    cost: 3,
+    rarity: "rare",
+    role: "mage",
+    traits: ["hexer", "starborn"],
+    maxHp: 128,
+    attack: 27,
+    armor: 9,
+    attackSpeed: 0.72,
+    manaRegen: 11.5,
+    startingMana: 35,
+    ability: {
+      id: "defying-gravity",
+      name: "Defying Gravity",
+      description: "Levitates enemies, then drops them into nearby foes for current-Life true damage and a brief stun.",
+      manaCost: 100,
+      targetRule: "Highest-current-Life enemies",
     },
   },
   sol: {
@@ -885,7 +924,7 @@ function enemyCountForRound(round: number): number {
 
 function generateEnemyMutable(state: GameState): UnitInstance[] {
   const count = enemyCountForRound(state.round);
-  const preferred = ["tide", "boitata", "nix", "vesper", "aster", "morrow", "meat-gaga", "piper", "sol", "bramble"] as HeroId[];
+  const preferred = ["tide", "boitata", "nix", "vesper", "aster", "morrow", "meat-gaga", "piper", "sol", "bramble", "elphaba"] as HeroId[];
   const openPositions = [2, 5, 10, 13, 17, 20, 22, 7];
   return Array.from({ length: count }, (_, index) => {
     const variance = randomStep(state.seed);
@@ -1527,6 +1566,9 @@ function evaluateAbilityValues(input: AbilityEvaluationInput): AbilityValues {
     startingManaBonus: input.formation.startingManaBonus,
     passiveStackGainPercent: 0,
     passiveStackConsumePercent: 0,
+    liftDurationSeconds: 0,
+    stunDurationSeconds: 0,
+    currentHealthDamagePercent: 0,
     ignoresArmor: false,
   };
   const scaleDamage = (amount: number) =>
@@ -1547,6 +1589,16 @@ function evaluateAbilityValues(input: AbilityEvaluationInput): AbilityValues {
     values.startingManaBonus = 0;
     values.passiveStackGainPercent = passive.stackGainPercent;
     values.passiveStackConsumePercent = passive.stackConsumePercent;
+  } else if (input.heroId === "elphaba") {
+    const index = input.stars - 1;
+    const basePercent = [10, 12, 15][index];
+    values.maxTargets = [1, 1, 3][index];
+    values.liftDurationSeconds = [0.5, 0.65, 1][index];
+    values.stunDurationSeconds = [0.25, 0.25, 0.5][index];
+    values.currentHealthDamagePercent = roundCombatDecimal(
+      basePercent * (1 + input.formation.abilityDamagePercent),
+    );
+    values.ignoresArmor = true;
   } else if (input.heroId === "sol") {
     values.damage = scaleDamage(48 + input.attack * 0.9);
     values.maxTargets = 5;
@@ -1573,7 +1625,7 @@ function evaluateAbilityValues(input: AbilityEvaluationInput): AbilityValues {
     values.projectiles = values.maxTargets;
   }
 
-  const isEnemyDamageAbility = values.damage > 0;
+  const isEnemyDamageAbility = values.damage > 0 || values.currentHealthDamagePercent > 0;
   if (isEnemyDamageAbility && input.heroId !== "morrow" && input.heroId !== "vesper") {
     values.manaDrain = input.formation.hexerManaDrain;
   }
@@ -1594,6 +1646,9 @@ function abilityScalingDescription(byStar: AbilityPreview["byStar"]): string {
   }
   if (heroId === "meat-gaga") {
     return `Passively stores ${triplet((value) => value.passiveStackGainPercent)}% of every fallen character's maximum Life, then consumes ${triplet((value) => value.passiveStackConsumePercent)}% of the stack as bonus damage on each basic attack at 1★/2★/3★.`;
+  }
+  if (heroId === "elphaba") {
+    return `Levitates ${triplet((value) => value.maxTargets)} enemy for ${triplet((value) => value.liftDurationSeconds)} seconds. On landing, orthogonally adjacent enemies take ${triplet((value) => value.currentHealthDamagePercent)}% of the fallen enemy's current Life as true damage and are stunned for ${triplet((value) => value.stunDurationSeconds)} seconds at 1★/2★/3★.`;
   }
   if (heroId === "sol") {
     return `Hits ${triplet((value) => `${value.minTargets}–${value.maxTargets}`)} clustered enemies for ${triplet((value) => value.damage)} raw damage each at 1★/2★/3★.`;
@@ -1650,8 +1705,9 @@ export function getAbilityPreview(
     0,
     Math.min(currentStats.maxMana, currentStats.startingMana + formation.startingManaBonus) - currentStats.startingMana,
   );
-  const usesAttackScaling = unit.heroId !== "boitata";
+  const usesAttackScaling = unit.heroId !== "boitata" && unit.heroId !== "elphaba";
   const usesDefensiveScaling = unit.heroId === "boitata";
+  const hasDamageOutput = current.damage > 0 || current.currentHealthDamagePercent > 0;
   const modifiers: string[] = [];
   if (usesDefensiveScaling && itemBonuses.maxHp > 0) modifiers.push(`Item · +${itemBonuses.maxHp} max Life`);
   if (usesAttackScaling && itemBonuses.attack > 0) modifiers.push(`Item · +${itemBonuses.attack} Attack`);
@@ -1661,10 +1717,10 @@ export function getAbilityPreview(
   if (usesAttackScaling && formation.attackPercent > 0) {
     modifiers.push(`Bond · Duelist +${Math.round(formation.attackPercent * 100)}% Attack`);
   }
-  if (formation.abilityDamagePercent > 0 && current.damage > 0) {
+  if (formation.abilityDamagePercent > 0 && hasDamageOutput) {
     modifiers.push(`Bond · Starborn +${Math.round(formation.abilityDamagePercent * 100)}% ability damage`);
   }
-  if (formation.hexerManaDrain > 0 && current.damage > 0) {
+  if (formation.hexerManaDrain > 0 && hasDamageOutput) {
     modifiers.push(`Bond · Hexer drains ${formation.hexerManaDrain} Mana from ability targets`);
   }
   if (formation.teamHealing > 0) {
@@ -1683,10 +1739,13 @@ export function getAbilityPreview(
   if (unit.heroId === "meat-gaga") {
     outputNotes.push("Passive: Meat Gaga has no Mana, never casts, and empowers only basic attacks after a character falls.");
   }
-  if (current.damage > 0) {
+  if (hasDamageOutput) {
     outputNotes.push(current.ignoresArmor
       ? "Damage is shown before shields; this ability ignores Armor."
       : "Damage is shown before enemy Armor, shields, and remaining-Life limits.");
+  }
+  if (current.currentHealthDamagePercent > 0) {
+    outputNotes.push("Landing damage is calculated from each still-living lifted enemy's current Life at the instant they fall.");
   }
   if (current.healing > 0) outputNotes.push("Healing is shown before missing-Life limits.");
   if (current.selfHealPercent > 0) outputNotes.push("Self-healing uses the damage actually applied.");
@@ -1729,6 +1788,8 @@ function makeCombatUnits(state: GameState): CombatUnit[] {
       fireWallShield: 0,
       meatStack: 0,
       stunned: 0,
+      stunnedUntil: 0,
+      levitatingUntil: 0,
       alive: true,
       itemSlots: cloneItemSlots(unit.itemSlots),
     } satisfies CombatUnit;
@@ -1808,6 +1869,11 @@ function addEvent(
     | "meatStackConsumed"
     | "meatStackGained"
     | "meatStackAfter"
+    | "liftedTargetIds"
+    | "liftDurationSeconds"
+    | "stunDurationSeconds"
+    | "currentHealthDamagePercent"
+    | "landingAt"
   > = {},
 ): void {
   events.push({
@@ -1834,16 +1900,29 @@ type PlannedCombatAction =
   | {
       kind: "stunned";
       actorId: string;
+      sourceId: string;
+    }
+  | {
+      kind: "timed-stunned";
+      actorId: string;
+      sourceId: string;
+    }
+  | {
+      kind: "levitating";
+      actorId: string;
+      sourceId: string;
     }
   | {
       kind: "move";
       actorId: string;
+      sourceId: string;
       targetId: string;
       destination: number | null;
     }
   | {
       kind: "attack";
       actorId: string;
+      sourceId: string;
       targetId: string;
       meatBonusDamage: number;
       meatStackConsumed: number;
@@ -1851,11 +1930,33 @@ type PlannedCombatAction =
   | {
       kind: "ability";
       actorId: string;
+      sourceId: string;
       targetIds: string[];
       allyIds: string[];
       destination: number | null;
       values: AbilityValues;
     };
+
+interface PendingGravityLanding {
+  id: string;
+  actorId: string;
+  actorSide: Side;
+  liftedTargetIds: string[];
+  resolvesAt: number;
+  currentHealthDamagePercent: number;
+  stunDurationSeconds: number;
+  manaDrain: number;
+  takedownMana: number;
+}
+
+interface PreparedGravityLanding extends PendingGravityLanding {
+  targetIds: string[];
+  potentialByTarget: Record<string, number>;
+}
+
+function timedStatusActive(until: number | undefined, timestamp: number): boolean {
+  return (until ?? 0) > timestamp + COMBAT_EPSILON;
+}
 
 function combatAbilityValues(actor: CombatUnit, units: CombatUnit[]): AbilityValues {
   return evaluateAbilityValues({
@@ -1878,6 +1979,8 @@ function plannedAbilityTargetIds(
   actor: CombatUnit,
   units: CombatUnit[],
   values: AbilityValues,
+  timestamp: number,
+  reservedLiftTargetIds: ReadonlySet<string>,
 ): string[] {
   const allies = units.filter((unit) => unit.side === actor.side && unit.alive);
   const enemies = units.filter((unit) => unit.side !== actor.side && unit.alive);
@@ -1890,6 +1993,18 @@ function plannedAbilityTargetIds(
       .map((unit) => unit.id);
   }
   if (actor.heroId === "boitata") return [actor.id];
+  if (actor.heroId === "elphaba") {
+    return enemies
+      .filter((enemy) =>
+        !timedStatusActive(enemy.levitatingUntil, timestamp)
+        && !reservedLiftTargetIds.has(enemy.id),
+      )
+      .sort((a, b) => b.hp - a.hp
+        || manhattan(actor.position, a.position) - manhattan(actor.position, b.position)
+        || a.id.localeCompare(b.id))
+      .slice(0, values.maxTargets)
+      .map((enemy) => enemy.id);
+  }
   if (actor.heroId === "sol") {
     const center = strongestClusterTarget(actor, units);
     return center
@@ -1927,12 +2042,30 @@ function planCombatAction(
   actor: CombatUnit,
   units: CombatUnit[],
   reservedPositions: Set<number>,
+  timestamp: number,
+  reservedLiftTargetIds: Set<string>,
 ): PlannedCombatAction {
-  if (actor.stunned > 0) return { kind: "stunned", actorId: actor.id };
+  const sourceId = `action:${actor.id}:${timestamp.toFixed(3)}`;
+  if (timedStatusActive(actor.levitatingUntil, timestamp)) {
+    return { kind: "levitating", actorId: actor.id, sourceId };
+  }
+  if (timedStatusActive(actor.stunnedUntil, timestamp)) {
+    return { kind: "timed-stunned", actorId: actor.id, sourceId };
+  }
+  if (actor.stunned > 0) return { kind: "stunned", actorId: actor.id, sourceId };
 
   if (actor.heroId !== "meat-gaga" && actor.maxMana > 0 && actor.mana >= actor.maxMana) {
     const values = combatAbilityValues(actor, units);
-    const targetIds = plannedAbilityTargetIds(actor, units, values);
+    const targetIds = plannedAbilityTargetIds(
+      actor,
+      units,
+      values,
+      timestamp,
+      reservedLiftTargetIds,
+    );
+    if (actor.heroId === "elphaba") {
+      for (const targetId of targetIds) reservedLiftTargetIds.add(targetId);
+    }
     const movementTarget = actor.heroId === "nix"
       ? units.find((unit) => unit.id === targetIds[0]) ?? null
       : null;
@@ -1943,6 +2076,7 @@ function planCombatAction(
     return {
       kind: "ability",
       actorId: actor.id,
+      sourceId,
       targetIds,
       allyIds: units
         .filter((unit) => unit.side === actor.side && unit.alive)
@@ -1953,12 +2087,13 @@ function planCombatAction(
   }
 
   const target = nearestEnemy(actor, units);
-  if (!target) return { kind: "move", actorId: actor.id, targetId: "", destination: null };
+  if (!target) return { kind: "move", actorId: actor.id, sourceId, targetId: "", destination: null };
   if (manhattan(actor.position, target.position) <= actor.range) {
     const meatStackConsumed = plannedMeatStackConsumption(actor);
     return {
       kind: "attack",
       actorId: actor.id,
+      sourceId,
       targetId: target.id,
       meatBonusDamage: meatStackConsumed,
       meatStackConsumed,
@@ -1966,7 +2101,7 @@ function planCombatAction(
   }
   const destination = openStepToward(actor, target, units, reservedPositions);
   if (destination !== null) reservedPositions.add(destination);
-  return { kind: "move", actorId: actor.id, targetId: target.id, destination };
+  return { kind: "move", actorId: actor.id, sourceId, targetId: target.id, destination };
 }
 
 interface SupportContribution {
@@ -1985,11 +2120,13 @@ interface ResolvedSupportContribution extends SupportContribution {
 
 interface DamageContribution {
   id: string;
+  sourceId: string;
   actorId: string;
   targetId: string;
   potential: number;
   manaDrain: number;
   stunTurns: number;
+  takedownMana: number;
 }
 
 interface ResolvedDamageContribution extends DamageContribution {
@@ -2136,6 +2273,7 @@ function mitigatedDamage(target: CombatUnit, rawDamage: number, ignoreArmor: boo
 function damageContributions(
   actions: PlannedCombatAction[],
   units: CombatUnit[],
+  gravityLandings: PreparedGravityLanding[] = [],
 ): DamageContribution[] {
   const contributions: DamageContribution[] = [];
   for (const action of actions) {
@@ -2145,26 +2283,54 @@ function damageContributions(
       const target = units.find((unit) => unit.id === action.targetId);
       if (!target) continue;
       contributions.push({
-        id: `${action.actorId}-damage-${target.id}`,
+        id: `${action.sourceId}:damage:${target.id}`,
+        sourceId: action.sourceId,
         actorId: action.actorId,
         targetId: target.id,
         potential: mitigatedDamage(target, actor.attack + action.meatBonusDamage, false),
         manaDrain: 0,
         stunTurns: 0,
+        takedownMana: tierValue(
+          "nightbound",
+          traitCountsForSide(units, actor.side).nightbound,
+          [20, 35],
+        ),
       });
     } else if (action.kind === "ability" && action.values.damage > 0) {
       for (const targetId of action.targetIds) {
         const target = units.find((unit) => unit.id === targetId);
         if (!target) continue;
         contributions.push({
-          id: `${action.actorId}-damage-${target.id}`,
+          id: `${action.sourceId}:damage:${target.id}`,
+          sourceId: action.sourceId,
           actorId: action.actorId,
           targetId: target.id,
           potential: mitigatedDamage(target, action.values.damage, action.values.ignoresArmor),
           manaDrain: action.values.manaDrain,
           stunTurns: action.values.stunTurns,
+          takedownMana: action.values.takedownMana,
         });
       }
+    }
+  }
+  for (const landing of gravityLandings) {
+    for (const targetId of landing.targetIds) {
+      const target = units.find((unit) => unit.id === targetId);
+      if (!target) continue;
+      contributions.push({
+        id: `${landing.id}:damage:${targetId}`,
+        sourceId: landing.id,
+        actorId: landing.actorId,
+        targetId,
+        potential: mitigatedDamage(
+          target,
+          landing.potentialByTarget[targetId] ?? 0,
+          true,
+        ),
+        manaDrain: landing.manaDrain,
+        stunTurns: 0,
+        takedownMana: landing.takedownMana,
+      });
     }
   }
   return contributions;
@@ -2191,6 +2357,60 @@ function resolveDamageContributions(
   }));
 }
 
+function prepareGravityLandings(
+  landings: PendingGravityLanding[],
+  units: CombatUnit[],
+  timestamp: number,
+): PreparedGravityLanding[] {
+  if (landings.length === 0) return [];
+  const frozenUnits = cloneCombatUnits(units);
+  const allAnchorIds = new Set(landings.flatMap((landing) => landing.liftedTargetIds));
+  const prepared = [...landings]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((landing) => {
+      const liveAnchors = landing.liftedTargetIds.flatMap((anchorId) => {
+        const anchor = frozenUnits.find((unit) => unit.id === anchorId);
+        return anchor?.alive ? [anchor] : [];
+      });
+      const potentialByTarget: Record<string, number> = {};
+      for (const anchor of liveAnchors) {
+        const anchorDamage = Math.max(
+          0,
+          Math.round(anchor.hp * (landing.currentHealthDamagePercent / 100)),
+        );
+        for (const target of frozenUnits) {
+          if (
+            !target.alive
+            || target.side === landing.actorSide
+            || allAnchorIds.has(target.id)
+            || manhattan(anchor.position, target.position) !== 1
+          ) {
+            continue;
+          }
+          potentialByTarget[target.id] = (potentialByTarget[target.id] ?? 0) + anchorDamage;
+        }
+      }
+      const targetIds = Object.keys(potentialByTarget).sort((a, b) => a.localeCompare(b));
+      return { ...landing, targetIds, potentialByTarget };
+    });
+
+  for (const landing of prepared) {
+    for (const anchorId of landing.liftedTargetIds) {
+      const anchor = units.find((unit) => unit.id === anchorId);
+      if (anchor && (anchor.levitatingUntil ?? 0) <= timestamp + COMBAT_EPSILON) {
+        anchor.levitatingUntil = 0;
+      }
+    }
+    const stunnedUntil = roundCombatDecimal(timestamp + landing.stunDurationSeconds);
+    for (const targetId of landing.targetIds) {
+      const target = units.find((unit) => unit.id === targetId);
+      if (!target?.alive) continue;
+      target.stunnedUntil = Math.max(target.stunnedUntil ?? 0, stunnedUntil);
+    }
+  }
+  return prepared;
+}
+
 function abilityEventText(
   actor: CombatUnit,
   targetIds: readonly string[],
@@ -2201,6 +2421,9 @@ function abilityEventText(
   if (actor.heroId === "boitata") {
     return `${combatName(actor)} coils into ${hero.ability.name} and gains ${Math.round(amount)} shield.`;
   }
+  if (actor.heroId === "elphaba") {
+    return `${combatName(actor)} casts ${hero.ability.name} and lifts ${targetIds.length} ${targetIds.length === 1 ? "enemy" : "enemies"}.`;
+  }
   const targetNames = targetIds.flatMap((id) => {
     const target = units.find((unit) => unit.id === id);
     return target ? [combatName(target)] : [];
@@ -2208,12 +2431,28 @@ function abilityEventText(
   return `${combatName(actor)} casts ${hero.ability.name}${targetNames.length ? ` on ${targetNames.join(" and ")}` : ""}${amount ? ` for ${Math.round(amount)} impact` : ""}.`;
 }
 
+function gravityLandingEventText(
+  actor: CombatUnit,
+  landing: PreparedGravityLanding,
+  units: CombatUnit[],
+  amount: number,
+): string {
+  const anchorNames = landing.liftedTargetIds.flatMap((id) => {
+    const anchor = units.find((unit) => unit.id === id);
+    return anchor ? [combatName(anchor)] : [];
+  });
+  const subject = anchorNames.length > 0 ? anchorNames.join(" and ") : "The lifted enemies";
+  return `${subject} ${anchorNames.length === 1 ? "falls" : "fall"} from ${combatName(actor)}'s Defying Gravity${landing.targetIds.length ? `, striking ${landing.targetIds.length} nearby ${landing.targetIds.length === 1 ? "enemy" : "enemies"} for ${Math.round(amount)} true damage` : " without striking a nearby enemy"}.`;
+}
+
 function resolveCombatBatch(
   actions: PlannedCombatAction[],
+  gravityLandings: PreparedGravityLanding[],
   units: CombatUnit[],
   events: CombatEvent[],
   turn: number,
   timestamp: number,
+  pendingGravityLandings: PendingGravityLanding[],
 ): void {
   const aliveAtStart = new Set(units.filter((unit) => unit.alive).map((unit) => unit.id));
   const abilityActions = actions.filter(
@@ -2227,6 +2466,34 @@ function resolveCombatBatch(
     if (actor) actor.mana = 0;
   }
 
+  // A cast is committed from the frozen plan even if its caster is defeated
+  // later in this same moment. The queued landing therefore outlives Elphaba.
+  for (const action of abilityActions) {
+    if (action.values.heroId !== "elphaba" || action.targetIds.length === 0) continue;
+    const actor = units.find((unit) => unit.id === action.actorId);
+    if (!actor) continue;
+    const resolvesAt = roundCombatDecimal(timestamp + action.values.liftDurationSeconds);
+    const liftedTargetIds = action.targetIds.filter((targetId) =>
+      units.some((unit) => unit.id === targetId && unit.alive),
+    );
+    if (liftedTargetIds.length === 0) continue;
+    for (const targetId of liftedTargetIds) {
+      const target = units.find((unit) => unit.id === targetId)!;
+      target.levitatingUntil = Math.max(target.levitatingUntil ?? 0, resolvesAt);
+    }
+    pendingGravityLandings.push({
+      id: `gravity:${actor.id}:${turn}:${timestamp.toFixed(3)}`,
+      actorId: actor.id,
+      actorSide: actor.side,
+      liftedTargetIds,
+      resolvesAt,
+      currentHealthDamagePercent: action.values.currentHealthDamagePercent,
+      stunDurationSeconds: action.values.stunDurationSeconds,
+      manaDrain: action.values.manaDrain,
+      takedownMana: action.values.takedownMana,
+    });
+  }
+
   const support = baseSupportContributions(actions);
   const supportPreview = cloneCombatUnits(units);
   for (const contribution of resolveSupportContributions(supportPreview, support)) {
@@ -2234,7 +2501,7 @@ function resolveCombatBatch(
   }
   const preliminaryDamage = resolveDamageContributions(
     supportPreview,
-    damageContributions(actions, supportPreview),
+    damageContributions(actions, supportPreview, gravityLandings),
   );
   for (const action of abilityActions) {
     if (action.values.selfHealPercent <= 0) continue;
@@ -2294,6 +2561,19 @@ function resolveCombatBatch(
           targetIds: action.targetIds,
           amount: primaryAmount,
           amounts: primaryAmounts,
+          liftedTargetIds: action.values.heroId === "elphaba" ? action.targetIds : undefined,
+          liftDurationSeconds: action.values.heroId === "elphaba"
+            ? action.values.liftDurationSeconds
+            : undefined,
+          stunDurationSeconds: action.values.heroId === "elphaba"
+            ? action.values.stunDurationSeconds
+            : undefined,
+          currentHealthDamagePercent: action.values.heroId === "elphaba"
+            ? action.values.currentHealthDamagePercent
+            : undefined,
+          landingAt: action.values.heroId === "elphaba"
+            ? roundCombatDecimal(timestamp + action.values.liftDurationSeconds)
+            : undefined,
         },
       );
       continue;
@@ -2352,12 +2632,15 @@ function resolveCombatBatch(
     }
   }
 
-  const resolvedDamage = resolveDamageContributions(units, damageContributions(actions, units));
-  const damageByActor = new Map<string, ResolvedDamageContribution[]>();
+  const resolvedDamage = resolveDamageContributions(
+    units,
+    damageContributions(actions, units, gravityLandings),
+  );
+  const damageBySource = new Map<string, ResolvedDamageContribution[]>();
   for (const contribution of resolvedDamage) {
-    const actorDamage = damageByActor.get(contribution.actorId) ?? [];
-    actorDamage.push(contribution);
-    damageByActor.set(contribution.actorId, actorDamage);
+    const sourceDamage = damageBySource.get(contribution.sourceId) ?? [];
+    sourceDamage.push(contribution);
+    damageBySource.set(contribution.sourceId, sourceDamage);
   }
 
   for (const action of actions) {
@@ -2370,6 +2653,30 @@ function resolveCombatBatch(
         timestamp,
         "move",
         `${combatName(actor)} is stunned and skips the action.`,
+        { actorId: actor.id },
+      );
+      continue;
+    }
+    if (action.kind === "timed-stunned") {
+      addEvent(
+        events,
+        units,
+        turn,
+        timestamp,
+        "move",
+        `${combatName(actor)} is stunned and skips the action.`,
+        { actorId: actor.id },
+      );
+      continue;
+    }
+    if (action.kind === "levitating") {
+      addEvent(
+        events,
+        units,
+        turn,
+        timestamp,
+        "move",
+        `${combatName(actor)} is levitating and cannot act.`,
         { actorId: actor.id },
       );
       continue;
@@ -2389,7 +2696,7 @@ function resolveCombatBatch(
       continue;
     }
 
-    const actorDamage = damageByActor.get(action.actorId) ?? [];
+    const actorDamage = damageBySource.get(action.sourceId) ?? [];
     if (action.kind === "attack") {
       const contribution = actorDamage[0];
       const target = contribution
@@ -2457,25 +2764,51 @@ function resolveCombatBatch(
     );
   }
 
+  for (const landing of gravityLandings) {
+    const actor = units.find((unit) => unit.id === landing.actorId);
+    if (!actor) continue;
+    const landingDamage = damageBySource.get(landing.id) ?? [];
+    const amounts: Record<string, number> = {};
+    let amount = 0;
+    for (const contribution of landingDamage) {
+      const target = units.find((unit) => unit.id === contribution.targetId);
+      if (!target) continue;
+      const applied = damageUnit(target, contribution.amount, true);
+      target.mana = Math.max(0, target.mana - landing.manaDrain);
+      amounts[target.id] = applied;
+      amount += applied;
+    }
+    addEvent(
+      events,
+      units,
+      turn,
+      timestamp,
+      "landing",
+      gravityLandingEventText(actor, landing, units, amount),
+      {
+        actorId: actor.id,
+        targetIds: landing.targetIds,
+        amount,
+        amounts,
+        liftedTargetIds: landing.liftedTargetIds,
+        stunDurationSeconds: landing.stunDurationSeconds,
+        currentHealthDamagePercent: landing.currentHealthDamagePercent,
+        landingAt: timestamp,
+      },
+    );
+  }
+
   const newlyDefeated = units
     .filter((unit) => aliveAtStart.has(unit.id) && !unit.alive)
     .sort((a, b) => a.id.localeCompare(b.id));
   for (const target of newlyDefeated) {
     const ownerDamage = resolvedDamage
       .filter((contribution) => contribution.targetId === target.id && contribution.amount > 0)
-      .sort((a, b) => b.amount - a.amount || a.actorId.localeCompare(b.actorId))[0];
+      .sort((a, b) => b.amount - a.amount || a.actorId.localeCompare(b.actorId) || a.id.localeCompare(b.id))[0];
     if (!ownerDamage) continue;
     const owner = units.find((unit) => unit.id === ownerDamage.actorId);
     if (!owner) continue;
-    const ownerAction = actions.find((action) => action.actorId === owner.id);
-    const takedownMana = ownerAction?.kind === "ability"
-      ? ownerAction.values.takedownMana
-      : tierValue(
-          "nightbound",
-          traitCountsForSide(units, owner.side).nightbound,
-          [20, 35],
-        );
-    owner.mana = Math.min(owner.maxMana, owner.mana + takedownMana);
+    owner.mana = Math.min(owner.maxMana, owner.mana + ownerDamage.takedownMana);
     addEvent(events, units, turn, timestamp, "defeat", `${combatName(target)} is defeated.`, {
       actorId: owner.id,
       targetIds: [target.id],
@@ -2581,46 +2914,90 @@ export function resolveCombat(state: GameState): GameActionResult {
   const nextActionAt = new Map(
     units.map((unit) => [unit.id, nextOpportunityTime(unit, 0)]),
   );
+  let pendingGravityLandings: PendingGravityLanding[] = [];
 
-  while (
-    actionCount < MAX_COMBAT_ACTIONS &&
-    units.some((unit) => unit.side === "player" && unit.alive) &&
-    units.some((unit) => unit.side === "enemy" && unit.alive)
-  ) {
-    const actionTime = units
-      .filter((unit) => unit.alive)
-      .reduce(
-        (earliest, unit) => Math.min(earliest, nextActionAt.get(unit.id) ?? Infinity),
-        Infinity,
-      );
-    if (actionTime > COMBAT_DURATION_SECONDS) {
+  while (true) {
+    const bothSidesAlive =
+      units.some((unit) => unit.side === "player" && unit.alive)
+      && units.some((unit) => unit.side === "enemy" && unit.alive);
+    const canProcessActions = actionCount < MAX_COMBAT_ACTIONS && bothSidesAlive;
+    if (!canProcessActions && pendingGravityLandings.length === 0) break;
+
+    const actionTime = canProcessActions
+      ? units
+          .filter((unit) => unit.alive)
+          .reduce(
+            (earliest, unit) => Math.min(earliest, nextActionAt.get(unit.id) ?? Infinity),
+            Infinity,
+          )
+      : Infinity;
+    const landingTime = pendingGravityLandings.reduce(
+      (earliest, landing) => Math.min(earliest, landing.resolvesAt),
+      Infinity,
+    );
+    const momentTime = Math.min(actionTime, landingTime);
+    if (momentTime > COMBAT_DURATION_SECONDS) {
       regenerateMana(units, COMBAT_DURATION_SECONDS - elapsedTime);
       elapsedTime = COMBAT_DURATION_SECONDS;
       reachedTimeLimit = true;
       break;
     }
-    regenerateMana(units, actionTime - elapsedTime);
-    elapsedTime = actionTime;
+    regenerateMana(units, momentTime - elapsedTime);
+    elapsedTime = momentTime;
     turn += 1;
-    const batchActors = units
-      .filter((unit) => (
-        unit.alive && Math.abs((nextActionAt.get(unit.id) ?? Infinity) - actionTime) <= COMBAT_EPSILON
-      ))
-      .sort((a, b) => {
-        if (a.side !== b.side) return a.side === "player" ? -1 : 1;
-        return a.id.localeCompare(b.id);
-      });
-    if (batchActors.length === 0) break;
+
+    const dueLandings = pendingGravityLandings.filter(
+      (landing) => landing.resolvesAt <= momentTime + COMBAT_EPSILON,
+    );
+    pendingGravityLandings = pendingGravityLandings.filter(
+      (landing) => landing.resolvesAt > momentTime + COMBAT_EPSILON,
+    );
+    const gravityLandings = prepareGravityLandings(dueLandings, units, momentTime);
+    if (gravityLandings.length > 0) {
+      // Scheduled landings have timestamp priority. All landings due now are
+      // resolved as one simultaneous damage batch before same-time unit actions
+      // are frozen, so a defeated or newly stunned unit cannot act afterward.
+      resolveCombatBatch(
+        [],
+        gravityLandings,
+        units,
+        events,
+        turn,
+        elapsedTime,
+        pendingGravityLandings,
+      );
+    }
+    const bothSidesAliveAfterLandings =
+      units.some((unit) => unit.side === "player" && unit.alive)
+      && units.some((unit) => unit.side === "enemy" && unit.alive);
+    const batchActors = canProcessActions && bothSidesAliveAfterLandings
+      ? units
+          .filter((unit) => (
+            unit.alive && Math.abs((nextActionAt.get(unit.id) ?? Infinity) - momentTime) <= COMBAT_EPSILON
+          ))
+          .sort((a, b) => {
+            if (a.side !== b.side) return a.side === "player" ? -1 : 1;
+            return a.id.localeCompare(b.id);
+          })
+      : [];
+    if (batchActors.length === 0 && gravityLandings.length === 0) break;
 
     const planningUnits = cloneCombatUnits(units);
     const reservedPositions = new Set<number>();
+    const reservedLiftTargetIds = new Set<string>();
     const plannedByActorId = new Map([...batchActors]
       .sort((a, b) => a.id.localeCompare(b.id))
       .map((actor) => {
         const planningActor = planningUnits.find((unit) => unit.id === actor.id)!;
         return [
           actor.id,
-          planCombatAction(planningActor, planningUnits, reservedPositions),
+          planCombatAction(
+            planningActor,
+            planningUnits,
+            reservedPositions,
+            momentTime,
+            reservedLiftTargetIds,
+          ),
         ] as const;
       }));
     const plannedActions = batchActors.map((actor) => plannedByActorId.get(actor.id)!);
@@ -2640,7 +3017,17 @@ export function resolveCombat(state: GameState): GameActionResult {
       actor.stunned = Math.max(0, actor.stunned - 1);
     }
 
-    resolveCombatBatch(plannedActions, units, events, turn, elapsedTime);
+    if (plannedActions.length > 0) {
+      resolveCombatBatch(
+        plannedActions,
+        [],
+        units,
+        events,
+        turn,
+        elapsedTime,
+        pendingGravityLandings,
+      );
+    }
   }
 
   const playerAlive = units.filter((unit) => unit.side === "player" && unit.alive);
