@@ -133,7 +133,6 @@ type DisplayUnit = {
   armor: number;
   range: number;
   attackSpeed: number;
-  moveSpeed: number;
   manaRegen: number;
   meatStack: number;
   shield: number;
@@ -357,7 +356,6 @@ function persistentDisplay(unit: UnitInstance): DisplayUnit {
     armor: stats.armor,
     range: stats.range,
     attackSpeed: stats.attackSpeed,
-    moveSpeed: stats.moveSpeed,
     manaRegen: stats.manaRegen,
     meatStack: 0,
     shield: 0,
@@ -375,7 +373,6 @@ function combatDisplay(unit: CombatUnit, persistent?: UnitInstance): DisplayUnit
   return {
     ...unit,
     attackSpeed: Number.isFinite(unit.attackSpeed) ? unit.attackSpeed : fallbackStats.attackSpeed,
-    moveSpeed: Number.isFinite(unit.moveSpeed) ? unit.moveSpeed : fallbackStats.moveSpeed,
     manaRegen: Number.isFinite(unit.manaRegen) ? unit.manaRegen : fallbackStats.manaRegen,
     meatStack: Number.isFinite(unit.meatStack) ? unit.meatStack : 0,
     levitatingUntil: Number.isFinite(timedUnit.levitatingUntil) ? timedUnit.levitatingUntil! : 0,
@@ -1998,7 +1995,6 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
                 <span className="stat-cell"><small>{t("Damage")}</small><strong>{selectedDisplay.attack}</strong></span>
                 <span className="stat-cell"><small>{t("Armor")}</small><strong>{selectedDisplay.armor}</strong></span>
                 <span className="stat-cell stat-cell-rate stat-cell-attack-speed" data-testid={`unit-attack-speed-${selectedDisplay.id}`}><small>{t("Attack speed")}</small><strong>{formatRate(selectedDisplay.attackSpeed, locale)}/{t("sec")}</strong></span>
-                <span className="stat-cell stat-cell-rate stat-cell-move-speed" data-testid={`unit-move-speed-${selectedDisplay.id}`}><small>{t("Move speed")}</small><strong>{formatRate(selectedDisplay.moveSpeed, locale)} {t("tiles")}/{t("sec")}</strong></span>
                 {selectedHero.id === "meat-gaga" ? (
                   <span className="stat-cell stat-cell-meat-stack" data-testid={`unit-meat-stack-inspector-${selectedDisplay.id}`}><small>{t("Meat reserve")}</small><strong>{Math.round(selectedDisplay.meatStack)}</strong></span>
                 ) : (
