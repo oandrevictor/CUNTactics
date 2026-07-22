@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent, ReactNode } from "react";
 import { Boitata3DLayer } from "./boitata-3d-layer";
 import { sampleLinearCombatClock } from "./combat-playback";
+import { MeatGaga3DLayer } from "./meat-gaga-3d-layer";
 import {
   BENCH_SIZE,
   BOARD_COLUMNS,
@@ -615,7 +616,7 @@ function UnitToken({
           ><span className="meter-fill" /></span>
         )}
       </span>
-      {unit.stunned > 0 ? <span className="status-mark" aria-label="Silenced">×</span> : null}
+      {unit.stunned > 0 ? <span className="status-mark" aria-label="Stunned">×</span> : null}
       {feedback.map((entry, index) => (
         <span
           className={`floating-text ${entry.kind === "heal" ? "floating-heal" : entry.kind === "shield" ? "floating-shield" : "floating-damage"} ${entry.starfall ? "floating-starfall" : ""} ${entry.meat ? "floating-meat" : ""}`}
@@ -721,6 +722,7 @@ export function GameClient() {
   const [steppedMomentKey, setSteppedMomentKey] = useState<string | null>(null);
   const [boardHeightRatio, setBoardHeightRatio] = useState(DESKTOP_BOARD_HEIGHT_RATIO);
   const [boitata3DReady, setBoitata3DReady] = useState(false);
+  const [meatGaga3DReady, setMeatGaga3DReady] = useState(false);
   const [tutorialStage, setTutorialStage] = useState(0);
   const [tutorialVisible, setTutorialVisible] = useState(true);
   const [forgeOpen, setForgeOpen] = useState(false);
@@ -913,6 +915,7 @@ export function GameClient() {
 
   const boardUnits = displayUnits.filter((unit) => unit.position !== null);
   const boitataBoardUnits = boardUnits.filter((unit) => unit.heroId === "boitata");
+  const meatGagaBoardUnits = boardUnits.filter((unit) => unit.heroId === "meat-gaga");
   const benchUnits = game.units.filter((unit) => unit.benchIndex !== null);
   const selectedDisplay = selectedId ? displayUnits.find((unit) => unit.id === selectedId) ?? null : null;
   const selectedPersistent = selectedId ? game.units.find((unit) => unit.id === selectedId) ?? game.enemyUnits.find((unit) => unit.id === selectedId) ?? null : null;
@@ -1286,7 +1289,7 @@ export function GameClient() {
           <div className="board-wrap">
             <div className="territory-label territory-enemy">Enemy territory</div>
             <div className="arena-plane">
-              <div className={`board-grid ${boitata3DReady ? "boitata-3d-ready" : ""} ${game.phase === "combat" && !playing ? "combat-paused" : ""} ${isSteppedMoment ? "combat-step-preview" : ""}`} role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
+              <div className={`board-grid ${boitata3DReady ? "boitata-3d-ready" : ""} ${meatGaga3DReady ? "meat-gaga-3d-ready" : ""} ${game.phase === "combat" && !playing ? "combat-paused" : ""} ${isSteppedMoment ? "combat-step-preview" : ""}`} role="grid" aria-label="Eight column by six row battle board" data-testid="game-board" style={combatBeatStyle}>
               {combatLinks.length ? (
                 <div className="combat-links" aria-hidden="true" data-testid="combat-links">
                   {combatLinks.map((link) => (
@@ -1406,6 +1409,22 @@ export function GameClient() {
                     boardHeightRatio={boardHeightRatio}
                     onReady={() => setBoitata3DReady(true)}
                     onFallback={() => setBoitata3DReady(false)}
+                  />
+                ) : null}
+                {meatGagaBoardUnits.length > 0 ? (
+                  <MeatGaga3DLayer
+                    units={meatGagaBoardUnits}
+                    currentEvents={currentEvents}
+                    previousSnapshotEvent={previousSnapshotEvent}
+                    phase={game.phase}
+                    playing={playing}
+                    previewing={isSteppedMoment}
+                    speed={speed}
+                    actionDuration={combatBeatMilliseconds / 1000}
+                    boardHeightRatio={boardHeightRatio}
+                    onReady={() => setMeatGaga3DReady(true)}
+                    onFallback={() => setMeatGaga3DReady(false)}
+                    onDisposed={() => setMeatGaga3DReady(false)}
                   />
                 ) : null}
               </div>

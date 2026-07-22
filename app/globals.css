@@ -536,7 +536,8 @@ button:disabled,
   background: var(--aubergine-3);
 }
 
-.boitata-3d-layer {
+.boitata-3d-layer,
+.meat-gaga-3d-layer {
   position: absolute;
   z-index: 1;
   inset: 5px;
@@ -544,7 +545,8 @@ button:disabled,
   pointer-events: none;
 }
 
-.boitata-3d-layer canvas {
+.boitata-3d-layer canvas,
+.meat-gaga-3d-layer canvas {
   display: block;
   width: 100%;
   height: 100%;
@@ -1400,6 +1402,63 @@ button:disabled,
   background-position: center top;
   background-size: 145%;
   box-shadow: inset 0 -10px 15px rgb(74 5 24 / 26%);
+}
+
+.meat-gaga-3d-ready .unit-token-meat-gaga {
+  --unit-team-color: var(--teal);
+  isolation: isolate;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ivory);
+}
+
+.meat-gaga-3d-ready .unit-token-meat-gaga.unit-enemy {
+  --unit-team-color: var(--coral);
+}
+
+.meat-gaga-3d-ready .unit-token-meat-gaga .unit-avatar.hero-art-image {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.meat-gaga-3d-ready .unit-token-meat-gaga::after {
+  position: absolute;
+  z-index: 0;
+  bottom: -4%;
+  left: 50%;
+  width: 108%;
+  height: 28%;
+  border: 1px solid color-mix(in srgb, var(--unit-team-color) 32%, transparent);
+  border-radius: 50%;
+  background: radial-gradient(ellipse, color-mix(in srgb, var(--unit-team-color) 24%, transparent), rgb(0 0 0 / 42%) 56%, transparent 76%);
+  box-shadow: 0 7px 8px rgb(0 0 0 / 36%);
+  content: "";
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.meat-gaga-3d-ready .unit-token-meat-gaga .unit-stars,
+.meat-gaga-3d-ready .unit-token-meat-gaga .unit-level,
+.meat-gaga-3d-ready .unit-token-meat-gaga .unit-name,
+.meat-gaga-3d-ready .unit-token-meat-gaga .unit-bars,
+.meat-gaga-3d-ready .unit-token-meat-gaga .unit-item-pips,
+.meat-gaga-3d-ready .unit-token-meat-gaga .unit-meat-stack,
+.meat-gaga-3d-ready .unit-token-meat-gaga .status-mark,
+.meat-gaga-3d-ready .unit-token-meat-gaga .combat-role,
+.meat-gaga-3d-ready .unit-token-meat-gaga .floating-text {
+  z-index: 5;
+}
+
+.meat-gaga-3d-ready .unit-token-meat-gaga.unit-selected,
+.meat-gaga-3d-ready .unit-token-meat-gaga.unit-trait-highlight {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.meat-gaga-3d-ready .unit-token-meat-gaga.unit-selected::after {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px rgb(241 203 109 / 20%), 0 0 18px rgb(241 203 109 / 34%), 0 7px 8px rgb(0 0 0 / 38%);
 }
 
 .unit-token-creature {
@@ -4196,7 +4255,8 @@ button:disabled,
     aspect-ratio: 8 / 6.3;
   }
 
-  .boitata-3d-layer {
+  .boitata-3d-layer,
+  .meat-gaga-3d-layer {
     inset: 3px;
   }
 
