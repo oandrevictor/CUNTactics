@@ -1,6 +1,22 @@
 export const BOARD_COLUMNS = 8;
 export const BOARD_ROWS = 6;
 export const BOARD_SIZE = BOARD_COLUMNS * BOARD_ROWS;
+
+export function movementTravelSeconds(
+  moveSpeed: number,
+  fromPosition: number | null,
+  toPosition: number | null,
+): number {
+  if (!Number.isFinite(moveSpeed) || moveSpeed <= 0 || fromPosition === null || toPosition === null) return 0;
+  const columnDistance = Math.abs((fromPosition % BOARD_COLUMNS) - (toPosition % BOARD_COLUMNS));
+  const rowDistance = Math.abs(Math.floor(fromPosition / BOARD_COLUMNS) - Math.floor(toPosition / BOARD_COLUMNS));
+  return (columnDistance + rowDistance) / moveSpeed;
+}
+
+export function attackAnimationSeconds(attackSpeed: number): number {
+  if (!Number.isFinite(attackSpeed) || attackSpeed <= 0) return 0;
+  return Math.round((0.72 / attackSpeed) * 1000) / 1000;
+}
 export const PLAYER_START_ROW = 3;
 export const BENCH_SIZE = 7;
 export const SHOP_SIZE = 5;
@@ -17,6 +33,7 @@ const COMBAT_DURATION_SECONDS = 45;
 const MAX_COMBAT_ACTIONS = 1024;
 const COMBAT_DECIMAL_PRECISION = 1000;
 const COMBAT_EPSILON = 1e-9;
+const COMBAT_EVENT_STEP_SECONDS = 1 / COMBAT_DECIMAL_PRECISION;
 
 export type Side = "player" | "enemy";
 export type GamePhase = "planning" | "combat" | "resolution" | "gameover";
@@ -94,6 +111,8 @@ export interface AbilityDefinition {
   description: string;
   manaCost: number;
   targetRule: string;
+  /** Visual cast duration; this does not change mana or action scheduling. */
+  castAnimationSeconds: number;
 }
 
 export interface AbilityValues {
@@ -153,6 +172,8 @@ export interface HeroDefinition {
   armor: number;
   /** Basic-attack/action opportunities per second. */
   attackSpeed: number;
+  /** Board tiles traversed per second while closing on a target. */
+  moveSpeed: number;
   /** Mana restored per second while the unit is alive. */
   manaRegen: number;
   startingMana: number;
@@ -207,6 +228,7 @@ export interface CombatUnit {
   armor: number;
   range: number;
   attackSpeed: number;
+  moveSpeed: number;
   manaRegen: number;
   shield: number;
   fireWallShield: number;
@@ -360,6 +382,7 @@ export interface UnitStats {
   armor: number;
   range: number;
   attackSpeed: number;
+  moveSpeed: number;
   manaRegen: number;
   maxMana: number;
   startingMana: number;
@@ -513,7 +536,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 190,
     attack: 18,
     armor: 24,
-    attackSpeed: 0.65,
+    attackSpeed: 0.4,
+    moveSpeed: 0.28,
     manaRegen: 10.5,
     startingMana: 20,
     ability: {
@@ -522,6 +546,7 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Gains a shield and restores life to the most wounded adjacent allies, healing more allies at 3 stars.",
       manaCost: 80,
       targetRule: "Self and lowest-life adjacent allies",
+      castAnimationSeconds: 1.6,
     },
   },
   boitata: {
@@ -537,7 +562,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 216,
     attack: 20,
     armor: 28,
-    attackSpeed: 0.68,
+    attackSpeed: 0.42,
+    moveSpeed: 0.29,
     manaRegen: 10,
     startingMana: 35,
     ability: {
@@ -546,6 +572,7 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Coils into a wall of fire, gaining a shield equal to 20 + 7 per level + 18% max Life + 105% Armor.",
       manaCost: 90,
       targetRule: "Self",
+      castAnimationSeconds: 1.8,
     },
   },
   "meat-gaga": {
@@ -561,7 +588,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 142,
     attack: 34,
     armor: 11,
-    attackSpeed: 0.75,
+    attackSpeed: 0.46,
+    moveSpeed: 0.34,
     manaRegen: 0,
     startingMana: 0,
     ability: {
@@ -570,6 +598,7 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Passively harvests fallen characters' maximum Life, then hurls part of the stored meat as bonus damage on each basic attack.",
       manaCost: 0,
       targetRule: "Passive · Every fallen character",
+      castAnimationSeconds: 0,
     },
   },
   elphaba: {
@@ -584,7 +613,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 128,
     attack: 27,
     armor: 9,
-    attackSpeed: 0.72,
+    attackSpeed: 0.44,
+    moveSpeed: 0.32,
     manaRegen: 11.5,
     startingMana: 35,
     ability: {
@@ -593,6 +623,7 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Levitates enemies, then drops them into nearby foes for current-Life true damage and a brief stun.",
       manaCost: 100,
       targetRule: "Highest-current-Life enemies",
+      castAnimationSeconds: 1.8,
     },
   },
   sol: {
@@ -607,7 +638,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 118,
     attack: 24,
     armor: 8,
-    attackSpeed: 0.72,
+    attackSpeed: 0.44,
+    moveSpeed: 0.34,
     manaRegen: 12,
     startingMana: 35,
     ability: {
@@ -616,6 +648,7 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Calls a star onto the target and every enemy in an adjacent tile.",
       manaCost: 90,
       targetRule: "Largest enemy cluster",
+      castAnimationSeconds: 1.7,
     },
   },
   nix: {
@@ -630,7 +663,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 130,
     attack: 31,
     armor: 11,
-    attackSpeed: 1.05,
+    attackSpeed: 0.65,
+    moveSpeed: 0.46,
     manaRegen: 8.5,
     startingMana: 25,
     ability: {
@@ -639,6 +673,7 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Leaps beside the farthest enemy and strikes through their armor.",
       manaCost: 70,
       targetRule: "Farthest enemy",
+      castAnimationSeconds: 1.2,
     },
   },
   aster: {
@@ -653,7 +688,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 150,
     attack: 38,
     armor: 15,
-    attackSpeed: 0.95,
+    attackSpeed: 0.58,
+    moveSpeed: 0.42,
     manaRegen: 8,
     startingMana: 10,
     ability: {
@@ -662,6 +698,7 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Pierces the current target for heavy damage and gains a brief shield.",
       manaCost: 75,
       targetRule: "Current target",
+      castAnimationSeconds: 1.3,
     },
   },
   morrow: {
@@ -676,7 +713,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 164,
     attack: 35,
     armor: 14,
-    attackSpeed: 0.7,
+    attackSpeed: 0.43,
+    moveSpeed: 0.3,
     manaRegen: 11.5,
     startingMana: 30,
     ability: {
@@ -685,6 +723,7 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Drains life and mana from the enemy with the most mana.",
       manaCost: 100,
       targetRule: "Enemy with most mana",
+      castAnimationSeconds: 1.7,
     },
   },
   tide: {
@@ -699,7 +738,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 176,
     attack: 17,
     armor: 20,
-    attackSpeed: 0.66,
+    attackSpeed: 0.41,
+    moveSpeed: 0.28,
     manaRegen: 11,
     startingMana: 40,
     ability: {
@@ -708,6 +748,7 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Heals the most wounded ally and grants them a warding shield.",
       manaCost: 85,
       targetRule: "Lowest-life ally",
+      castAnimationSeconds: 1.5,
     },
   },
   vesper: {
@@ -722,7 +763,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 122,
     attack: 28,
     armor: 9,
-    attackSpeed: 0.75,
+    attackSpeed: 0.46,
+    moveSpeed: 0.31,
     manaRegen: 12.5,
     startingMana: 45,
     ability: {
@@ -731,6 +773,7 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Damages the enemy closest to casting, drains mana, and stuns them.",
       manaCost: 95,
       targetRule: "Enemy with most mana",
+      castAnimationSeconds: 1.6,
     },
   },
   piper: {
@@ -745,7 +788,8 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
     maxHp: 126,
     attack: 27,
     armor: 10,
-    attackSpeed: 0.92,
+    attackSpeed: 0.56,
+    moveSpeed: 0.38,
     manaRegen: 9,
     startingMana: 20,
     ability: {
@@ -754,6 +798,7 @@ export const HEROES: Record<HeroId, HeroDefinition> = {
       description: "Fires binding arrows into the weakest enemies, launching a third arrow at 3 stars.",
       manaCost: 80,
       targetRule: "Weakest enemies",
+      castAnimationSeconds: 1.4,
     },
   },
 };
@@ -919,18 +964,25 @@ function makeUnitMutable(
 }
 
 function enemyCountForRound(round: number): number {
-  return Math.min(8, 3 + Math.ceil(round / 2));
+  if (round >= FINAL_ROUND) return 8;
+  return Math.min(7, 2 + Math.ceil(round / 2));
 }
 
 function generateEnemyMutable(state: GameState): UnitInstance[] {
   const count = enemyCountForRound(state.round);
   const preferred = ["tide", "boitata", "nix", "vesper", "aster", "morrow", "meat-gaga", "piper", "sol", "bramble", "elphaba"] as HeroId[];
   const openPositions = [2, 5, 10, 13, 17, 20, 22, 7];
+  const threeStarCount = state.round >= 9 ? state.round - 8 : 0;
+  const twoStarCount = state.round >= 4
+    ? Math.min(count - threeStarCount, Math.floor((state.round - 2) / 2))
+    : 0;
   return Array.from({ length: count }, (_, index) => {
     const variance = randomStep(state.seed);
     state.seed = variance.seed;
     const heroId = preferred[(state.round + index + Math.floor(variance.value * 3)) % preferred.length];
-    const stars = state.round >= 8 && index < 2 ? 3 : state.round >= 4 && index < Math.ceil(count / 2) ? 2 : 1;
+    const stars = index < threeStarCount
+      ? 3
+      : index < threeStarCount + twoStarCount ? 2 : 1;
     const level = Math.min(MAX_UNIT_LEVEL, 1 + Math.floor((state.round - 1) / 3));
     return makeUnitMutable(state, heroId, "enemy", openPositions[index], null, stars, level);
   });
@@ -1017,6 +1069,7 @@ export function getUnitStats(
     armor: Math.round(hero.armor * (1 + (unit.level - 1) * 0.08)) + itemBonuses.armor,
     range: ROLE_PROFILES[hero.role].range,
     attackSpeed: hero.attackSpeed,
+    moveSpeed: hero.moveSpeed,
     manaRegen: hero.manaRegen,
     maxMana,
     startingMana: Math.min(maxMana, hero.startingMana + itemBonuses.startingMana),
@@ -1783,6 +1836,7 @@ function makeCombatUnits(state: GameState): CombatUnit[] {
       armor: stats.armor,
       range: stats.range,
       attackSpeed: stats.attackSpeed,
+      moveSpeed: stats.moveSpeed,
       manaRegen: stats.manaRegen,
       shield: 0,
       fireWallShield: 0,
@@ -1836,8 +1890,15 @@ function openStepToward(
   target: CombatUnit,
   units: CombatUnit[],
   reservedPositions: ReadonlySet<number> = new Set(),
+  vacatedFriendlyPositions: ReadonlySet<number> = new Set(),
 ): number | null {
-  const occupied = new Set(units.filter((unit) => unit.alive && unit.id !== actor.id).map((unit) => unit.position));
+  const occupied = new Set(units
+    .filter((unit) =>
+      unit.alive
+      && unit.id !== actor.id
+      && !(unit.side === actor.side && vacatedFriendlyPositions.has(unit.position)),
+    )
+    .map((unit) => unit.position));
   const x = actor.position % BOARD_COLUMNS;
   const y = Math.floor(actor.position / BOARD_COLUMNS);
   const candidates = [
@@ -1879,7 +1940,7 @@ function addEvent(
   events.push({
     id: `event-${events.length + 1}`,
     turn,
-    timestamp,
+    timestamp: roundCombatDecimal(timestamp),
     type,
     text,
     snapshot: snapshot(units),
@@ -2044,6 +2105,7 @@ function planCombatAction(
   reservedPositions: Set<number>,
   timestamp: number,
   reservedLiftTargetIds: Set<string>,
+  vacatedFriendlyPositions: ReadonlySet<number> = new Set(),
 ): PlannedCombatAction {
   const sourceId = `action:${actor.id}:${timestamp.toFixed(3)}`;
   if (timedStatusActive(actor.levitatingUntil, timestamp)) {
@@ -2070,7 +2132,13 @@ function planCombatAction(
       ? units.find((unit) => unit.id === targetIds[0]) ?? null
       : null;
     const destination = movementTarget
-      ? openStepToward(actor, movementTarget, units, reservedPositions)
+      ? openStepToward(
+          actor,
+          movementTarget,
+          units,
+          reservedPositions,
+          vacatedFriendlyPositions,
+        )
       : null;
     if (destination !== null) reservedPositions.add(destination);
     return {
@@ -2099,7 +2167,13 @@ function planCombatAction(
       meatStackConsumed,
     };
   }
-  const destination = openStepToward(actor, target, units, reservedPositions);
+  const destination = openStepToward(
+    actor,
+    target,
+    units,
+    reservedPositions,
+    vacatedFriendlyPositions,
+  );
   if (destination !== null) reservedPositions.add(destination);
   return { kind: "move", actorId: actor.id, sourceId, targetId: target.id, destination };
 }
@@ -2885,8 +2959,33 @@ function regenerateMana(units: CombatUnit[], elapsedSeconds: number): void {
   }
 }
 
-function nextOpportunityTime(unit: CombatUnit, completedOpportunities: number): number {
-  return roundCombatDecimal((completedOpportunities + 1) / unit.attackSpeed);
+type CombatOpportunityKind = "attack" | "move";
+
+function combatOpportunityKind(unit: CombatUnit, units: CombatUnit[]): CombatOpportunityKind {
+  if (unit.heroId !== "meat-gaga" && unit.maxMana > 0 && unit.mana >= unit.maxMana) {
+    return "attack";
+  }
+  const target = nearestEnemy(unit, units);
+  return target && manhattan(unit.position, target.position) <= unit.range
+    ? "attack"
+    : "move";
+}
+
+function scheduledOpportunityTime(
+  unit: CombatUnit,
+  units: CombatUnit[],
+  nextAttackAt: ReadonlyMap<string, number>,
+  nextMoveAt: ReadonlyMap<string, number>,
+  currentTime: number,
+): number {
+  const scheduledTime = combatOpportunityKind(unit, units) === "move"
+    ? nextMoveAt.get(unit.id)
+    : nextAttackAt.get(unit.id);
+  return Math.max(currentTime, scheduledTime ?? Infinity);
+}
+
+function nextOpportunityTime(timestamp: number, speed: number): number {
+  return timestamp + 1 / speed;
 }
 
 export function resolveCombat(state: GameState): GameActionResult {
@@ -2910,9 +3009,11 @@ export function resolveCombat(state: GameState): GameActionResult {
   let actionCount = 0;
   let elapsedTime = 0;
   let reachedTimeLimit = false;
-  const completedOpportunities = new Map(units.map((unit) => [unit.id, 0]));
-  const nextActionAt = new Map(
-    units.map((unit) => [unit.id, nextOpportunityTime(unit, 0)]),
+  const nextAttackAt = new Map(
+    units.map((unit) => [unit.id, nextOpportunityTime(0, unit.attackSpeed)]),
+  );
+  const nextMoveAt = new Map(
+    units.map((unit) => [unit.id, COMBAT_EVENT_STEP_SECONDS]),
   );
   let pendingGravityLandings: PendingGravityLanding[] = [];
 
@@ -2927,7 +3028,10 @@ export function resolveCombat(state: GameState): GameActionResult {
       ? units
           .filter((unit) => unit.alive)
           .reduce(
-            (earliest, unit) => Math.min(earliest, nextActionAt.get(unit.id) ?? Infinity),
+            (earliest, unit) => Math.min(
+              earliest,
+              scheduledOpportunityTime(unit, units, nextAttackAt, nextMoveAt, elapsedTime),
+            ),
             Infinity,
           )
       : Infinity;
@@ -2973,7 +3077,10 @@ export function resolveCombat(state: GameState): GameActionResult {
     const batchActors = canProcessActions && bothSidesAliveAfterLandings
       ? units
           .filter((unit) => (
-            unit.alive && Math.abs((nextActionAt.get(unit.id) ?? Infinity) - momentTime) <= COMBAT_EPSILON
+            unit.alive
+              && Math.abs(
+                scheduledOpportunityTime(unit, units, nextAttackAt, nextMoveAt, elapsedTime) - momentTime,
+              ) <= COMBAT_EPSILON
           ))
           .sort((a, b) => {
             if (a.side !== b.side) return a.side === "player" ? -1 : 1;
@@ -2983,29 +3090,71 @@ export function resolveCombat(state: GameState): GameActionResult {
     if (batchActors.length === 0 && gravityLandings.length === 0) break;
 
     const planningUnits = cloneCombatUnits(units);
+    const opportunityKindByActorId = new Map(
+      batchActors.map((actor) => [actor.id, combatOpportunityKind(actor, units)] as const),
+    );
     const reservedPositions = new Set<number>();
     const reservedLiftTargetIds = new Set<string>();
+    const vacatedPositionsBySide = new Map<Side, Set<number>>();
+    const vacatedPositionsFor = (side: Side): Set<number> => {
+      const existing = vacatedPositionsBySide.get(side);
+      if (existing) return existing;
+      const positions = new Set<number>();
+      vacatedPositionsBySide.set(side, positions);
+      return positions;
+    };
     const plannedByActorId = new Map([...batchActors]
-      .sort((a, b) => a.id.localeCompare(b.id))
+      .sort((a, b) => {
+        const aMoves = opportunityKindByActorId.get(a.id) === "move";
+        const bMoves = opportunityKindByActorId.get(b.id) === "move";
+        if (aMoves !== bMoves) return aMoves ? 1 : -1;
+        if (aMoves && bMoves) {
+          const aTarget = nearestEnemy(a, planningUnits);
+          const bTarget = nearestEnemy(b, planningUnits);
+          const aDistance = aTarget ? manhattan(a.position, aTarget.position) : Infinity;
+          const bDistance = bTarget ? manhattan(b.position, bTarget.position) : Infinity;
+          if (aDistance !== bDistance) return aDistance - bDistance;
+        }
+        return a.id.localeCompare(b.id);
+      })
       .map((actor) => {
         const planningActor = planningUnits.find((unit) => unit.id === actor.id)!;
-        return [
-          actor.id,
-          planCombatAction(
-            planningActor,
-            planningUnits,
-            reservedPositions,
-            momentTime,
-            reservedLiftTargetIds,
-          ),
-        ] as const;
+        const action = planCombatAction(
+          planningActor,
+          planningUnits,
+          reservedPositions,
+          momentTime,
+          reservedLiftTargetIds,
+          vacatedPositionsFor(actor.side),
+        );
+        if (
+          (action.kind === "move" || action.kind === "ability")
+          && action.destination !== null
+        ) {
+          vacatedPositionsFor(actor.side).add(planningActor.position);
+        }
+        return [actor.id, action] as const;
       }));
     const plannedActions = batchActors.map((actor) => plannedByActorId.get(actor.id)!);
 
     for (const actor of batchActors) {
-      const actorOpportunities = (completedOpportunities.get(actor.id) ?? 0) + 1;
-      completedOpportunities.set(actor.id, actorOpportunities);
-      nextActionAt.set(actor.id, nextOpportunityTime(actor, actorOpportunities));
+      const action = plannedByActorId.get(actor.id)!;
+      const opportunityKind = action.kind === "move"
+        ? "move"
+        : action.kind === "attack" || action.kind === "ability"
+          ? "attack"
+          : opportunityKindByActorId.get(actor.id) ?? "attack";
+      if (opportunityKind === "move") {
+        nextMoveAt.set(actor.id, nextOpportunityTime(momentTime, actor.moveSpeed));
+        if ((nextAttackAt.get(actor.id) ?? Infinity) <= momentTime + COMBAT_EPSILON) {
+          nextAttackAt.set(actor.id, momentTime + COMBAT_EVENT_STEP_SECONDS);
+        }
+      } else {
+        nextAttackAt.set(actor.id, nextOpportunityTime(momentTime, actor.attackSpeed));
+        if ((nextMoveAt.get(actor.id) ?? Infinity) <= momentTime + COMBAT_EPSILON) {
+          nextMoveAt.set(actor.id, momentTime + COMBAT_EVENT_STEP_SECONDS);
+        }
+      }
     }
     actionCount += batchActors.length;
 

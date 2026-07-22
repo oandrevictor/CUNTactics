@@ -15,6 +15,8 @@ export interface MeatGagaRenderUnit {
   level: number;
   hp: number;
   maxHp: number;
+  attackSpeed: number;
+  moveSpeed: number;
   meatStack: number;
   stunned: number;
   alive: boolean;

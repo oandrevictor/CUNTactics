@@ -435,6 +435,7 @@ const PT_UI_TEXT: Readonly<Record<string, string>> = {
   "Damage": "Dano",
   "Armor": "Armadura",
   "Attack speed": "Velocidade de ataque",
+  "Move speed": "Velocidade de movimento",
   "Meat reserve": "Reserva de carne",
   "Mana regen": "Regeneração de Mana",
   "Wall of Fire": "Muralha de Fogo",

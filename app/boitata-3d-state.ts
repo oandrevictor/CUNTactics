@@ -9,6 +9,8 @@ export interface BoitataRenderUnit {
   level: number;
   hp: number;
   maxHp: number;
+  attackSpeed: number;
+  moveSpeed: number;
   fireWallShield: number;
   alive: boolean;
 }

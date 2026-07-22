@@ -29,6 +29,7 @@ import {
 import {
   BENCH_SIZE,
   BOARD_COLUMNS,
+  BOARD_ROWS,
   BOARD_SIZE,
   HEROES,
   ITEM_COMPONENTS,
@@ -44,6 +45,7 @@ import {
   XP_BUY_COST,
   advanceRound,
   applyCombatResult,
+  attackAnimationSeconds,
   buyPlayerXp,
   buyShopUnit,
   calculateMeatGagaStackConsumption,
@@ -64,6 +66,7 @@ import {
   getStreakBonus,
   getUnitStats,
   moveUnit,
+  movementTravelSeconds,
   normalizeGameState,
   refreshShop,
   resolveCombat,
@@ -133,6 +136,7 @@ type DisplayUnit = {
   armor: number;
   range: number;
   attackSpeed: number;
+  moveSpeed: number;
   manaRegen: number;
   meatStack: number;
   shield: number;
@@ -356,6 +360,7 @@ function persistentDisplay(unit: UnitInstance): DisplayUnit {
     armor: stats.armor,
     range: stats.range,
     attackSpeed: stats.attackSpeed,
+    moveSpeed: stats.moveSpeed,
     manaRegen: stats.manaRegen,
     meatStack: 0,
     shield: 0,
@@ -373,6 +378,7 @@ function combatDisplay(unit: CombatUnit, persistent?: UnitInstance): DisplayUnit
   return {
     ...unit,
     attackSpeed: Number.isFinite(unit.attackSpeed) ? unit.attackSpeed : fallbackStats.attackSpeed,
+    moveSpeed: Number.isFinite(unit.moveSpeed) ? unit.moveSpeed : fallbackStats.moveSpeed,
     manaRegen: Number.isFinite(unit.manaRegen) ? unit.manaRegen : fallbackStats.manaRegen,
     meatStack: Number.isFinite(unit.meatStack) ? unit.meatStack : 0,
     levitatingUntil: Number.isFinite(timedUnit.levitatingUntil) ? timedUnit.levitatingUntil! : 0,
@@ -558,6 +564,8 @@ function UnitToken({
   currentEvents,
   previousSnapshotEvent,
   combatTime,
+  boardHeightRatio,
+  playbackSpeed,
   draggable,
   onDragStart,
   onDragEnd,
@@ -570,6 +578,8 @@ function UnitToken({
   currentEvents: readonly CombatEvent[];
   previousSnapshotEvent: CombatEvent | null;
   combatTime: number;
+  boardHeightRatio: number;
+  playbackSpeed: number;
   draggable: boolean;
   onDragStart?: (event: DragEvent<HTMLDivElement>) => void;
   onDragEnd?: (event: DragEvent<HTMLDivElement>) => void;
@@ -598,6 +608,27 @@ function UnitToken({
   const previousUnit = previousSnapshotEvent?.snapshot.find((candidate) => candidate.id === unit.id) ?? null;
   const isMoveEvent = actorEvent?.type === "move";
   const didMove = isMoveEvent && previousUnit !== null && previousUnit.position !== unit.position;
+  const movementStyle = didMove && previousUnit && previousUnit.position !== null && unit.position !== null
+    ? {
+        "--move-from-x": `${((previousUnit.position % BOARD_COLUMNS) - (unit.position % BOARD_COLUMNS)) * (100 / BOARD_COLUMNS)}cqw`,
+        "--move-from-y": `${(Math.floor(previousUnit.position / BOARD_COLUMNS) - Math.floor(unit.position / BOARD_COLUMNS)) * (boardHeightRatio * 100 / BOARD_ROWS)}cqw`,
+        "--move-duration": `${Math.round(movementTravelSeconds(unit.moveSpeed, previousUnit.position, unit.position) * 1000 / Math.max(0.01, playbackSpeed))}ms`,
+      } as CSSProperties
+    : undefined;
+  const actionDurationSeconds = actorEvent?.type === "attack"
+    ? attackAnimationSeconds(unit.attackSpeed)
+    : actorEvent?.type === "ability" || actorGravityPhase
+      ? hero.ability.castAnimationSeconds
+      : 0;
+  const actionStyle = actionDurationSeconds > 0
+    ? {
+        "--action-duration": `${Math.round(actionDurationSeconds * 1000 / Math.max(0.01, playbackSpeed))}ms`,
+        "--combat-beat": `${Math.round(actionDurationSeconds * 1000 / Math.max(0.01, playbackSpeed))}ms`,
+      } as CSSProperties
+    : undefined;
+  const tokenStyle = movementStyle || actionStyle
+    ? { ...movementStyle, ...actionStyle } as CSSProperties
+    : undefined;
   const isStunnedAction = isMoveEvent && actorEvent.text.includes("stunned");
   const gravityLiftEvent = currentEvents.find((event) => (
     elphabaAbilityPhase(event) === "lift"
@@ -689,6 +720,7 @@ function UnitToken({
       data-levitating-until={unit.levitatingUntil || undefined}
       data-stunned-until={unit.stunnedUntil || undefined}
       title={equippedItemTitle || undefined}
+      style={tokenStyle}
     >
       <span className="unit-stars" data-testid={`unit-stars-${unit.id}`} aria-label={localizeText(locale, `${unit.stars} star`)}>{starsLabel(unit.stars)}</span>
       {isLevitating || gravityLiftEvent || gravityLandingCenterEvent ? (
@@ -948,6 +980,32 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
   const currentEvents = currentMoment?.events ?? [];
   const currentSnapshotEvent = currentMoment?.snapshotEvent ?? null;
   const previousSnapshotEvent = previousMoment?.snapshotEvent ?? null;
+  const movementBeatMilliseconds = currentEvents.reduce((longestDuration, event) => {
+    if (event.type !== "move" || !event.actorId || !currentSnapshotEvent || !previousSnapshotEvent) return longestDuration;
+    const before = previousSnapshotEvent.snapshot.find((unit) => unit.id === event.actorId);
+    const after = currentSnapshotEvent.snapshot.find((unit) => unit.id === event.actorId);
+    if (!before || !after) return longestDuration;
+    return Math.max(
+      longestDuration,
+      Math.round(movementTravelSeconds(after.moveSpeed, before.position, after.position) * 1000),
+    );
+  }, 0);
+  const actionBeatMilliseconds = currentEvents.reduce((longestDuration, event) => {
+    if (!event.actorId || !currentSnapshotEvent) return longestDuration;
+    const actor = currentSnapshotEvent.snapshot.find((unit) => unit.id === event.actorId);
+    if (!actor) return longestDuration;
+    const durationSeconds = event.type === "attack"
+      ? attackAnimationSeconds(actor.attackSpeed)
+      : event.type === "ability" || event.type === "landing"
+        ? HEROES[actor.heroId].ability.castAnimationSeconds
+        : 0;
+    return Math.max(longestDuration, Math.round(durationSeconds * 1000));
+  }, 0);
+  const desiredCombatBeatMilliseconds = Math.max(
+    actionBeatMilliseconds,
+    movementBeatMilliseconds,
+    Math.round(MIN_COMBAT_MOMENT_SECONDS * 1000),
+  );
   const atCombatEnd = game.phase === "combat"
     && (combatMoments.length === 0 || combatMomentIndex >= combatMoments.length - 1);
   const currentMomentTimestamp = currentMoment?.timestamp ?? 0;
@@ -959,6 +1017,10 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
   const currentMomentInterval = combatMomentInterval(
     currentMomentTimestamp,
     nextMomentTimestamp,
+  );
+  const currentMomentPlaybackInterval = Math.max(
+    currentMomentInterval,
+    desiredCombatBeatMilliseconds / 1000,
   );
   const combatLogStart = Math.max(0, combatMomentIndex - 5);
   const visibleCombatMoments = combatMoments.slice(combatLogStart, combatMomentIndex + 1);
@@ -985,18 +1047,18 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
 
     if (playbackMomentKeyRef.current !== currentMoment.key) {
       playbackMomentKeyRef.current = currentMoment.key;
-      playbackRemainingSecondsRef.current = currentMomentInterval;
+      playbackRemainingSecondsRef.current = currentMomentPlaybackInterval;
     }
     if (!playing) return;
 
-    const remainingSeconds = playbackRemainingSecondsRef.current ?? currentMomentInterval;
+    const remainingSeconds = playbackRemainingSecondsRef.current ?? currentMomentPlaybackInterval;
     const startedAt = performance.now();
     let lastClockRenderAt = startedAt - COMBAT_CLOCK_RENDER_INTERVAL_MS;
     let animationFrame = 0;
     const sampleClock = (now: number) => sampleLinearCombatClock({
       startTime: currentMoment.timestamp,
       endTime: nextMomentTimestamp ?? currentMoment.timestamp,
-      segmentDuration: currentMomentInterval,
+      segmentDuration: currentMomentPlaybackInterval,
       remainingDuration: remainingSeconds,
       elapsedWallTime: (now - startedAt) / 1000,
       speed,
@@ -1029,7 +1091,7 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
       playbackRemainingSecondsRef.current = sample.remainingDuration;
       setCombatClockSeconds(sample.time);
     };
-  }, [game.phase, playing, atCombatEnd, currentMoment, currentMomentInterval, nextMomentTimestamp, combatMomentIndex, combatMoments, speed]);
+  }, [game.phase, playing, atCombatEnd, currentMoment, currentMomentPlaybackInterval, nextMomentTimestamp, combatMomentIndex, combatMoments, speed]);
 
   useEffect(() => {
     const handleKey = (event: globalThis.KeyboardEvent) => {
@@ -1199,9 +1261,9 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
     }];
   });
   const combatLinks = [...actionLinks, ...movementLinks];
-  const combatBeatMilliseconds = Math.min(
-    680,
-    Math.max(Math.round(MIN_COMBAT_MOMENT_SECONDS * 1000), Math.round(currentMomentInterval * 820)),
+  const combatBeatMilliseconds = Math.max(
+    Math.round(MIN_COMBAT_MOMENT_SECONDS * 1000),
+    desiredCombatBeatMilliseconds,
   );
   const renderedCombatBeatMilliseconds = Math.round(combatBeatMilliseconds / speed);
   const combatBeatStyle = {
@@ -1634,6 +1696,8 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
                         currentEvents={currentEvents}
                         previousSnapshotEvent={previousSnapshotEvent}
                         combatTime={currentCombatTime}
+                        boardHeightRatio={boardHeightRatio}
+                        playbackSpeed={speed}
                         draggable={game.phase === "planning" && unit.side === "player"}
                         loadoutDropStatus={loadoutDropStatus}
                         onDragStart={(event) => {
@@ -1656,6 +1720,7 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
                     phase={game.phase}
                     playing={playing}
                     speed={speed}
+                    actionDuration={combatBeatMilliseconds / 1000}
                     boardHeightRatio={boardHeightRatio}
                     onReady={() => setBoitata3DReady(true)}
                     onFallback={() => setBoitata3DReady(false)}
@@ -1995,6 +2060,7 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
                 <span className="stat-cell"><small>{t("Damage")}</small><strong>{selectedDisplay.attack}</strong></span>
                 <span className="stat-cell"><small>{t("Armor")}</small><strong>{selectedDisplay.armor}</strong></span>
                 <span className="stat-cell stat-cell-rate stat-cell-attack-speed" data-testid={`unit-attack-speed-${selectedDisplay.id}`}><small>{t("Attack speed")}</small><strong>{formatRate(selectedDisplay.attackSpeed, locale)}/{t("sec")}</strong></span>
+                <span className="stat-cell stat-cell-rate stat-cell-move-speed" data-testid={`unit-move-speed-${selectedDisplay.id}`}><small>{t("Move speed")}</small><strong>{formatRate(selectedDisplay.moveSpeed, locale)} {t("tiles")}/{t("sec")}</strong></span>
                 {selectedHero.id === "meat-gaga" ? (
                   <span className="stat-cell stat-cell-meat-stack" data-testid={`unit-meat-stack-inspector-${selectedDisplay.id}`}><small>{t("Meat reserve")}</small><strong>{Math.round(selectedDisplay.meatStack)}</strong></span>
                 ) : (

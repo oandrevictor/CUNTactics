@@ -240,9 +240,9 @@ test("Defying Gravity selects the highest-current-Life enemies with stable dista
 
 test("each star rank lands at the exact delayed timestamp and exposes structured metadata", () => {
   const expected = [
-    { stars: 1, lift: 0.5, stun: 0.25, damage: 10, landingAt: 1.889 },
-    { stars: 2, lift: 0.65, stun: 0.25, damage: 12, landingAt: 2.039 },
-    { stars: 3, lift: 1, stun: 0.5, damage: 15, landingAt: 2.389 },
+    { stars: 1, lift: 0.5, stun: 0.25, damage: 10, landingAt: 2.773 },
+    { stars: 2, lift: 0.65, stun: 0.25, damage: 12, landingAt: 2.923 },
+    { stars: 3, lift: 1, stun: 0.5, damage: 15, landingAt: 3.273 },
   ] as const;
 
   for (const values of expected) {
@@ -256,7 +256,7 @@ test("each star rank lands at the exact delayed timestamp and exposes structured
     const anchorAtCast = cast.snapshot.find((candidate) => candidate.id === "anchor")!;
     const anchorAtLanding = landing.snapshot.find((candidate) => candidate.id === "anchor")!;
 
-    assert.equal(cast.timestamp, 1.389);
+    assert.equal(cast.timestamp, 2.273);
     assert.equal(cast.liftDurationSeconds, values.lift);
     assert.equal(cast.stunDurationSeconds, values.stun);
     assert.equal(cast.currentHealthDamagePercent, values.damage);
@@ -276,7 +276,7 @@ test("each star rank lands at the exact delayed timestamp and exposes structured
 test("a levitated unit loses scheduled actions until landing without consuming Vesper's legacy stun", () => {
   const report = reportFor(combatState(
     7114,
-    (initial) => [elphaba(initial.units[0], "elphaba", 34, 2)],
+    (initial) => [elphaba(initial.units[0], "elphaba", 34, 3)],
     (initial) => [unit(initial.enemyUnits[0], "nix", "lifted-nix", 18, {
       stars: 3,
       level: 5,
@@ -285,16 +285,16 @@ test("a levitated unit loses scheduled actions until landing without consuming V
   const cast = firstElphabaCast(report);
   const landing = firstElphabaLanding(report);
   const suppressed = report.events.find(
-    (event) => event.actorId === "lifted-nix" && event.timestamp === 1.905,
+    (event) => event.actorId === "lifted-nix" && event.timestamp === 3.077,
   );
 
-  assert.equal(cast.timestamp, 1.389);
-  assert.equal(landing.timestamp, 2.039);
+  assert.equal(cast.timestamp, 2.273);
+  assert.equal(landing.timestamp, 3.273);
   assert.ok(suppressed);
   assert.equal(suppressed.type, "move");
   assert.match(suppressed.text, /levitating and cannot act/i);
   const suppressedNix = suppressed.snapshot.find((candidate) => candidate.id === "lifted-nix")!;
-  assert.equal(suppressedNix.levitatingUntil, 2.039);
+  assert.equal(suppressedNix.levitatingUntil, 3.273);
   assert.equal(suppressedNix.stunned, 0);
   assert.ok(!report.events.some((event) =>
     event.actorId === "lifted-nix"
@@ -342,7 +342,7 @@ test("landing hits only orthogonal non-anchor enemies", () => {
     const targetBefore = before.find((candidate) => candidate.id === targetId)!;
     const targetAfter = landing.snapshot.find((candidate) => candidate.id === targetId)!;
     assert.equal(targetBefore.hp - targetAfter.hp, expectedDamage);
-    assert.equal(targetAfter.stunnedUntil, 2.139);
+    assert.equal(targetAfter.stunnedUntil, 3.023);
   }
   for (const targetId of ["anchor", ...diagonalIds]) {
     const targetAtCast = cast.snapshot.find((candidate) => candidate.id === targetId)!;
@@ -356,7 +356,7 @@ test("landing damage uses the living anchor's current Life at impact rather than
     7120,
     (initial) => [
       elphaba(initial.units[0], "elphaba", 42),
-      unit(initial.units[1], "vesper", "opening-vesper", 34, {
+      unit(initial.units[1], "vesper", "opening-vesper", 26, {
         itemSlots: lanterns("opening-vesper"),
       }),
     ],
@@ -384,6 +384,8 @@ test("landing true damage ignores Armor but is absorbed by an existing shield", 
     (initial) => [
       elphaba(initial.units[0], "elphaba", 34),
       unit(initial.units[1], "bramble", "armor-decoy", 16, { stars: 3, level: 5 }),
+      unit(initial.units[2], "tide", "shield-lock", 2),
+      unit(initial.units[3], "tide", "anchor-lock", 26),
     ],
     (initial) => [
       unit(initial.enemyUnits[0], "boitata", "a-anchor", 18),
@@ -438,7 +440,7 @@ test("three-star overlapping shockwaves stack frozen damage and exclude every li
   assert.equal(landing.amounts?.overlap, expectedOverlapDamage);
   assert.equal(landing.amount, expectedOverlapDamage);
   const overlapAfter = landing.snapshot.find((candidate) => candidate.id === "overlap")!;
-  assert.equal(overlapAfter.stunnedUntil, 2.889, "overlap must max, not add, the 0.5-second stun");
+  assert.equal(overlapAfter.stunnedUntil, 3.773, "overlap must max, not add, the 0.5-second stun");
 
   for (const anchorId of anchorIds) {
     assert.ok(!landing.targetIds?.includes(anchorId));
@@ -452,8 +454,8 @@ test("simultaneous landings globally exclude every lifted anchor from each other
   const report = reportFor(combatState(
     7121,
     (initial) => [
-      elphaba(initial.units[0], "elphaba-a", 34),
-      elphaba(initial.units[1], "elphaba-b", 37),
+      elphaba(initial.units[0], "elphaba-a", 26),
+      elphaba(initial.units[1], "elphaba-b", 27),
     ],
     (initial) => [
       unit(initial.enemyUnits[0], "boitata", "anchor-a", 18),
@@ -464,21 +466,21 @@ test("simultaneous landings globally exclude every lifted anchor from each other
   ));
   const casts = report.events.filter((event) =>
     event.type === "ability" && event.snapshot.find((candidate) => candidate.id === event.actorId)?.heroId === "elphaba",
-  );
-  const landings = report.events.filter((event) => event.type === "landing");
+  ).slice(0, 2);
+  const landings = report.events.filter((event) => event.type === "landing").slice(0, 2);
 
   assert.deepEqual(
     casts.map((event) => [event.timestamp, event.actorId, event.liftedTargetIds]),
     [
-      [1.389, "elphaba-a", ["anchor-a"]],
-      [1.389, "elphaba-b", ["anchor-b"]],
+      [2.273, "elphaba-a", ["anchor-a"]],
+      [2.273, "elphaba-b", ["anchor-b"]],
     ],
   );
   assert.deepEqual(
     landings.map((event) => [event.timestamp, event.actorId, event.targetIds]),
     [
-      [1.889, "elphaba-a", ["impact-a"]],
-      [1.889, "elphaba-b", ["impact-b"]],
+      [2.773, "elphaba-a", ["impact-a"]],
+      [2.773, "elphaba-b", ["impact-b"]],
     ],
   );
   for (const landing of landings) {
@@ -497,28 +499,33 @@ test("fractional landing stun skips only opportunities strictly before its expir
     7118,
     (initial) => [elphaba(initial.units[0], "elphaba", 42)],
     (initial) => [
-      unit(initial.enemyUnits[0], "boitata", "anchor", 18),
-      unit(initial.enemyUnits[1], "nix", "stunned-nix", 26),
+      unit(initial.enemyUnits[0], "boitata", "anchor", 17),
+      unit(initial.enemyUnits[1], "sol", "stunned-sol", 9),
     ],
   ));
   const landing = firstElphabaLanding(report);
-  const nixEvents = report.events.filter((event) => event.actorId === "stunned-nix");
-  const skipped = nixEvents.find((event) => event.timestamp === 1.905);
-  const resumed = nixEvents.find((event) => event.timestamp === 2.857);
+  const targetEvents = report.events.filter((event) => event.actorId === "stunned-sol");
+  const stunnedUntil = landing.snapshot.find((candidate) => candidate.id === "stunned-sol")?.stunnedUntil ?? 0;
+  const skipped = targetEvents.find(
+    (event) => event.timestamp > landing.timestamp && event.timestamp < stunnedUntil && /stunned/i.test(event.text),
+  );
+  const resumed = targetEvents.find(
+    (event) => event.timestamp > stunnedUntil && !/stunned|levitat/i.test(event.text),
+  );
 
-  assert.equal(landing.timestamp, 1.889);
+  assert.equal(landing.timestamp, 2.773);
   assert.equal(landing.stunDurationSeconds, 0.25);
-  assert.equal(landing.snapshot.find((candidate) => candidate.id === "stunned-nix")?.stunnedUntil, 2.139);
+  assert.equal(stunnedUntil, 3.023);
   assert.ok(skipped);
   assert.equal(skipped.type, "move");
   assert.match(skipped.text, /stunned and skips the action/i);
-  assert.equal(skipped.snapshot.find((candidate) => candidate.id === "stunned-nix")?.stunned, 0);
+  assert.equal(skipped.snapshot.find((candidate) => candidate.id === "stunned-sol")?.stunned, 0);
   assert.ok(resumed);
   assert.doesNotMatch(resumed.text, /stunned|levitat/i);
 });
 
 test("a queued landing still resolves after Elphaba dies", () => {
-  const lethalNixLoadout: UnitItemSlots = [
+  const lethalLoadout: UnitItemSlots = [
     enhancedItem("nix-fang-1", "inferno-fang", "ember"),
     enhancedItem("nix-fang-2", "inferno-fang", "ember"),
     enhancedItem("nix-fang-3", "inferno-fang", "ember"),
@@ -528,8 +535,11 @@ test("a queued landing still resolves after Elphaba dies", () => {
     (initial) => [elphaba(initial.units[0], "elphaba", 42, 2)],
     (initial) => [
       unit(initial.enemyUnits[0], "boitata", "anchor", 18),
-      unit(initial.enemyUnits[1], "nix", "executioner", 34, {
-        itemSlots: lethalNixLoadout,
+      unit(initial.enemyUnits[1], "morrow", "executioner", 34, {
+        itemSlots: lethalLoadout,
+      }),
+      unit(initial.enemyUnits[2], "nix", "softener", 35, {
+        itemSlots: lethalLoadout,
       }),
     ],
   ));
@@ -539,11 +549,11 @@ test("a queued landing still resolves after Elphaba dies", () => {
     (event) => event.type === "defeat" && event.targetIds?.includes("elphaba"),
   );
 
-  assert.equal(cast.timestamp, 1.389);
+  assert.equal(cast.timestamp, 2.273);
   assert.ok(death);
-  assert.equal(death.timestamp, 1.905);
+  assert.equal(death.timestamp, 2.326);
   assert.equal(death.snapshot.find((candidate) => candidate.id === "elphaba")?.alive, false);
-  assert.equal(landing.timestamp, 2.039);
+  assert.equal(landing.timestamp, 2.923);
   assert.ok(landing.timestamp > death.timestamp);
   assert.deepEqual(landing.liftedTargetIds, ["anchor"]);
 });
