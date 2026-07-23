@@ -1,7 +1,6 @@
 export interface LinearCombatClockInput {
   startTime: number;
   endTime: number;
-  segmentDuration: number;
   remainingDuration: number;
   elapsedWallTime: number;
   speed: number;
@@ -25,7 +24,7 @@ function finiteOr(value: number, fallback: number): number {
 export function sampleLinearCombatClock(input: LinearCombatClockInput): LinearCombatClockSample {
   const startTime = Math.max(0, finiteOr(input.startTime, 0));
   const endTime = Math.max(startTime, finiteOr(input.endTime, startTime));
-  const segmentDuration = Math.max(0, finiteOr(input.segmentDuration, 0));
+  const segmentDuration = endTime - startTime;
   const initialRemaining = Math.min(
     segmentDuration,
     Math.max(0, finiteOr(input.remainingDuration, segmentDuration)),

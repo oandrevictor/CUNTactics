@@ -185,7 +185,7 @@ test("combat playback batches equal timestamps while its visible clock advances 
   assert.match(client, /sampleLinearCombatClock\(\{/);
   assert.match(
     client,
-    /const remainingSeconds = playbackRemainingSecondsRef\.current \?\? currentMomentPlaybackInterval/,
+    /const remainingSeconds = playbackRemainingSecondsRef\.current \?\? currentMomentInterval/,
   );
   assert.match(client, /const startedAt = performance\.now\(\)/);
   assert.match(client, /Math\.round\(\(remainingSeconds \* 1000\) \/ speed\)/);
@@ -206,6 +206,7 @@ test("combat playback batches equal timestamps while its visible clock advances 
   assert.doesNotMatch(client, /Math\.round\(820 \/ speed\)/);
 
   assert.match(playback, /export function sampleLinearCombatClock/);
+  assert.match(playback, /const segmentDuration = endTime - startTime/);
   assert.match(playback, /elapsedWallTime[\s\S]*?\* Math\.max\(0, finiteOr\(input\.speed, 1\)\)/);
   assert.match(playback, /Math\.max\(0, initialRemaining - elapsedTimelineTime\)/);
   assert.match(client, /<span>\{formatCombatTime\(currentCombatTime, locale\)\}<\/span>/);
@@ -224,8 +225,9 @@ test("combat playback batches equal timestamps while its visible clock advances 
   assert.match(client, /const actionBeatMilliseconds = currentEvents\.reduce/);
   assert.match(client, /attackAnimationSeconds\(actor\.attackSpeed\)/);
   assert.match(client, /HEROES\[actor\.heroId\]\.ability\.castAnimationSeconds/);
-  assert.match(client, /const currentMomentPlaybackInterval = Math\.max\([\s\S]*?currentMomentInterval,[\s\S]*?desiredCombatBeatMilliseconds \/ 1000/);
-  assert.match(client, /segmentDuration: currentMomentPlaybackInterval/);
+  assert.doesNotMatch(client, /currentMomentPlaybackInterval/);
+  assert.doesNotMatch(client, /segmentDuration:/);
+  assert.match(client, /playbackRemainingSecondsRef\.current = currentMomentInterval/);
   assert.match(client, /"--move-from-x"/);
   assert.match(client, /"--move-from-y"/);
   assert.match(client, /"--move-duration"/);

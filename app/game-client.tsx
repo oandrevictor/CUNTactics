@@ -1050,10 +1050,6 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
     currentMomentTimestamp,
     nextMomentTimestamp,
   );
-  const currentMomentPlaybackInterval = Math.max(
-    currentMomentInterval,
-    desiredCombatBeatMilliseconds / 1000,
-  );
   const combatLogStart = Math.max(0, combatMomentIndex - 5);
   const visibleCombatMoments = combatMoments.slice(combatLogStart, combatMomentIndex + 1);
   const isSteppedMoment = !playing && steppedMomentKey !== null && currentMoment?.key === steppedMomentKey;
@@ -1079,18 +1075,17 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
 
     if (playbackMomentKeyRef.current !== currentMoment.key) {
       playbackMomentKeyRef.current = currentMoment.key;
-      playbackRemainingSecondsRef.current = currentMomentPlaybackInterval;
+      playbackRemainingSecondsRef.current = currentMomentInterval;
     }
     if (!playing) return;
 
-    const remainingSeconds = playbackRemainingSecondsRef.current ?? currentMomentPlaybackInterval;
+    const remainingSeconds = playbackRemainingSecondsRef.current ?? currentMomentInterval;
     const startedAt = performance.now();
     let lastClockRenderAt = startedAt - COMBAT_CLOCK_RENDER_INTERVAL_MS;
     let animationFrame = 0;
     const sampleClock = (now: number) => sampleLinearCombatClock({
       startTime: currentMoment.timestamp,
       endTime: nextMomentTimestamp ?? currentMoment.timestamp,
-      segmentDuration: currentMomentPlaybackInterval,
       remainingDuration: remainingSeconds,
       elapsedWallTime: (now - startedAt) / 1000,
       speed,
@@ -1123,7 +1118,7 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
       playbackRemainingSecondsRef.current = sample.remainingDuration;
       setCombatClockSeconds(sample.time);
     };
-  }, [game.phase, playing, atCombatEnd, currentMoment, currentMomentPlaybackInterval, nextMomentTimestamp, combatMomentIndex, combatMoments, speed]);
+  }, [game.phase, playing, atCombatEnd, currentMoment, currentMomentInterval, nextMomentTimestamp, combatMomentIndex, combatMoments, speed]);
 
   useEffect(() => {
     const handleKey = (event: globalThis.KeyboardEvent) => {
