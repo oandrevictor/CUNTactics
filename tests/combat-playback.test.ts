@@ -8,7 +8,6 @@ function sample(
   return sampleLinearCombatClock({
     startTime: 0,
     endTime: 1,
-    segmentDuration: 1,
     remainingDuration: 1,
     elapsedWallTime: 0,
     speed: 1,
@@ -33,6 +32,22 @@ test("combat clock advances linearly between discrete action timestamps", () => 
   });
 });
 
+test("equal combat tenths take equal wall-clock time wherever they occur", () => {
+  for (const startTime of [4.1, 5.6]) {
+    for (const elapsedWallTime of [0, 0.025, 0.05, 0.075, 0.1]) {
+      const current = sample({
+        startTime,
+        endTime: startTime + 0.1,
+        remainingDuration: 0.1,
+        elapsedWallTime,
+      });
+
+      assertClose(current.time, startTime + elapsedWallTime);
+      assertClose(current.remainingDuration, 0.1 - elapsedWallTime);
+    }
+  }
+});
+
 test("pause and resume preserve the exact fractional combat time", () => {
   const beforePause = sample({ elapsedWallTime: 0.375 });
   const whilePaused = sample({
@@ -52,34 +67,29 @@ test("pause and resume preserve the exact fractional combat time", () => {
 test("speed changes re-anchor without a jump and scale only future time", () => {
   const atOneX = sample({
     endTime: 2,
-    segmentDuration: 2,
     remainingDuration: 2,
     elapsedWallTime: 0.4,
   });
   const reanchoredAtTwoX = sample({
     endTime: 2,
-    segmentDuration: 2,
     remainingDuration: atOneX.remainingDuration,
     elapsedWallTime: 0,
     speed: 2,
   });
   const atTwoX = sample({
     endTime: 2,
-    segmentDuration: 2,
     remainingDuration: reanchoredAtTwoX.remainingDuration,
     elapsedWallTime: 0.25,
     speed: 2,
   });
   const reanchoredAtHalfX = sample({
     endTime: 2,
-    segmentDuration: 2,
     remainingDuration: atTwoX.remainingDuration,
     elapsedWallTime: 0,
     speed: 0.5,
   });
   const atHalfX = sample({
     endTime: 2,
-    segmentDuration: 2,
     remainingDuration: reanchoredAtHalfX.remainingDuration,
     elapsedWallTime: 0.4,
     speed: 0.5,
@@ -96,14 +106,12 @@ test("short real gaps remain linear and overshoot clamps to the exact endpoint",
   const halfway = sample({
     startTime: 1,
     endTime: 1.025,
-    segmentDuration: 0.025,
     remainingDuration: 0.025,
     elapsedWallTime: 0.0125,
   });
   const complete = sample({
     startTime: 1,
     endTime: 1.025,
-    segmentDuration: 0.025,
     remainingDuration: 0.025,
     elapsedWallTime: 1,
     speed: 2,
@@ -121,7 +129,6 @@ test("invalid or backwards wall-clock samples never rewind the timeline", () => 
   const invalid = sample({
     startTime: Number.NaN,
     endTime: Number.NaN,
-    segmentDuration: Number.NaN,
     remainingDuration: Number.NaN,
     elapsedWallTime: Number.NaN,
     speed: Number.NaN,

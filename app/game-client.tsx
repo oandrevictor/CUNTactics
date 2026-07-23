@@ -139,6 +139,7 @@ type DisplayUnit = {
   moveSpeed: number;
   manaRegen: number;
   meatStack: number;
+  summonedBirds: number;
   shield: number;
   fireWallShield: number;
   stunned: number;
@@ -266,6 +267,7 @@ function elphabaAbilityPhase(event: CombatEvent | null): ElphabaAbilityPhase | n
 
 function combatEffectKind(event: CombatEvent | null): CombatEffectKind | null {
   if (event?.type === "attack") return "attack";
+  if (event?.type === "passive" && (event.birdCount ?? 0) > 0) return "attack";
   if (event?.type === "heal") return "heal";
   if (event?.type === "shield") return "shield";
   if (event?.type === "landing") return "ability";
@@ -363,6 +365,7 @@ function persistentDisplay(unit: UnitInstance): DisplayUnit {
     moveSpeed: stats.moveSpeed,
     manaRegen: stats.manaRegen,
     meatStack: 0,
+    summonedBirds: 0,
     shield: 0,
     fireWallShield: 0,
     stunned: 0,
@@ -381,6 +384,7 @@ function combatDisplay(unit: CombatUnit, persistent?: UnitInstance): DisplayUnit
     moveSpeed: Number.isFinite(unit.moveSpeed) ? unit.moveSpeed : fallbackStats.moveSpeed,
     manaRegen: Number.isFinite(unit.manaRegen) ? unit.manaRegen : fallbackStats.manaRegen,
     meatStack: Number.isFinite(unit.meatStack) ? unit.meatStack : 0,
+    summonedBirds: Number.isFinite(unit.summonedBirds ?? 0) ? Math.max(0, Math.round(unit.summonedBirds ?? 0)) : 0,
     levitatingUntil: Number.isFinite(timedUnit.levitatingUntil) ? timedUnit.levitatingUntil! : 0,
     stunnedUntil: Number.isFinite(timedUnit.stunnedUntil) ? timedUnit.stunnedUntil! : 0,
     xp: persistent?.xp ?? 0,
@@ -443,7 +447,9 @@ function targetCountText(values: AbilityValues, locale: GameLocale): string {
 
 function abilityMetricDefinitions(preview: AbilityPreview, locale: GameLocale): AbilityMetric[] {
   const t = (text: string) => localizeText(locale, text);
-  const damageLabel = t(preview.current.ignoresArmor ? "True damage" : "Raw damage");
+  const damageLabel = t(preview.current.heroId === "billie"
+    ? "Summon damage / bird"
+    : preview.current.ignoresArmor ? "True damage" : "Raw damage");
   const targetLabel: Record<HeroId, string> = {
     bramble: "Allies healed",
     boitata: "Target",
@@ -456,6 +462,7 @@ function abilityMetricDefinitions(preview: AbilityPreview, locale: GameLocale): 
     piper: "Enemies hit",
     "meat-gaga": "Target",
     elphaba: "Enemies levitated",
+    billie: "Target",
   };
   return [
     {
@@ -511,8 +518,22 @@ function abilityMetricDefinitions(preview: AbilityPreview, locale: GameLocale): 
       id: "projectiles",
       label: t("Projectiles"),
       kind: "projectiles",
-      applies: (values) => values.projectiles > 0,
+      applies: (values) => values.projectiles > 0 && values.heroId !== "billie",
       format: (values) => String(values.projectiles),
+    },
+    {
+      id: "birds-summoned",
+      label: t("Birds summoned"),
+      kind: "projectiles",
+      applies: (values) => values.summonCount > 0,
+      format: (values) => String(values.summonCount),
+    },
+    {
+      id: "bird-attack-percent",
+      label: t("Attack echo / bird"),
+      kind: "raw-damage",
+      applies: (values) => values.birdAttackPercent > 0,
+      format: (values) => `${formatRate(values.birdAttackPercent, locale)}%`,
     },
     {
       id: "mana-drain",
@@ -590,6 +611,7 @@ function UnitToken({
   const t = (text: string) => localizeText(locale, text);
   const isCreatureToken = unit.heroId === "boitata";
   const isMeatGaga = unit.heroId === "meat-gaga";
+  const isBillie = unit.heroId === "billie";
   const gravityActorEvent = currentEvents.find((event) => (
     event.actorId === unit.id && elphabaAbilityPhase(event) !== null
   )) ?? null;
@@ -710,13 +732,14 @@ function UnitToken({
 
   return (
     <div
-      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${isMeatGaga ? "unit-token-meat-gaga" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${actorEffectKind ? `unit-event-actor unit-event-actor-${actorEffectKind}` : ""} ${isMoveEvent ? `unit-event-actor ${didMove ? "unit-event-move" : "unit-event-wait"}` : ""} ${actorGravityPhase ? "unit-event-actor unit-event-actor-elphaba" : ""} ${actorIsSol ? "unit-event-actor-sol" : ""} ${isMeatAttack ? "unit-event-actor-meat" : ""} ${isMeatHarvest ? "unit-event-actor unit-event-meat-harvest" : ""} ${isLevitating ? "unit-levitating" : ""} ${gravityLiftEvent ? "unit-gravity-lift-start" : ""} ${gravityLandingCenterEvent ? "unit-gravity-landing-center" : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isDamaged && isSolStarfall ? "unit-impact-starfall" : ""} ${isGravityImpact ? "unit-impact-gravity" : ""} ${isMeatSplattered ? "unit-impact-meat" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""} ${loadoutDropStatus ? `unit-loadout-drop-${loadoutDropStatus}` : ""}`}
+      className={`unit-token ${isCreatureToken ? "unit-token-creature unit-token-boitata" : ""} ${isMeatGaga ? "unit-token-meat-gaga" : ""} ${isBillie ? "unit-token-billie" : ""} ${unit.side === "player" ? "unit-ally" : "unit-enemy"} ${selected ? "unit-selected" : ""} ${highlighted ? "unit-trait-highlight" : ""} ${!unit.alive ? "unit-dead" : ""} ${actorEffectKind ? `unit-event-actor unit-event-actor-${actorEffectKind}` : ""} ${isMoveEvent ? `unit-event-actor ${didMove ? "unit-event-move" : "unit-event-wait"}` : ""} ${actorGravityPhase ? "unit-event-actor unit-event-actor-elphaba" : ""} ${actorIsSol ? "unit-event-actor-sol" : ""} ${isMeatAttack ? "unit-event-actor-meat" : ""} ${isMeatHarvest ? "unit-event-actor unit-event-meat-harvest" : ""} ${isLevitating ? "unit-levitating" : ""} ${gravityLiftEvent ? "unit-gravity-lift-start" : ""} ${gravityLandingCenterEvent ? "unit-gravity-landing-center" : ""} ${isDamaged ? "unit-impact-damage" : ""} ${isDamaged && isSolStarfall ? "unit-impact-starfall" : ""} ${isGravityImpact ? "unit-impact-gravity" : ""} ${isMeatSplattered ? "unit-impact-meat" : ""} ${isHealed ? "unit-impact-heal" : ""} ${isShielded ? "unit-impact-shield" : ""} ${shieldLost > 0 ? "unit-shield-absorbed" : ""} ${loadoutDropStatus ? `unit-loadout-drop-${loadoutDropStatus}` : ""}`}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       data-testid={`unit-${unit.id}`}
       data-unit-id={unit.id}
       data-hero-id={unit.heroId}
+      data-summoned-birds={unit.summonedBirds || undefined}
       data-levitating-until={unit.levitatingUntil || undefined}
       data-stunned-until={unit.stunnedUntil || undefined}
       title={equippedItemTitle || undefined}
@@ -763,6 +786,15 @@ function UnitToken({
           aria-label={localizeText(locale, `${heroCopy.name} meat stack ${Math.round(unit.meatStack)}`)}
         >
           <small>{t("MEAT")}</small><strong>{Math.round(unit.meatStack)}</strong>
+        </span>
+      ) : null}
+      {isBillie && unit.summonedBirds > 0 ? (
+        <span
+          className="unit-bird-count"
+          data-testid={`unit-birds-${unit.id}`}
+          aria-label={localizeText(locale, `${heroCopy.name} summoned birds ${unit.summonedBirds}`)}
+        >
+          <small aria-hidden="true">🐦</small><strong>×{unit.summonedBirds}</strong>
         </span>
       ) : null}
       {isActor ? <span className="combat-role" aria-hidden="true">{actorLabel}</span> : null}
@@ -1018,10 +1050,6 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
     currentMomentTimestamp,
     nextMomentTimestamp,
   );
-  const currentMomentPlaybackInterval = Math.max(
-    currentMomentInterval,
-    desiredCombatBeatMilliseconds / 1000,
-  );
   const combatLogStart = Math.max(0, combatMomentIndex - 5);
   const visibleCombatMoments = combatMoments.slice(combatLogStart, combatMomentIndex + 1);
   const isSteppedMoment = !playing && steppedMomentKey !== null && currentMoment?.key === steppedMomentKey;
@@ -1047,18 +1075,17 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
 
     if (playbackMomentKeyRef.current !== currentMoment.key) {
       playbackMomentKeyRef.current = currentMoment.key;
-      playbackRemainingSecondsRef.current = currentMomentPlaybackInterval;
+      playbackRemainingSecondsRef.current = currentMomentInterval;
     }
     if (!playing) return;
 
-    const remainingSeconds = playbackRemainingSecondsRef.current ?? currentMomentPlaybackInterval;
+    const remainingSeconds = playbackRemainingSecondsRef.current ?? currentMomentInterval;
     const startedAt = performance.now();
     let lastClockRenderAt = startedAt - COMBAT_CLOCK_RENDER_INTERVAL_MS;
     let animationFrame = 0;
     const sampleClock = (now: number) => sampleLinearCombatClock({
       startTime: currentMoment.timestamp,
       endTime: nextMomentTimestamp ?? currentMoment.timestamp,
-      segmentDuration: currentMomentPlaybackInterval,
       remainingDuration: remainingSeconds,
       elapsedWallTime: (now - startedAt) / 1000,
       speed,
@@ -1091,7 +1118,7 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
       playbackRemainingSecondsRef.current = sample.remainingDuration;
       setCombatClockSeconds(sample.time);
     };
-  }, [game.phase, playing, atCombatEnd, currentMoment, currentMomentPlaybackInterval, nextMomentTimestamp, combatMomentIndex, combatMoments, speed]);
+  }, [game.phase, playing, atCombatEnd, currentMoment, currentMomentInterval, nextMomentTimestamp, combatMomentIndex, combatMoments, speed]);
 
   useEffect(() => {
     const handleKey = (event: globalThis.KeyboardEvent) => {
@@ -2066,6 +2093,9 @@ export function GameClient({ initialLocale = "en" }: { initialLocale?: GameLocal
                 ) : (
                   <span className="stat-cell stat-cell-rate stat-cell-mana-regen" data-testid={`unit-mana-regen-${selectedDisplay.id}`}><small>{t("Mana regen")}</small><strong>{formatRate(selectedDisplay.manaRegen, locale)}/{t("sec")}</strong></span>
                 )}
+                {selectedHero.id === "billie" ? (
+                  <span className="stat-cell stat-cell-birds" data-testid={`unit-birds-inspector-${selectedDisplay.id}`}><small>{t("Birds")}</small><strong>{selectedDisplay.summonedBirds}</strong></span>
+                ) : null}
                 {selectedHero.id === "boitata" ? (
                   <>
                     <span className="stat-cell stat-cell-shield" data-testid={`unit-fire-wall-shield-${selectedDisplay.id}`}><small>{selectedHeroCopy.ability.name}</small><strong>{Math.round(selectedDisplay.fireWallShield)}</strong></span>

@@ -188,6 +188,15 @@ const PT_HEROES = {
       targetRule: "Inimigos mais fracos",
     },
   },
+  billie: {
+    name: "Billie",
+    title: "A Sussurradora do Bando",
+    ability: {
+      name: "Pássaros da Mesma Plumagem",
+      description: "Invoca duas aves que atacam o inimigo com menos Vida. Sempre que Billie ataca, cada ave invocada atinge o inimigo com menos Vida e causa uma parcela do Ataque dela.",
+      targetRule: "Inimigo com menos Vida atual",
+    },
+  },
 } as const satisfies Record<HeroId, HeroTranslation>;
 
 const PT_ROLES = {
@@ -437,6 +446,7 @@ const PT_UI_TEXT: Readonly<Record<string, string>> = {
   "Attack speed": "Velocidade de ataque",
   "Move speed": "Velocidade de movimento",
   "Meat reserve": "Reserva de carne",
+  "Birds": "Aves",
   "Mana regen": "Regeneração de Mana",
   "Wall of Fire": "Muralha de Fogo",
   "Other shields": "Outros escudos",
@@ -569,6 +579,7 @@ const PT_UI_TEXT: Readonly<Record<string, string>> = {
   "Combat breakdown": "Detalhamento do combate",
   "Damage includes health and shields removed. Shield measures protection granted. Healing counts life actually restored.": "O dano inclui Vida e escudos removidos. Escudo mede a proteção concedida. Cura contabiliza a Vida realmente restaurada.",
   "Raw damage": "Dano bruto",
+  "Summon damage / bird": "Dano da invocação / ave",
   "True damage": "Dano verdadeiro",
   "Landing true damage": "Dano verdadeiro da queda",
   "current Life": "Vida atual",
@@ -580,6 +591,8 @@ const PT_UI_TEXT: Readonly<Record<string, string>> = {
   "Levitation": "Levitação",
   "Landing stun": "Atordoamento da queda",
   "Projectiles": "Projéteis",
+  "Birds summoned": "Aves invocadas",
+  "Attack echo / bird": "Eco de ataque / ave",
   "Mana drain": "Dreno de Mana",
   "Stun": "Atordoamento",
   "Self-heal": "Cura própria",
@@ -677,6 +690,7 @@ function localizeGameMessagePt(text: string): string {
   }
   if ((match = text.match(/^(.+) mana (\d+) of (\d+)$/))) return `Mana de ${match[1]}: ${match[2]} de ${match[3]}`;
   if ((match = text.match(/^(.+) uses a passive and has no mana$/))) return `${match[1]} usa uma passiva e não possui Mana`;
+  if ((match = text.match(/^(.+) summoned birds (\d+)$/))) return `Aves invocadas por ${match[1]}: ${match[2]}`;
   if ((match = text.match(/^Levitating until (.+)$/))) return `Levitando até ${match[1]}`;
   if ((match = text.match(/^Stunned until (.+)$/))) return `Atordoado até ${match[1]}`;
   if ((match = text.match(/^(.+) character combat contributions$/))) return `Contribuições de combate dos personagens de ${match[1]}`;
@@ -780,6 +794,7 @@ function localizeGameMessagePt(text: string): string {
   }
   if ((match = text.match(/^(.+) coils into (.+) and gains (\d+) shield\.$/))) return `${match[1]} se enrola em ${localizeAbilityText("pt-BR", match[2])} e recebe ${match[3]} de escudo.`;
   if ((match = text.match(/^(.+) casts Defying Gravity and lifts (\d+) (?:enemy|enemies)\.$/))) return `${match[1]} conjura Desafiando a Gravidade e faz ${match[2]} ${match[2] === "1" ? "inimigo levitar" : "inimigos levitarem"}.`;
+  if ((match = text.match(/^(.+) summons two birds(?: onto (.+?))?(?: for (\d+) damage)?\.$/))) return `${match[1]} invoca duas aves${match[2] ? ` sobre ${match[2]}` : ""}${match[3] ? `, causando ${match[3]} de dano` : ""}.`;
   if ((match = text.match(/^(.+) casts (.+?)(?: on (.+?))?(?: for (\d+) impact)?\.$/))) {
     const targets = match[3]?.replaceAll(" and ", " e ");
     return `${match[1]} conjura ${localizeAbilityText("pt-BR", match[2])}${targets ? ` em ${targets}` : ""}${match[4] ? `, causando ${match[4]} de impacto` : ""}.`;
@@ -793,6 +808,8 @@ function localizeGameMessagePt(text: string): string {
   if ((match = text.match(/^(.+) hurls stored meat at (.+) for (\d+) damage \((\d+) bonus\)\.$/))) return `${match[1]} arremessa carne armazenada em ${match[2]} e causa ${match[3]} de dano (${match[4]} adicional).`;
   if ((match = text.match(/^(.+) strikes (.+) for (\d+) damage\.$/))) return `${match[1]} ataca ${match[2]} e causa ${match[3]} de dano.`;
   if ((match = text.match(/^(.+) strikes at an empty space\.$/))) return `${match[1]} ataca uma casa vazia.`;
+  if ((match = text.match(/^(.+)'s (\d+) birds strike (.+) for (\d+) damage\.$/))) return `As ${match[2]} aves de ${match[1]} atacam ${match[3]} e causam ${match[4]} de dano.`;
+  if ((match = text.match(/^(.+)'s birds find no target\.$/))) return `As aves de ${match[1]} não encontram um alvo.`;
   if ((match = text.match(/^(.+) is defeated\.$/))) return `${match[1]} foi derrotado.`;
   if ((match = text.match(/^(.+) harvests (\d+(?:\.\d+)?) meat from the fallen\.$/))) return `${match[1]} colhe ${formatNumber("pt-BR", Number(match[2]), 3)} de carne dos abatidos.`;
   if ((match = text.match(/^(.+) harvests (\d+(?:\.\d+)?) meat from (\d+) fallen characters\.$/))) return `${match[1]} colhe ${formatNumber("pt-BR", Number(match[2]), 3)} de carne de ${match[3]} personagens abatidos.`;
@@ -824,6 +841,7 @@ export function localizeAbilityText(locale: GameLocale, text: string): string {
     ["Current values include the deployed enemy formation's active bonds.", "Os valores atuais incluem os vínculos ativos da formação inimiga posicionada."],
     ["Bench preview: deploy this character to activate formation bonds.", "Prévia do banco: posicione este personagem para ativar vínculos de formação."],
     ["Passive: Meat Gaga has no Mana, never casts, and empowers only basic attacks after a character falls.", "Passiva: Meat Gaga não possui Mana, nunca conjura e fortalece apenas ataques básicos depois que um personagem é abatido."],
+    ["Birds persist for the combat. Recasting summons two more; each basic attack sends every summoned bird to the lowest-current-Life enemy.", "As aves persistem durante o combate. Conjurar novamente invoca mais duas; cada ataque básico envia todas as aves invocadas contra o inimigo com menos Vida atual."],
     ["Damage is shown before shields; this ability ignores Armor.", "O dano é exibido antes dos escudos; esta habilidade ignora a Armadura."],
     ["Damage is shown before enemy Armor, shields, and remaining-Life limits.", "O dano é exibido antes da Armadura inimiga, dos escudos e do limite de Vida restante."],
     ["Landing damage is calculated from each still-living lifted enemy's current Life at the instant they fall.", "O dano da queda é calculado com base na Vida atual de cada inimigo erguido que ainda estiver vivo no instante em que cair."],
@@ -878,6 +896,9 @@ export function formatAbilityScaling(locale: GameLocale, preview: AbilityPreview
   }
   if (heroId === "elphaba") {
     return `Faz ${triplet((value) => value.maxTargets)} inimigo(s) levitar(em) por ${triplet((value) => value.liftDurationSeconds)} segundos. Na queda, inimigos ortogonalmente adjacentes sofrem ${triplet((value) => value.currentHealthDamagePercent)}% da Vida atual do inimigo que caiu como dano verdadeiro e ficam atordoados por ${triplet((value) => value.stunDurationSeconds)} segundos no 1★/2★/3★.`;
+  }
+  if (heroId === "billie") {
+    return `Invoca 2 aves que atacam o inimigo com menos Vida atual e causam ${triplet((value) => value.summonDamage)} de dano bruto cada. Em cada ataque básico posterior, todas as aves invocadas causam individualmente ${triplet((value) => value.birdAttackPercent)}% do Ataque de Billie ao inimigo com menos Vida atual no 1★/2★/3★.`;
   }
   if (heroId === "sol") {
     return `Atinge ${triplet((value) => `${value.minTargets}–${value.maxTargets}`)} inimigos agrupados e causa ${triplet((value) => value.damage)} de dano bruto em cada um no 1★/2★/3★.`;
