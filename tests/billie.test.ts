@@ -163,7 +163,7 @@ test("the summoned pair locks the lowest absolute-Life enemy and deals damage on
     (initial) => [billie(initial.units[0], "billie", 40)],
     (initial) => [
       unit(initial.enemyUnits[0], "boitata", "a-higher-life", 32),
-      unit(initial.enemyUnits[1], "piper", "z-lowest-life", 7),
+      unit(initial.enemyUnits[1], "piper", "z-lowest-life", 33),
     ],
   ));
   const cast = firstBillieCast(report);
@@ -196,7 +196,7 @@ test("Billie's basic attack and flock volley resolve separately against independ
         stars: 3,
         level: 3,
       }),
-      unit(initial.enemyUnits[1], "piper", "far-wounded", 7, {
+      unit(initial.enemyUnits[1], "piper", "far-wounded", 33, {
         stars: 3,
         level: 3,
       }),

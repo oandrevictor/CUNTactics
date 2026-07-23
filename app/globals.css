@@ -696,6 +696,16 @@ button:disabled,
   animation-play-state: paused !important;
 }
 
+.combat-timeline-cue,
+.combat-timeline-cue::before,
+.combat-timeline-cue::after,
+.combat-timeline-cue *,
+.combat-timeline-cue *::before,
+.combat-timeline-cue *::after {
+  animation-delay: calc(var(--combat-anchor-delay, 0ms) + var(--combat-child-delay, 0ms)) !important;
+  animation-play-state: paused !important;
+}
+
 .board-grid.combat-paused.combat-step-preview .unit-token,
 .board-grid.combat-paused.combat-step-preview .unit-token::before,
 .board-grid.combat-paused.combat-step-preview .unit-token::after,
@@ -714,7 +724,7 @@ button:disabled,
 .board-grid.combat-paused.combat-step-preview .elphaba-gravity-layer *,
 .board-grid.combat-paused.combat-step-preview .elphaba-gravity-layer *::before,
 .board-grid.combat-paused.combat-step-preview .elphaba-gravity-layer *::after {
-  animation-delay: var(--combat-preview-delay, -280ms) !important;
+  animation-delay: calc(var(--combat-anchor-delay, var(--combat-preview-delay, 0ms)) + var(--combat-child-delay, 0ms)) !important;
 }
 
 .unit-event-actor {
@@ -787,6 +797,16 @@ button:disabled,
 
 .unit-impact-shield {
   animation: combat-shield-cast var(--combat-beat, 680ms) cubic-bezier(0.18, 0.86, 0.3, 1) both;
+}
+
+.unit-impact-layer {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  pointer-events: none;
 }
 
 .unit-shield-absorbed {

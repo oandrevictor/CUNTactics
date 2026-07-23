@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { activeCombatEventsAtTime } from "../app/combat-playback.ts";
 import {
   HEROES,
   ITEM_COMPONENTS,
@@ -38,6 +39,8 @@ import {
   unequipItem,
   unitCapForLevel,
   validateState,
+  type CombatEvent,
+  type CombatReport,
   type CraftedItem,
   type GameState,
   type HeroId,
@@ -604,7 +607,7 @@ test("attack speed schedules absolute action opportunities without cadence drift
   );
 });
 
-test("attack cooldown never delays movement when the next enemy is out of range", () => {
+test("attack animation and target transit jointly gate the next movement", () => {
   const initial = createInitialGame(8107);
   const weapons: UnitItemSlots = [
     enhancedItem("movement-fang-1", "inferno-fang", "ember"),
@@ -657,11 +660,331 @@ test("attack cooldown never delays movement when the next enemy is out of range"
   const followingMove = actions.find(
     (event) => event.type === "move" && event.timestamp > firstAttack.timestamp,
   )!;
+  const farTargetMove = report.events.find(
+    (event) =>
+      event.type === "move"
+      && event.actorId === "far-target"
+      && event.fromPosition !== event.toPosition,
+  )!;
+  const attackDuration = attackAnimationSeconds(HEROES.nix.attackSpeed);
+  const attackEnd = roundCombatTestValue(firstAttack.timestamp + attackDuration);
+  const farTargetArrival = roundCombatTestValue(
+    farTargetMove.timestamp + (farTargetMove.durationSeconds ?? 0),
+  );
 
   assert.equal(firstAttack.snapshot.find((unit) => unit.id === "near-target")?.alive, false);
   assert.equal(firstAttack.timestamp, roundCombatTestValue(1 / HEROES.nix.attackSpeed));
-  assert.equal(followingMove.timestamp, roundCombatTestValue(firstAttack.timestamp + 0.001));
-  assert.ok(followingMove.timestamp < firstAttack.timestamp + 1 / HEROES.nix.attackSpeed);
+  assert.equal(firstAttack.durationSeconds, attackDuration);
+  assert.ok(farTargetArrival > attackEnd);
+  assert.equal(followingMove.timestamp, farTargetArrival);
+  assert.equal(followingMove.fromPosition, 40);
+  assert.equal(followingMove.toPosition, 32);
+  assert.equal(
+    followingMove.durationSeconds,
+    roundCombatTestValue(movementTravelSeconds(
+      followingMove.snapshot.find((unit) => unit.id === "independent-mover")!.moveSpeed,
+      followingMove.fromPosition,
+      followingMove.toPosition,
+    )),
+  );
+});
+
+test("engine-authored action intervals never overlap for the same actor", () => {
+  const actionTypes = new Set<CombatEvent["type"]>(["move", "attack", "ability"]);
+  let independentOverlapObserved = false;
+
+  for (let seed = 1; seed <= 64; seed += 1) {
+    const report = resolveCombat(createInitialGame(seed)).report!;
+    const actorReadyAt = new Map<string, number>();
+    const primaryEvents = report.events.filter(
+      (event) => event.actorId && actionTypes.has(event.type),
+    );
+
+    for (const event of report.events) {
+      const durationSeconds = event.durationSeconds ?? Number.NaN;
+      assert.ok(
+        Number.isFinite(durationSeconds) && durationSeconds >= 0,
+        `${event.id} must expose a finite non-negative duration`,
+      );
+      if (!event.actorId || !actionTypes.has(event.type)) continue;
+      assert.ok(durationSeconds > 0, `${event.id} must expose a positive action duration`);
+
+      const actor = event.snapshot.find((unit) => unit.id === event.actorId)!;
+      const readyAt = actorReadyAt.get(event.actorId) ?? 0;
+      assert.ok(
+        event.timestamp + 1e-9 >= readyAt,
+        `${event.actorId} starts ${event.type} at ${event.timestamp} before ${readyAt}`,
+      );
+
+      if (event.type === "move") {
+        assert.ok(Number.isInteger(event.fromPosition));
+        assert.ok(Number.isInteger(event.toPosition));
+        if (event.fromPosition !== event.toPosition) {
+          assert.equal(
+            durationSeconds,
+            roundCombatTestValue(movementTravelSeconds(
+              actor.moveSpeed,
+              event.fromPosition!,
+              event.toPosition!,
+            )),
+          );
+        }
+      } else if (event.type === "attack") {
+        assert.equal(durationSeconds, attackAnimationSeconds(actor.attackSpeed));
+      } else {
+        assert.equal(
+          durationSeconds,
+          roundCombatTestValue(HEROES[actor.heroId].ability.castAnimationSeconds),
+        );
+        if (event.fromPosition !== undefined || event.toPosition !== undefined) {
+          assert.ok(Number.isInteger(event.fromPosition));
+          assert.ok(Number.isInteger(event.toPosition));
+          assert.equal(actor.position, event.fromPosition);
+        }
+      }
+
+      actorReadyAt.set(
+        event.actorId,
+        roundCombatTestValue(event.timestamp + durationSeconds),
+      );
+    }
+
+    for (let index = 0; index < primaryEvents.length && !independentOverlapObserved; index += 1) {
+      const event = primaryEvents[index];
+      const endTime = roundCombatTestValue(event.timestamp + (event.durationSeconds ?? 0));
+      independentOverlapObserved = primaryEvents.slice(index + 1).some((candidate) =>
+        candidate.actorId !== event.actorId
+          && candidate.timestamp >= event.timestamp
+          && candidate.timestamp < endTime,
+      );
+    }
+  }
+
+  assert.equal(
+    independentOverlapObserved,
+    true,
+    "per-actor readiness must not serialize independent combatants",
+  );
+});
+
+test("skipped, levitating, and held actions author visible intervals on the combat timeline", () => {
+  const assertVisibleHalfOpenInterval = (report: CombatReport, event: CombatEvent) => {
+    const durationSeconds = event.durationSeconds ?? 0;
+    const midpoint = event.timestamp + durationSeconds / 2;
+    const endTime = event.timestamp + durationSeconds;
+
+    assert.ok(durationSeconds > 0);
+    assert.ok(activeCombatEventsAtTime(report.events, event.timestamp).includes(event));
+    assert.ok(activeCombatEventsAtTime(report.events, midpoint).includes(event));
+    assert.ok(!activeCombatEventsAtTime(report.events, endTime).includes(event));
+    const nextAction = report.events.find((candidate) =>
+      candidate.actorId === event.actorId
+        && COMBAT_ACTION_TYPES.has(candidate.type)
+        && candidate.timestamp > event.timestamp,
+    );
+    if (nextAction) assert.ok(nextAction.timestamp >= endTime);
+  };
+
+  const stunInitial = createInitialGame(92);
+  const loadedVesper = (
+    base: UnitInstance,
+    id: string,
+    position: number,
+  ): UnitInstance => ({
+    ...base,
+    id,
+    heroId: "vesper",
+    position,
+    benchIndex: null,
+    itemSlots: [
+      fullItem(`${id}-lantern-1`, "spirit-lantern"),
+      fullItem(`${id}-lantern-2`, "spirit-lantern"),
+      null,
+    ],
+  });
+  const stunReport = resolveCombat({
+    ...stunInitial,
+    commanderLevel: 8,
+    units: [loadedVesper(stunInitial.units[0], "stun-player", 40)],
+    enemyUnits: [loadedVesper(stunInitial.enemyUnits[0], "stun-enemy", 32)],
+  }).report!;
+  const skipped = stunReport.events.find(
+    (event) => event.actorId === "stun-player" && /stunned and skips/.test(event.text),
+  )!;
+  const skippedActor = skipped.snapshot.find((unit) => unit.id === skipped.actorId)!;
+  assert.equal(skipped.durationSeconds, attackAnimationSeconds(skippedActor.attackSpeed));
+  assertVisibleHalfOpenInterval(stunReport, skipped);
+
+  const gravityInitial = createInitialGame(7114);
+  const elphabaItems: UnitItemSlots = [
+    fullItem("elphaba-lantern-1", "spirit-lantern"),
+    fullItem("elphaba-lantern-2", "spirit-lantern"),
+    fullItem("elphaba-lantern-3", "spirit-lantern"),
+  ];
+  const gravityReport = resolveCombat({
+    ...gravityInitial,
+    commanderLevel: 8,
+    units: [{
+      ...gravityInitial.units[0],
+      id: "interval-elphaba",
+      heroId: "elphaba",
+      stars: 3,
+      level: 5,
+      xp: 0,
+      position: 34,
+      benchIndex: null,
+      itemSlots: elphabaItems,
+    }],
+    enemyUnits: [{
+      ...gravityInitial.enemyUnits[0],
+      id: "lifted-nix",
+      heroId: "nix",
+      stars: 3,
+      level: 5,
+      xp: 0,
+      position: 18,
+      benchIndex: null,
+      itemSlots: [null, null, null],
+    }],
+  }).report!;
+  const levitating = gravityReport.events.find(
+    (event) => event.actorId === "lifted-nix" && /levitating and cannot act/.test(event.text),
+  )!;
+  const levitatingActor = levitating.snapshot.find((unit) => unit.id === levitating.actorId)!;
+  assert.equal(
+    levitating.durationSeconds,
+    attackAnimationSeconds(levitatingActor.attackSpeed),
+  );
+  assertVisibleHalfOpenInterval(gravityReport, levitating);
+
+  const holdInitial = createInitialGame(8123);
+  const brambleAt = (
+    base: UnitInstance,
+    id: string,
+    position: number,
+  ): UnitInstance => ({
+    ...base,
+    id,
+    heroId: "bramble",
+    stars: 1,
+    level: 1,
+    xp: 0,
+    position,
+    benchIndex: null,
+    itemSlots: [null, null, null],
+  });
+  const holdReport = resolveCombat({
+    ...holdInitial,
+    commanderLevel: 8,
+    units: [
+      brambleAt(holdInitial.units[0], "holder", 40),
+      brambleAt(holdInitial.units[1], "blocker-a", 41),
+      brambleAt(holdInitial.units[2], "blocker-b", 32),
+    ],
+    enemyUnits: [brambleAt(holdInitial.enemyUnits[0], "hold-target", 33)],
+  }).report!;
+  const hold = holdReport.events.find(
+    (event) => event.actorId === "holder" && /holds position/.test(event.text),
+  )!;
+  const holdingActor = hold.snapshot.find((unit) => unit.id === hold.actorId)!;
+  assert.equal(
+    hold.durationSeconds,
+    roundCombatTestValue(1 / holdingActor.moveSpeed),
+  );
+  assertVisibleHalfOpenInterval(holdReport, hold);
+});
+
+test("same-source child events inherit duration while gravity landings remain independent", () => {
+  const reportFor = (playerHeroId: HeroId): CombatReport =>
+    resolveCombat(deterministicTimingDuel(
+      playerHeroId,
+      "bramble",
+      { stars: 3, level: 5 },
+    )).report!;
+  const sourceEventFor = (
+    report: CombatReport,
+    child: CombatEvent,
+    type: CombatEvent["type"],
+  ) => report.events.find((event) =>
+    event.type === type
+      && event.actorId === child.actorId
+      && event.turn === child.turn
+      && event.timestamp === child.timestamp,
+  )!;
+
+  const billieReport = reportFor("billie");
+  const birdVolley = billieReport.events.find(
+    (event) => event.type === "passive" && (event.birdCount ?? 0) > 0,
+  )!;
+  const billieAttack = sourceEventFor(billieReport, birdVolley, "attack");
+  assert.ok((billieAttack.durationSeconds ?? 0) > 0);
+  assert.equal(birdVolley.durationSeconds, billieAttack.durationSeconds);
+
+  const morrowReport = reportFor("morrow");
+  const lifesteal = morrowReport.events.find((event) => event.type === "heal")!;
+  const morrowCast = sourceEventFor(morrowReport, lifesteal, "ability");
+  assert.equal(lifesteal.durationSeconds, morrowCast.durationSeconds);
+
+  const asterReport = reportFor("aster");
+  const shield = asterReport.events.find((event) => event.type === "shield")!;
+  const asterCast = sourceEventFor(asterReport, shield, "ability");
+  assert.equal(shield.durationSeconds, asterCast.durationSeconds);
+
+  const nixReport = reportFor("nix");
+  const shadowstep = nixReport.events.find(
+    (event) => event.type === "ability" && event.actorId === "timing-player",
+  )!;
+  assert.equal(shadowstep.fromPosition, 40);
+  assert.ok(Number.isInteger(shadowstep.toPosition));
+  assert.notEqual(shadowstep.toPosition, shadowstep.fromPosition);
+  assert.equal(
+    shadowstep.snapshot.find((unit) => unit.id === "timing-player")?.position,
+    shadowstep.fromPosition,
+  );
+  const shadowstepEnd = roundCombatTestValue(
+    shadowstep.timestamp + (shadowstep.durationSeconds ?? 0),
+  );
+  const shadowstepCompletionSnapshot = nixReport.events.find(
+    (event) => event.timestamp >= shadowstepEnd,
+  )?.snapshot;
+  assert.equal(
+    shadowstepCompletionSnapshot?.find((unit) => unit.id === "timing-player")?.position,
+    shadowstep.toPosition,
+  );
+  assert.equal(
+    shadowstep.durationSeconds,
+    roundCombatTestValue(HEROES.nix.ability.castAnimationSeconds),
+  );
+
+  const meatReport = reportFor("meat-gaga");
+  const harvest = meatReport.events.find(
+    (event) => event.type === "passive" && (event.meatStackGained ?? 0) > 0,
+  )!;
+  const defeat = sourceEventFor(meatReport, harvest, "defeat");
+  const defeatingAttack = sourceEventFor(meatReport, harvest, "attack");
+  assert.ok((defeatingAttack.durationSeconds ?? 0) > 0);
+  assert.equal(defeat.durationSeconds, defeatingAttack.durationSeconds);
+  assert.equal(harvest.durationSeconds, defeatingAttack.durationSeconds);
+
+  const gravityReport = reportFor("elphaba");
+  const gravityCast = gravityReport.events.find(
+    (event) => event.type === "ability" && event.actorId === "timing-player",
+  )!;
+  const landing = gravityReport.events.find(
+    (event) => event.type === "landing" && event.actorId === "timing-player",
+  )!;
+  assert.equal(landing.timestamp, gravityCast.landingAt);
+  assert.ok(
+    landing.timestamp
+      < roundCombatTestValue(
+        gravityCast.timestamp + (gravityCast.durationSeconds ?? 0),
+      ),
+    "the landing remains an independently scheduled effect inside the cast interval",
+  );
+  assert.equal(
+    landing.durationSeconds,
+    roundCombatTestValue(HEROES.elphaba.ability.castAnimationSeconds),
+  );
 });
 
 test("living units regenerate mana continuously without attack or damage mana bonuses", () => {
@@ -681,8 +1004,18 @@ test("living units regenerate mana continuously without attack or damage mana bo
   assert.ok(Math.abs(
     enemyAfter.mana - (initialEnemy.mana + firstAction.timestamp * initialEnemy.manaRegen),
   ) < 0.01);
-  assert.equal(playerAfter.mana, 38.077);
-  assert.equal(enemyAfter.mana, 36.154);
+  assert.equal(
+    playerAfter.mana,
+    roundCombatTestValue(
+      initialPlayer.mana + firstAction.timestamp * initialPlayer.manaRegen,
+    ),
+  );
+  assert.equal(
+    enemyAfter.mana,
+    roundCombatTestValue(
+      initialEnemy.mana + firstAction.timestamp * initialEnemy.manaRegen,
+    ),
+  );
 });
 
 test("a unit's mana timeline is unchanged by unrelated allies acting between its attacks", () => {
@@ -708,8 +1041,8 @@ test("a unit's mana timeline is unchanged by unrelated allies acting between its
     return event.snapshot.find((unit) => unit.id === "timing-player")!.mana;
   };
 
-  assert.equal(manaAtSecondAttack(duel), 51.154);
-  assert.equal(manaAtSecondAttack(withExtraAlly), 51.154);
+  assert.equal(manaAtSecondAttack(duel), 51.155);
+  assert.equal(manaAtSecondAttack(withExtraAlly), 51.155);
 });
 
 test("an ability replaces the first scheduled attack after passive mana reaches full", () => {
@@ -752,20 +1085,152 @@ test("combat timestamps and action sequence remain monotonic through simultaneou
   }
 
   const actions = report.events.filter((event) => COMBAT_ACTION_TYPES.has(event.type));
-  assert.deepEqual(
-    actions.map((event) => event.turn),
-    Array.from({ length: actions.length }, (_, index) => index + 1),
-  );
+  for (let index = 1; index < actions.length; index += 1) {
+    assert.ok(actions[index].turn >= actions[index - 1].turn);
+    if (actions[index].timestamp === actions[index - 1].timestamp) {
+      assert.equal(actions[index].turn, actions[index - 1].turn);
+    }
+  }
   const cast = report.events.find(
     (event) => event.type === "ability" && event.actorId === "timing-player",
   )!;
   const defeat = report.events.find((event) => event.type === "defeat")!;
   const outcome = report.events.at(-1)!;
+  const latestAuthoredEnd = Math.max(
+    ...report.events.slice(0, -1).map(
+      (event) => roundCombatTestValue(event.timestamp + (event.durationSeconds ?? 0)),
+    ),
+  );
   assert.ok(defeat.timestamp >= cast.timestamp);
   assert.ok(defeat.turn >= cast.turn);
   assert.equal(outcome.type, "outcome");
-  assert.equal(outcome.timestamp, defeat.timestamp);
-  assert.equal(outcome.turn, defeat.turn + 1);
+  assert.equal(outcome.timestamp, latestAuthoredEnd);
+  assert.equal(
+    outcome.turn,
+    Math.max(...report.events.slice(0, -1).map((event) => event.turn)) + 1,
+  );
+});
+
+test("one published millisecond always represents one resolved combat moment", () => {
+  for (const seed of [2, 6]) {
+    const seededReport = resolveCombat(createInitialGame(seed)).report!;
+    const turnByTimestamp = new Map<number, number>();
+
+    for (const event of seededReport.events) {
+      const existingTurn = turnByTimestamp.get(event.timestamp);
+      if (existingTurn === undefined) {
+        turnByTimestamp.set(event.timestamp, event.turn);
+      } else {
+        assert.equal(
+          event.turn,
+          existingTurn,
+          `seed ${seed}: ${event.id} must share turn ${existingTurn} at ${event.timestamp}`,
+        );
+      }
+    }
+  }
+
+  const report = resolveCombat(createInitialGame(2)).report!;
+  const movement = report.events.find(
+    (event) =>
+      event.type === "move"
+      && event.actorId === "enemy-6"
+      && event.fromPosition === 10
+      && event.toPosition === 9,
+  )!;
+  const arrival = roundCombatTestValue(
+    movement.timestamp + (movement.durationSeconds ?? 0),
+  );
+  const arrivalEvents = report.events.filter((event) => event.timestamp === arrival);
+
+  assert.ok(arrivalEvents.length > 0);
+  for (const event of arrivalEvents) {
+    const arrived = event.snapshot.find((unit) => unit.id === "enemy-6")!;
+    assert.equal(arrived.position, 9);
+    assert.equal(arrived.movingUntil, 0);
+  }
+});
+
+test("live actionable sides continue after an opportunity-kind shift empties a candidate batch", () => {
+  const base = createInitialGame(231);
+  const state: GameState = {
+    ...base,
+    commanderLevel: 8,
+    units: [
+      {
+        ...base.units[0],
+        id: "p0",
+        heroId: "vesper",
+        stars: 1,
+        level: 3,
+        xp: 0,
+        position: 25,
+        benchIndex: null,
+        itemSlots: [fullItem("p0i", "spirit-lantern"), null, null],
+      },
+      {
+        ...base.units[0],
+        id: "p1",
+        heroId: "nix",
+        stars: 3,
+        level: 1,
+        xp: 0,
+        position: 36,
+        benchIndex: null,
+        itemSlots: [null, null, null],
+      },
+      {
+        ...base.units[0],
+        id: "p2",
+        heroId: "vesper",
+        stars: 3,
+        level: 5,
+        xp: 0,
+        position: 39,
+        benchIndex: null,
+        itemSlots: [fullItem("p2i", "spirit-lantern"), null, null],
+      },
+    ],
+    enemyUnits: [
+      {
+        ...base.enemyUnits[0],
+        id: "e0",
+        heroId: "billie",
+        stars: 2,
+        level: 2,
+        xp: 0,
+        position: 20,
+        benchIndex: null,
+        itemSlots: [null, null, null],
+      },
+      {
+        ...base.enemyUnits[0],
+        id: "e1",
+        heroId: "tide",
+        stars: 1,
+        level: 1,
+        xp: 0,
+        position: 18,
+        benchIndex: null,
+        itemSlots: [null, null, null],
+      },
+    ],
+  };
+
+  assert.deepEqual(validateState(state), []);
+  const report = resolveCombat(state).report!;
+  const outcome = report.events.at(-1)!;
+  const livingPlayers = outcome.snapshot.filter((unit) => unit.side === "player" && unit.alive);
+  const livingEnemies = outcome.snapshot.filter((unit) => unit.side === "enemy" && unit.alive);
+
+  assert.ok(report.events.some(
+    (event) => COMBAT_ACTION_TYPES.has(event.type) && event.timestamp > 3.572,
+  ));
+  assert.ok(outcome.timestamp > 5.172);
+  assert.ok(
+    outcome.timestamp >= 45 || livingPlayers.length === 0 || livingEnemies.length === 0,
+    "combat cannot publish an early elimination outcome while both sides remain alive",
+  );
 });
 
 test("equal attack-speed opportunities share one simultaneous batch in stable presentation order", () => {
@@ -832,6 +1297,14 @@ test("an actor killed in a simultaneous batch still completes its frozen lethal 
   assert.equal(casts[1].snapshot.find((unit) => unit.id === "simultaneous-player")?.alive, false);
   assert.ok(report.finalUnits.every((unit) => !unit.alive));
   assert.equal(report.outcome, "defeat");
+  assert.equal(
+    report.events.at(-1)?.timestamp,
+    Math.max(
+      ...casts.map(
+        (cast) => roundCombatTestValue(cast.timestamp + (cast.durationSeconds ?? 0)),
+      ),
+    ),
+  );
 });
 
 test("a stun applied during a batch affects the target's next opportunity, not its frozen cast", () => {
@@ -915,11 +1388,27 @@ test("simultaneous movers reserve distinct destinations from one frozen board", 
     ["moving-player-1", "moving-player-2"].map(
       (id) => batchSnapshot.find((unit) => unit.id === id)?.position,
     ),
-    [40, 42],
+    [32, 34],
+  );
+  const destinations = firstBatch.map((event) => event.toPosition);
+  assert.equal(new Set(destinations).size, destinations.length);
+  assert.ok(destinations.every((position) => !positions.includes(position!)));
+
+  const completionTime = roundCombatTestValue(
+    firstBatch[0].timestamp + (firstBatch[0].durationSeconds ?? 0),
+  );
+  const completionSnapshot = report.events.find(
+    (event) => event.timestamp >= completionTime,
+  )!.snapshot;
+  assert.deepEqual(
+    ["moving-player-1", "moving-player-2", "moving-enemy"].map(
+      (id) => completionSnapshot.find((unit) => unit.id === id)?.position,
+    ),
+    destinations,
   );
 });
 
-test("rear movers immediately follow allies vacating their path", () => {
+test("rear movers wait for allies to finish vacating their path", () => {
   const initial = createInitialGame(9402);
   const report = resolveCombat({
     ...initial,
@@ -959,13 +1448,195 @@ test("rear movers immediately follow allies vacating their path", () => {
     (event) => event.turn === 1 && event.type === "move",
   );
   const solMove = openingMoves.find((event) => event.actorId === "rear-sol");
+  const frontMove = openingMoves.find((event) => event.actorId === "front-bramble");
 
   assert.ok(solMove);
+  assert.ok(frontMove);
   assert.equal(solMove.timestamp, 0.001);
-  assert.match(solMove.text, /advances/);
+  assert.match(solMove.text, /holds position/);
+  assert.equal(solMove.fromPosition, 40);
+  assert.equal(solMove.toPosition, 40);
   assert.equal(
     solMove.snapshot.find((unit) => unit.id === "rear-sol")?.position,
+    40,
+  );
+  const frontMoveEnd = roundCombatTestValue(
+    frontMove.timestamp + (frontMove.durationSeconds ?? 0),
+  );
+  const firstRearAdvance = report.events.find(
+    (event) =>
+      event.type === "move"
+      && event.actorId === "rear-sol"
+      && event.fromPosition !== event.toPosition,
+  );
+  assert.ok(firstRearAdvance);
+  assert.ok(firstRearAdvance.timestamp >= frontMoveEnd);
+});
+
+test("seed 777 keeps origins occupied and destinations reserved for the full movement interval", () => {
+  const report = resolveCombat(createInitialGame(777)).report!;
+  const movements = report.events.filter(
+    (event) =>
+      event.actorId
+      && Number.isInteger(event.fromPosition)
+      && Number.isInteger(event.toPosition)
+      && event.fromPosition !== event.toPosition,
+  );
+  let overlappingMovements = 0;
+
+  for (const movement of movements) {
+    const endTime = roundCombatTestValue(
+      movement.timestamp + (movement.durationSeconds ?? 0),
+    );
+    assert.equal(
+      movement.snapshot.find((unit) => unit.id === movement.actorId)?.movingUntil,
+      endTime,
+    );
+    for (const event of report.events) {
+      if (event.timestamp < movement.timestamp || event.timestamp >= endTime) continue;
+      const mover = event.snapshot.find((unit) => unit.id === movement.actorId);
+      assert.equal(mover?.position, movement.fromPosition);
+      assert.equal(mover?.movingUntil, endTime);
+    }
+
+    for (const concurrent of movements) {
+      if (
+        concurrent.actorId === movement.actorId
+        || concurrent.timestamp < movement.timestamp
+        || concurrent.timestamp >= endTime
+      ) {
+        continue;
+      }
+      overlappingMovements += 1;
+      assert.notEqual(concurrent.toPosition, movement.fromPosition);
+      assert.notEqual(concurrent.toPosition, movement.toPosition);
+    }
+  }
+
+  assert.ok(overlappingMovements > 0);
+});
+
+test("seed 1 keeps movers untargetable until the exact arrival timestamp", () => {
+  const report = resolveCombat(createInitialGame(1)).report!;
+  const movements = report.events.filter(
+    (event) =>
+      event.actorId
+      && Number.isInteger(event.fromPosition)
+      && Number.isInteger(event.toPosition)
+      && event.fromPosition !== event.toPosition,
+  );
+
+  for (const movement of movements) {
+    const arrival = roundCombatTestValue(
+      movement.timestamp + (movement.durationSeconds ?? 0),
+    );
+    for (const event of report.events) {
+      if (event.timestamp <= movement.timestamp || event.timestamp >= arrival) continue;
+      assert.equal(
+        Boolean(event.targetIds?.includes(movement.actorId!)),
+        false,
+        `${event.id} must not newly target ${movement.actorId} before ${arrival}`,
+      );
+    }
+  }
+
+  const openingMove = movements.find(
+    (event) => event.actorId === "enemy-5" && event.timestamp === 0.001,
+  )!;
+  const arrival = roundCombatTestValue(
+    openingMove.timestamp + (openingMove.durationSeconds ?? 0),
+  );
+  const arrivalAttack = report.events.find(
+    (event) =>
+      event.timestamp === arrival
+      && event.type === "attack"
+      && event.targetIds?.includes("enemy-5"),
+  )!;
+  const arrivedEnemy = arrivalAttack.snapshot.find((unit) => unit.id === "enemy-5")!;
+  const frozenOpeningTarget = report.events.find(
+    (event) =>
+      event.timestamp === openingMove.timestamp
+      && event.actorId === "unit-2"
+      && event.targetIds?.includes("enemy-5"),
+  );
+
+  assert.ok(frozenOpeningTarget);
+  assert.equal(arrivedEnemy.position, openingMove.toPosition);
+  assert.equal(arrivedEnemy.movingUntil, 0);
+});
+
+test("pending movement completion cannot prematurely terminate a live combat", () => {
+  const report = resolveCombat(createInitialGame(260)).report!;
+  const movement = report.events.find(
+    (event) =>
+      event.type === "move"
+      && event.actorId === "enemy-4"
+      && event.fromPosition === 17
+      && event.toPosition === 9,
+  )!;
+  const movementEnd = roundCombatTestValue(
+    movement.timestamp + (movement.durationSeconds ?? 0),
+  );
+  const outcome = report.events.at(-1)!;
+  const finalMover = outcome.snapshot.find((unit) => unit.id === "enemy-4")!;
+
+  assert.equal(movementEnd, 9.693);
+  assert.ok(outcome.timestamp > movementEnd);
+  assert.equal(finalMover.position, 9);
+  assert.equal(finalMover.movingUntil, 0);
+  assert.ok(report.events.some(
+    (event) => COMBAT_ACTION_TYPES.has(event.type) && event.timestamp > movementEnd,
+  ));
+});
+
+test("targeting does not use a moving enemy's occupied origin before arrival", () => {
+  const initial = createInitialGame(777);
+  const combatant = (
+    base: UnitInstance,
+    id: string,
+    heroId: HeroId,
+    position: number,
+    stars = 1,
+    level = 1,
+  ): UnitInstance => ({
+    ...base,
+    id,
+    heroId,
+    stars,
+    level,
+    xp: 0,
+    position,
+    benchIndex: null,
+    itemSlots: [null, null, null],
+  });
+  const report = resolveCombat({
+    ...initial,
+    commanderLevel: 8,
+    units: [combatant(initial.units[0], "stationary-nix", "nix", 8)],
+    enemyUnits: [
+      combatant(initial.enemyUnits[0], "moving-bramble", "bramble", 32),
+      combatant(initial.enemyUnits[1], "decoy-morrow", "morrow", 10, 3, 5),
+    ],
+  }).report!;
+  const brambleMove = report.events.find(
+    (event) => event.actorId === "moving-bramble" && event.fromPosition !== event.toPosition,
+  )!;
+  const nixAttack = report.events.find(
+    (event) => event.type === "attack" && event.actorId === "stationary-nix",
+  )!;
+
+  assert.equal(brambleMove.timestamp, 0.001);
+  assert.equal(brambleMove.fromPosition, 32);
+  assert.equal(brambleMove.toPosition, 24);
+  assert.equal(nixAttack.timestamp, 1.538);
+  assert.deepEqual(nixAttack.targetIds, ["decoy-morrow"]);
+  assert.equal(
+    nixAttack.snapshot.find((unit) => unit.id === "moving-bramble")?.position,
     32,
+  );
+  assert.equal(
+    roundCombatTestValue(brambleMove.timestamp + (brambleMove.durationSeconds ?? 0)),
+    3.572,
   );
 });
 
@@ -1056,7 +1727,11 @@ test("Meat Gaga spends only her pre-moment stack and harvests deaths for her nex
   assert.equal(harvest.amounts?.[victim.id], 78);
   assert.equal(harvest.meatStackBefore, 0);
   assert.equal(harvest.meatStackAfter, 78);
-  assert.equal(empoweredAttack.timestamp, 4.348);
+  assert.ok(empoweredAttack.timestamp > harvest.timestamp);
+  assert.equal(
+    gagaEvents.filter((event) => event.type === "attack")[1],
+    empoweredAttack,
+  );
   assert.equal(empoweredAttack.meatStackBefore, 78);
   assert.equal(empoweredAttack.meatStackConsumed, 6);
   assert.equal(empoweredAttack.meatBonusDamage, 6);
@@ -1374,7 +2049,7 @@ test("simultaneous Morrow damage and self-healing are invariant when sides swap"
   const roleAAllied = run("player");
   const roleAEnemy = run("enemy");
   assert.deepEqual(roleAAllied, roleAEnemy);
-  assert.equal(roleAAllied.timestamp, 6.977);
+  assert.equal(roleAAllied.timestamp, 6.978);
   assert.deepEqual(roleAAllied.support, [
     ["morrow-a", 44],
     ["morrow-b", 44],
@@ -1452,13 +2127,73 @@ test("the 45-second combat cap resolves surviving teams by health without elimin
     deterministicTimingDuel("bramble", "bramble", { stars: 3, level: 5 }),
   ).report!;
   const outcome = report.events.at(-1)!;
+  const latestAuthoredEnd = Math.max(
+    ...report.events.slice(0, -1).map(
+      (event) => roundCombatTestValue(event.timestamp + (event.durationSeconds ?? 0)),
+    ),
+  );
 
   assert.equal(outcome.type, "outcome");
-  assert.equal(outcome.timestamp, 45);
+  assert.equal(outcome.timestamp, Math.max(45, latestAuthoredEnd));
+  assert.ok(outcome.timestamp >= 45);
   assert.match(outcome.text, /^Time expires\./);
   assert.doesNotMatch(outcome.text, /line breaks|formation falls/);
   assert.ok(report.finalUnits.some((unit) => unit.side === "player" && unit.alive));
   assert.ok(report.finalUnits.some((unit) => unit.side === "enemy" && unit.alive));
+});
+
+test("the combat cap waits for a cast authored before it to finish", () => {
+  const initial = createInitialGame(1);
+  const report = resolveCombat({
+    ...initial,
+    commanderLevel: 8,
+    units: [{
+      ...initial.units[0],
+      id: "cap-player",
+      heroId: "bramble",
+      stars: 1,
+      level: 1,
+      xp: 0,
+      position: 40,
+      benchIndex: null,
+      itemSlots: [null, null, null],
+    }],
+    enemyUnits: [{
+      ...initial.enemyUnits[0],
+      id: "cap-enemy",
+      heroId: "tide",
+      stars: 1,
+      level: 1,
+      xp: 0,
+      position: 32,
+      benchIndex: null,
+      itemSlots: [null, null, null],
+    }],
+  }).report!;
+  const crossingCast = report.events.find(
+    (event) =>
+      event.type === "ability"
+      && event.actorId === "cap-enemy"
+      && event.timestamp < 45
+      && event.timestamp + (event.durationSeconds ?? 0) > 45,
+  )!;
+  const castEnd = roundCombatTestValue(
+    crossingCast.timestamp + (crossingCast.durationSeconds ?? 0),
+  );
+  const outcome = report.events.at(-1)!;
+
+  assert.equal(crossingCast.timestamp, 43.902);
+  assert.equal(crossingCast.durationSeconds, 1.5);
+  assert.equal(castEnd, 45.402);
+  assert.equal(outcome.timestamp, castEnd);
+  assert.match(outcome.text, /^Time expires(?:\.| with)/);
+  assert.ok(report.finalUnits.every((unit) => unit.alive));
+  assert.equal(
+    report.events.some(
+      (event) => COMBAT_ACTION_TYPES.has(event.type) && event.timestamp >= 45,
+    ),
+    false,
+  );
 });
 
 test("ability previews apply star rank, attack items, and active offensive bonds exactly", () => {
@@ -1688,6 +2423,64 @@ test("Boitata casts Wall of Fire on itself and the shield absorbs the next hit",
   assert.equal(afterHit.hp, shielded.hp);
   assert.equal(afterHit.shield, shielded.shield - absorption.amount!);
   assert.equal(afterHit.fireWallShield, shielded.fireWallShield - absorption.amount!);
+  assert.equal(absorption.shieldAbsorbedAmounts?.[player.id], absorption.amount);
+  assert.equal(absorption.fireWallAbsorbedAmounts?.[player.id], absorption.amount);
+  assert.equal(absorption.fireWallBrokenTargetIds?.includes(player.id) ?? false, false);
+  assert.ok((absorption.durationSeconds ?? 0) > 0);
+});
+
+test("the damage event that depletes Wall of Fire owns its absorption and break metadata", () => {
+  const initial = createInitialGame(94);
+  const boitata = {
+    ...initial.units[0],
+    id: "breaking-wall-boitata",
+    heroId: "boitata" as const,
+    side: "player" as const,
+    position: 40,
+    benchIndex: null,
+    stars: 1,
+    level: 1,
+    xp: 0,
+    itemSlots: [
+      fullItem("breaking-wall-lantern-1", "spirit-lantern"),
+      fullItem("breaking-wall-lantern-2", "spirit-lantern"),
+      fullItem("breaking-wall-lantern-3", "spirit-lantern"),
+    ] as UnitItemSlots,
+  };
+  const attacker = {
+    ...initial.enemyUnits[0],
+    id: "breaking-wall-attacker",
+    heroId: "boitata" as const,
+    side: "enemy" as const,
+    position: 32,
+    benchIndex: null,
+    stars: 3,
+    level: 9,
+    xp: 0,
+    itemSlots: [
+      fullItem("breaking-wall-fang-1", "inferno-fang"),
+      fullItem("breaking-wall-fang-2", "inferno-fang"),
+      fullItem("breaking-wall-fang-3", "inferno-fang"),
+    ] as UnitItemSlots,
+  };
+  const events = resolveCombat({
+    ...initial,
+    commanderLevel: 8,
+    units: [boitata],
+    enemyUnits: [attacker],
+  }).report!.events;
+  const breakIndex = events.findIndex(
+    (event) => event.fireWallBrokenTargetIds?.includes(boitata.id),
+  );
+
+  assert.ok(breakIndex > 0);
+  const beforeBreak = events[breakIndex - 1].snapshot.find((unit) => unit.id === boitata.id)!;
+  const afterBreak = events[breakIndex].snapshot.find((unit) => unit.id === boitata.id)!;
+  assert.ok(beforeBreak.fireWallShield > 0);
+  assert.equal(afterBreak.fireWallShield, 0);
+  assert.equal(events[breakIndex].shieldAbsorbedAmounts?.[boitata.id], beforeBreak.fireWallShield);
+  assert.equal(events[breakIndex].fireWallAbsorbedAmounts?.[boitata.id], beforeBreak.fireWallShield);
+  assert.ok((events[breakIndex].durationSeconds ?? 0) > 0);
 });
 
 test("Boitata's fire wall stays distinct from an ally's ordinary ward", () => {
@@ -1747,9 +2540,24 @@ test("basic combat attacks only after a target enters the actor role range", () 
     firstPlayerAction(tankCombat.report!)?.timestamp,
     0.001,
   );
+  const enemyMove = shooterCombat.report!.events.find(
+    (event) =>
+      event.type === "move"
+      && event.actorId === enemy.id
+      && event.fromPosition !== event.toPosition,
+  )!;
+  const enemyArrival = roundCombatTestValue(
+    enemyMove.timestamp + (enemyMove.durationSeconds ?? 0),
+  );
   assert.equal(
     firstPlayerAction(shooterCombat.report!)?.timestamp,
-    roundCombatTestValue(1 / HEROES.piper.attackSpeed),
+    enemyArrival,
+  );
+  assert.equal(
+    firstPlayerAction(shooterCombat.report!)?.snapshot.find(
+      (unit) => unit.id === enemy.id,
+    )?.position,
+    enemyMove.toPosition,
   );
 });
 

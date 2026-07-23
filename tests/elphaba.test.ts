@@ -217,10 +217,9 @@ test("Defying Gravity selects the highest-current-Life enemies with stable dista
     7104,
     (initial) => [elphaba(initial.units[0], "elphaba", 40)],
     (initial) => [
-      unit(initial.enemyUnits[0], "boitata", "z-far-high", 8),
-      unit(initial.enemyUnits[1], "boitata", "z-near-high", 32),
-      unit(initial.enemyUnits[2], "boitata", "a-near-high", 41),
-      unit(initial.enemyUnits[3], "bramble", "lower-life", 39),
+      unit(initial.enemyUnits[0], "boitata", "z-near-high", 32),
+      unit(initial.enemyUnits[1], "boitata", "a-near-high", 41),
+      unit(initial.enemyUnits[2], "piper", "lower-life", 33),
     ],
   ));
   assert.deepEqual(firstElphabaCast(oneStar).liftedTargetIds, ["a-near-high"]);
@@ -230,12 +229,15 @@ test("Defying Gravity selects the highest-current-Life enemies with stable dista
     (initial) => [elphaba(initial.units[0], "elphaba", 40, 3)],
     (initial) => [
       unit(initial.enemyUnits[0], "boitata", "highest", 32),
-      unit(initial.enemyUnits[1], "bramble", "second", 33),
-      unit(initial.enemyUnits[2], "tide", "third", 34),
-      unit(initial.enemyUnits[3], "morrow", "fourth", 35),
+      unit(initial.enemyUnits[1], "piper", "closest", 41),
+      unit(initial.enemyUnits[2], "piper", "a-distance-tie", 33),
+      unit(initial.enemyUnits[0], "piper", "z-distance-tie", 42),
     ],
   ));
-  assert.deepEqual(firstElphabaCast(threeStar).liftedTargetIds, ["highest", "second", "third"]);
+  assert.deepEqual(
+    firstElphabaCast(threeStar).liftedTargetIds,
+    ["highest", "closest", "a-distance-tie"],
+  );
 });
 
 test("each star rank lands at the exact delayed timestamp and exposes structured metadata", () => {
@@ -497,30 +499,42 @@ test("simultaneous landings globally exclude every lifted anchor from each other
 test("fractional landing stun skips only opportunities strictly before its expiry", () => {
   const report = reportFor(combatState(
     7118,
-    (initial) => [elphaba(initial.units[0], "elphaba", 42)],
+    (initial) => [elphaba(initial.units[0], "elphaba", 42, 3)],
     (initial) => [
-      unit(initial.enemyUnits[0], "boitata", "anchor", 17),
-      unit(initial.enemyUnits[1], "sol", "stunned-sol", 9),
+      unit(initial.enemyUnits[0], "boitata", "anchor-a", 34),
+      unit(initial.enemyUnits[1], "boitata", "anchor-b", 41),
+      unit(initial.enemyUnits[2], "boitata", "anchor-c", 43),
+      unit(initial.enemyUnits[0], "piper", "stunned-piper", 33),
     ],
   ));
+  const cast = firstElphabaCast(report);
   const landing = firstElphabaLanding(report);
-  const targetEvents = report.events.filter((event) => event.actorId === "stunned-sol");
-  const stunnedUntil = landing.snapshot.find((candidate) => candidate.id === "stunned-sol")?.stunnedUntil ?? 0;
+  const targetEvents = report.events.filter((event) => event.actorId === "stunned-piper");
+  const stunnedUntil = landing.snapshot.find((candidate) => candidate.id === "stunned-piper")?.stunnedUntil ?? 0;
   const skipped = targetEvents.find(
     (event) => event.timestamp > landing.timestamp && event.timestamp < stunnedUntil && /stunned/i.test(event.text),
   );
   const resumed = targetEvents.find(
-    (event) => event.timestamp > stunnedUntil && !/stunned|levitat/i.test(event.text),
+    (event) => event.timestamp >= stunnedUntil && !/stunned|levitat/i.test(event.text),
   );
 
-  assert.equal(landing.timestamp, 2.773);
-  assert.equal(landing.stunDurationSeconds, 0.25);
-  assert.equal(stunnedUntil, 3.023);
+  assert.equal(
+    landing.timestamp,
+    roundCombatTime(cast.timestamp + (cast.liftDurationSeconds ?? 0)),
+  );
+  assert.equal(landing.stunDurationSeconds, 0.5);
+  assert.equal(
+    stunnedUntil,
+    roundCombatTime(landing.timestamp + landing.stunDurationSeconds),
+  );
+  assert.deepEqual(landing.targetIds, ["stunned-piper"]);
   assert.ok(skipped);
   assert.equal(skipped.type, "move");
   assert.match(skipped.text, /stunned and skips the action/i);
-  assert.equal(skipped.snapshot.find((candidate) => candidate.id === "stunned-sol")?.stunned, 0);
+  assert.ok(skipped.timestamp < stunnedUntil);
+  assert.equal(skipped.snapshot.find((candidate) => candidate.id === "stunned-piper")?.stunned, 0);
   assert.ok(resumed);
+  assert.ok(resumed.timestamp >= stunnedUntil);
   assert.doesNotMatch(resumed.text, /stunned|levitat/i);
 });
 
@@ -534,8 +548,8 @@ test("a queued landing still resolves after Elphaba dies", () => {
     7119,
     (initial) => [elphaba(initial.units[0], "elphaba", 42, 2)],
     (initial) => [
-      unit(initial.enemyUnits[0], "boitata", "anchor", 18),
-      unit(initial.enemyUnits[1], "morrow", "executioner", 34, {
+      unit(initial.enemyUnits[0], "boitata", "anchor", 34),
+      unit(initial.enemyUnits[1], "morrow", "executioner", 33, {
         itemSlots: lethalLoadout,
       }),
       unit(initial.enemyUnits[2], "nix", "softener", 35, {
@@ -549,11 +563,14 @@ test("a queued landing still resolves after Elphaba dies", () => {
     (event) => event.type === "defeat" && event.targetIds?.includes("elphaba"),
   );
 
-  assert.equal(cast.timestamp, 2.273);
   assert.ok(death);
-  assert.equal(death.timestamp, 2.326);
   assert.equal(death.snapshot.find((candidate) => candidate.id === "elphaba")?.alive, false);
-  assert.equal(landing.timestamp, 2.923);
+  assert.equal(
+    landing.timestamp,
+    roundCombatTime(cast.timestamp + (cast.liftDurationSeconds ?? 0)),
+  );
+  assert.equal(cast.landingAt, landing.timestamp);
+  assert.ok(death.timestamp > cast.timestamp);
   assert.ok(landing.timestamp > death.timestamp);
   assert.deepEqual(landing.liftedTargetIds, ["anchor"]);
 });

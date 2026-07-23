@@ -112,7 +112,7 @@ export interface AbilityDefinition {
   description: string;
   manaCost: number;
   targetRule: string;
-  /** Visual cast duration; this does not change mana or action scheduling. */
+  /** Authoritative cast duration that constrains when the caster may act again. */
   castAnimationSeconds: number;
 }
 
@@ -246,6 +246,8 @@ export interface CombatUnit {
   stunnedUntil?: number;
   /** Absolute combat timestamp until which this unit is levitating. */
   levitatingUntil?: number;
+  /** Exact combat timestamp at which an in-transit unit becomes targetable again. */
+  movingUntil?: number;
   alive: boolean;
   itemSlots?: UnitItemSlots;
 }
@@ -266,6 +268,12 @@ export interface CombatEvent {
   id: string;
   /** Elapsed combat time in seconds. */
   timestamp: number;
+  /** Engine-authored duration of this event on the authoritative combat timeline. */
+  durationSeconds?: number;
+  /** Board position occupied by a moving actor when this event begins. */
+  fromPosition?: number;
+  /** Board position occupied by a moving actor when this event completes. */
+  toPosition?: number;
   /** Monotonic simultaneous-action batch retained for playback compatibility. */
   turn: number;
   type: CombatEventType;
@@ -273,6 +281,12 @@ export interface CombatEvent {
   targetIds?: string[];
   amount?: number;
   amounts?: Record<string, number>;
+  /** Shield damage absorbed for each target during this exact event. */
+  shieldAbsorbedAmounts?: Record<string, number>;
+  /** Wall of Fire damage absorbed for each target during this exact event. */
+  fireWallAbsorbedAmounts?: Record<string, number>;
+  /** Targets whose Wall of Fire was depleted by this exact event. */
+  fireWallBrokenTargetIds?: string[];
   /** Raw bonus damage added to an empowered Meat Gaga basic attack. */
   meatBonusDamage?: number;
   meatStackBefore?: number;
@@ -1899,6 +1913,7 @@ function makeCombatUnits(state: GameState): CombatUnit[] {
       stunned: 0,
       stunnedUntil: 0,
       levitatingUntil: 0,
+      movingUntil: 0,
       alive: true,
       itemSlots: cloneItemSlots(unit.itemSlots),
     } satisfies CombatUnit;
@@ -1917,32 +1932,85 @@ function makeCombatUnits(state: GameState): CombatUnit[] {
   return base;
 }
 
-function damageUnit(target: CombatUnit, rawDamage: number, ignoreArmor = false): number {
+interface DamageApplication {
+  amount: number;
+  shieldAbsorbed: number;
+  fireWallAbsorbed: number;
+  fireWallBroken: boolean;
+}
+
+function damageUnit(target: CombatUnit, rawDamage: number, ignoreArmor = false): DamageApplication {
   const mitigated = ignoreArmor ? rawDamage : Math.max(1, Math.round((rawDamage * 100) / (100 + target.armor)));
+  const fireWallBefore = target.fireWallShield;
   const shieldDamage = Math.min(target.shield, mitigated);
   target.shield -= shieldDamage;
   target.fireWallShield = Math.max(0, target.fireWallShield - shieldDamage);
+  const fireWallAbsorbed = fireWallBefore - target.fireWallShield;
   const healthDamage = Math.min(target.hp, mitigated - shieldDamage);
   target.hp -= healthDamage;
   if (target.hp <= 0) {
     target.hp = 0;
     target.alive = false;
   }
-  return shieldDamage + healthDamage;
+  return {
+    amount: shieldDamage + healthDamage,
+    shieldAbsorbed: shieldDamage,
+    fireWallAbsorbed,
+    fireWallBroken: fireWallBefore > 0 && target.fireWallShield <= 0,
+  };
 }
 
-function nearestEnemy(actor: CombatUnit, units: CombatUnit[]): CombatUnit | null {
+function damageEventMetadata(
+  applications: readonly { targetId: string; result: DamageApplication }[],
+): Pick<
+  CombatEvent,
+  "shieldAbsorbedAmounts" | "fireWallAbsorbedAmounts" | "fireWallBrokenTargetIds"
+> {
+  const shieldAbsorbedAmounts: Record<string, number> = {};
+  const fireWallAbsorbedAmounts: Record<string, number> = {};
+  const fireWallBrokenTargetIds = new Set<string>();
+  for (const { targetId, result } of applications) {
+    if (result.shieldAbsorbed > 0) {
+      shieldAbsorbedAmounts[targetId] = (shieldAbsorbedAmounts[targetId] ?? 0) + result.shieldAbsorbed;
+    }
+    if (result.fireWallAbsorbed > 0) {
+      fireWallAbsorbedAmounts[targetId] = (fireWallAbsorbedAmounts[targetId] ?? 0) + result.fireWallAbsorbed;
+    }
+    if (result.fireWallBroken) fireWallBrokenTargetIds.add(targetId);
+  }
+  return {
+    ...(Object.keys(shieldAbsorbedAmounts).length > 0 ? { shieldAbsorbedAmounts } : {}),
+    ...(Object.keys(fireWallAbsorbedAmounts).length > 0 ? { fireWallAbsorbedAmounts } : {}),
+    ...(fireWallBrokenTargetIds.size > 0
+      ? { fireWallBrokenTargetIds: [...fireWallBrokenTargetIds] }
+      : {}),
+  };
+}
+
+function combatUnitTargetableAt(unit: CombatUnit, timestamp: number): boolean {
+  return unit.alive && !timedStatusActive(unit.movingUntil, timestamp);
+}
+
+function nearestEnemy(
+  actor: CombatUnit,
+  units: CombatUnit[],
+  timestamp: number,
+): CombatUnit | null {
   return (
     units
-      .filter((unit) => unit.side !== actor.side && unit.alive)
+      .filter((unit) => unit.side !== actor.side && combatUnitTargetableAt(unit, timestamp))
       .sort((a, b) => manhattan(actor.position, a.position) - manhattan(actor.position, b.position) || a.hp - b.hp || a.id.localeCompare(b.id))[0] ??
     null
   );
 }
 
-function lowestCurrentLifeEnemy(actor: CombatUnit, units: CombatUnit[]): CombatUnit | null {
+function lowestCurrentLifeEnemy(
+  actor: CombatUnit,
+  units: CombatUnit[],
+  timestamp: number,
+): CombatUnit | null {
   return units
-    .filter((unit) => unit.side !== actor.side && unit.alive)
+    .filter((unit) => unit.side !== actor.side && combatUnitTargetableAt(unit, timestamp))
     .sort((a, b) => a.hp - b.hp || a.id.localeCompare(b.id))[0] ?? null;
 }
 
@@ -1951,13 +2019,11 @@ function openStepToward(
   target: CombatUnit,
   units: CombatUnit[],
   reservedPositions: ReadonlySet<number> = new Set(),
-  vacatedFriendlyPositions: ReadonlySet<number> = new Set(),
 ): number | null {
   const occupied = new Set(units
     .filter((unit) =>
       unit.alive
-      && unit.id !== actor.id
-      && !(unit.side === actor.side && vacatedFriendlyPositions.has(unit.position)),
+      && unit.id !== actor.id,
     )
     .map((unit) => unit.position));
   const x = actor.position % BOARD_COLUMNS;
@@ -1986,6 +2052,12 @@ function addEvent(
     | "targetIds"
     | "amount"
     | "amounts"
+    | "shieldAbsorbedAmounts"
+    | "fireWallAbsorbedAmounts"
+    | "fireWallBrokenTargetIds"
+    | "durationSeconds"
+    | "fromPosition"
+    | "toPosition"
     | "meatBonusDamage"
     | "meatStackBefore"
     | "meatStackConsumed"
@@ -2009,11 +2081,18 @@ function addEvent(
     text,
     snapshot: snapshot(units),
     ...options,
+    durationSeconds: roundCombatDecimal(Math.max(0, options.durationSeconds ?? 0)),
   });
 }
 
-function strongestClusterTarget(actor: CombatUnit, units: CombatUnit[]): CombatUnit | null {
-  const enemies = units.filter((unit) => unit.side !== actor.side && unit.alive);
+function strongestClusterTarget(
+  actor: CombatUnit,
+  units: CombatUnit[],
+  timestamp: number,
+): CombatUnit | null {
+  const enemies = units.filter(
+    (unit) => unit.side !== actor.side && combatUnitTargetableAt(unit, timestamp),
+  );
   return (
     enemies
       .map((enemy) => ({ enemy, cluster: enemies.filter((candidate) => adjacent(enemy.position, candidate.position)).length }))
@@ -2021,21 +2100,26 @@ function strongestClusterTarget(actor: CombatUnit, units: CombatUnit[]): CombatU
   );
 }
 
+type CombatOpportunityKind = "attack" | "move";
+
 type PlannedCombatAction =
   | {
       kind: "stunned";
       actorId: string;
       sourceId: string;
+      opportunityKind: CombatOpportunityKind;
     }
   | {
       kind: "timed-stunned";
       actorId: string;
       sourceId: string;
+      opportunityKind: CombatOpportunityKind;
     }
   | {
       kind: "levitating";
       actorId: string;
       sourceId: string;
+      opportunityKind: CombatOpportunityKind;
     }
   | {
       kind: "move";
@@ -2078,6 +2162,14 @@ interface PendingGravityLanding {
   takedownMana: number;
 }
 
+interface PendingCombatMovement {
+  actorId: string;
+  fromPosition: number;
+  toPosition: number;
+  /** Exact end of the movement event's half-open [start, end) interval. */
+  completesAt: number;
+}
+
 interface PreparedGravityLanding extends PendingGravityLanding {
   targetIds: string[];
   potentialByTarget: Record<string, number>;
@@ -2111,8 +2203,12 @@ function plannedAbilityTargetIds(
   timestamp: number,
   reservedLiftTargetIds: ReadonlySet<string>,
 ): string[] {
-  const allies = units.filter((unit) => unit.side === actor.side && unit.alive);
-  const enemies = units.filter((unit) => unit.side !== actor.side && unit.alive);
+  const allies = units.filter(
+    (unit) => unit.side === actor.side && combatUnitTargetableAt(unit, timestamp),
+  );
+  const enemies = units.filter(
+    (unit) => unit.side !== actor.side && combatUnitTargetableAt(unit, timestamp),
+  );
 
   if (actor.heroId === "bramble") {
     return allies
@@ -2135,7 +2231,7 @@ function plannedAbilityTargetIds(
       .map((enemy) => enemy.id);
   }
   if (actor.heroId === "sol") {
-    const center = strongestClusterTarget(actor, units);
+    const center = strongestClusterTarget(actor, units, timestamp);
     return center
       ? enemies
           .filter((enemy) => adjacent(enemy.position, center.position))
@@ -2150,7 +2246,7 @@ function plannedAbilityTargetIds(
     return target ? [target.id] : [];
   }
   if (actor.heroId === "aster") {
-    const target = nearestEnemy(actor, units);
+    const target = nearestEnemy(actor, units, timestamp);
     return target ? [target.id] : [];
   }
   if (actor.heroId === "morrow" || actor.heroId === "vesper") {
@@ -2162,7 +2258,7 @@ function plannedAbilityTargetIds(
     return target ? [target.id] : [];
   }
   if (actor.heroId === "billie") {
-    const target = lowestCurrentLifeEnemy(actor, units);
+    const target = lowestCurrentLifeEnemy(actor, units, timestamp);
     return target ? [target.id] : [];
   }
   return enemies
@@ -2177,16 +2273,18 @@ function planCombatAction(
   reservedPositions: Set<number>,
   timestamp: number,
   reservedLiftTargetIds: Set<string>,
-  vacatedFriendlyPositions: ReadonlySet<number> = new Set(),
+  opportunityKind: CombatOpportunityKind,
 ): PlannedCombatAction {
   const sourceId = `action:${actor.id}:${timestamp.toFixed(3)}`;
   if (timedStatusActive(actor.levitatingUntil, timestamp)) {
-    return { kind: "levitating", actorId: actor.id, sourceId };
+    return { kind: "levitating", actorId: actor.id, sourceId, opportunityKind };
   }
   if (timedStatusActive(actor.stunnedUntil, timestamp)) {
-    return { kind: "timed-stunned", actorId: actor.id, sourceId };
+    return { kind: "timed-stunned", actorId: actor.id, sourceId, opportunityKind };
   }
-  if (actor.stunned > 0) return { kind: "stunned", actorId: actor.id, sourceId };
+  if (actor.stunned > 0) {
+    return { kind: "stunned", actorId: actor.id, sourceId, opportunityKind };
+  }
 
   if (actor.heroId !== "meat-gaga" && actor.maxMana > 0 && actor.mana >= actor.maxMana) {
     const values = combatAbilityValues(actor, units);
@@ -2209,7 +2307,6 @@ function planCombatAction(
           movementTarget,
           units,
           reservedPositions,
-          vacatedFriendlyPositions,
         )
       : null;
     if (destination !== null) reservedPositions.add(destination);
@@ -2219,21 +2316,25 @@ function planCombatAction(
       sourceId,
       targetIds,
       allyIds: units
-        .filter((unit) => unit.side === actor.side && unit.alive)
+        .filter(
+          (unit) => unit.side === actor.side && combatUnitTargetableAt(unit, timestamp),
+        )
         .map((unit) => unit.id),
       destination,
       values,
     };
   }
 
-  const target = nearestEnemy(actor, units);
+  const target = nearestEnemy(actor, units, timestamp);
   if (!target) return { kind: "move", actorId: actor.id, sourceId, targetId: "", destination: null };
   if (manhattan(actor.position, target.position) <= actor.range) {
     const meatStackConsumed = plannedMeatStackConsumption(actor);
     const birdCount = actor.heroId === "billie"
       ? Math.max(0, Math.round(actor.summonedBirds ?? 0))
       : 0;
-    const birdTarget = birdCount > 0 ? lowestCurrentLifeEnemy(actor, units) : null;
+    const birdTarget = birdCount > 0
+      ? lowestCurrentLifeEnemy(actor, units, timestamp)
+      : null;
     const birdAttackPercent = birdCount > 0
       ? combatAbilityValues(actor, units).birdAttackPercent
       : 0;
@@ -2257,7 +2358,6 @@ function planCombatAction(
     target,
     units,
     reservedPositions,
-    vacatedFriendlyPositions,
   );
   if (destination !== null) reservedPositions.add(destination);
   return { kind: "move", actorId: actor.id, sourceId, targetId: target.id, destination };
@@ -2566,7 +2666,7 @@ function prepareGravityLandings(
         );
         for (const target of frozenUnits) {
           if (
-            !target.alive
+            !combatUnitTargetableAt(target, timestamp)
             || target.side === landing.actorSide
             || allAnchorIds.has(target.id)
             || manhattan(anchor.position, target.position) !== 1
@@ -2647,6 +2747,27 @@ function resolveCombatBatch(
   const abilityActions = actions.filter(
     (action): action is Extract<PlannedCombatAction, { kind: "ability" }> => action.kind === "ability",
   );
+  const eventTimingBySourceId = new Map<string, CombatActionTiming>();
+  for (const action of actions) {
+    const actor = units.find((unit) => unit.id === action.actorId);
+    if (!actor) continue;
+    const timing = combatActionTiming(actor, action);
+    eventTimingBySourceId.set(action.sourceId, timing);
+    if (action.kind === "attack") {
+      eventTimingBySourceId.set(`${action.sourceId}:birds`, timing);
+    }
+  }
+  for (const landing of gravityLandings) {
+    const actor = units.find((unit) => unit.id === landing.actorId);
+    if (!actor) continue;
+    eventTimingBySourceId.set(landing.id, {
+      durationSeconds: roundCombatDecimal(
+        Math.max(0, HEROES[actor.heroId].ability.castAnimationSeconds),
+      ),
+    });
+  }
+  const timingForAction = (action: PlannedCombatAction): CombatActionTiming =>
+    eventTimingBySourceId.get(action.sourceId) ?? { durationSeconds: 0 };
 
   // Every cast was already committed by the frozen plan. Reset all caster Mana
   // before drains resolve so same-time cast order cannot erase or preserve one.
@@ -2751,6 +2872,7 @@ function resolveCombatBatch(
         "ability",
         abilityEventText(actor, action.targetIds, units, primaryAmount),
         {
+          ...timingForAction(action),
           actorId: actor.id,
           targetIds: action.targetIds,
           amount: primaryAmount,
@@ -2800,6 +2922,7 @@ function resolveCombatBatch(
         "heal",
         `${combatName(actor)} prepares ${healing} healing before the strike.`,
         {
+          ...timingForAction(action),
           actorId: actor.id,
           targetIds: recipients,
           amount: healing,
@@ -2826,6 +2949,7 @@ function resolveCombatBatch(
         "shield",
         `${combatName(actor)} prepares ${shield} shield before the strike.`,
         {
+          ...timingForAction(action),
           actorId: actor.id,
           targetIds: recipients,
           amount: shield,
@@ -2856,7 +2980,7 @@ function resolveCombatBatch(
         timestamp,
         "move",
         `${combatName(actor)} is stunned and skips the action.`,
-        { actorId: actor.id },
+        { ...timingForAction(action), actorId: actor.id },
       );
       continue;
     }
@@ -2868,7 +2992,7 @@ function resolveCombatBatch(
         timestamp,
         "move",
         `${combatName(actor)} is stunned and skips the action.`,
-        { actorId: actor.id },
+        { ...timingForAction(action), actorId: actor.id },
       );
       continue;
     }
@@ -2880,13 +3004,12 @@ function resolveCombatBatch(
         timestamp,
         "move",
         `${combatName(actor)} is levitating and cannot act.`,
-        { actorId: actor.id },
+        { ...timingForAction(action), actorId: actor.id },
       );
       continue;
     }
     if (action.kind === "move") {
       const targetIds = action.targetId ? [action.targetId] : undefined;
-      if (action.destination !== null) actor.position = action.destination;
       addEvent(
         events,
         units,
@@ -2894,7 +3017,7 @@ function resolveCombatBatch(
         timestamp,
         "move",
         action.destination !== null ? `${combatName(actor)} advances.` : `${combatName(actor)} holds position.`,
-        { actorId: actor.id, targetIds },
+        { ...timingForAction(action), actorId: actor.id, targetIds },
       );
       continue;
     }
@@ -2913,7 +3036,9 @@ function resolveCombatBatch(
           actor.meatStack - action.meatStackConsumed,
         ));
       }
-      if (target) damageUnit(target, amount, true);
+      const damageApplications = target
+        ? [{ targetId: target.id, result: damageUnit(target, amount, true) }]
+        : [];
       addEvent(
         events,
         units,
@@ -2926,6 +3051,8 @@ function resolveCombatBatch(
             : `${combatName(actor)} strikes ${combatName(target)} for ${amount} damage.`
           : `${combatName(actor)} strikes at an empty space.`,
         {
+          ...timingForAction(action),
+          ...damageEventMetadata(damageApplications),
           actorId: actor.id,
           targetIds: target ? [target.id] : [],
           amount,
@@ -2939,11 +3066,15 @@ function resolveCombatBatch(
         const birdDamage = damageBySource.get(`${action.sourceId}:birds`) ?? [];
         const birdTarget = units.find((unit) => unit.id === action.birdTargetId) ?? null;
         const amounts: Record<string, number> = {};
+        const damageApplications: { targetId: string; result: DamageApplication }[] = [];
         let birdAmount = 0;
         for (const birdContribution of birdDamage) {
           const contributionTarget = units.find((unit) => unit.id === birdContribution.targetId);
           if (!contributionTarget) continue;
-          damageUnit(contributionTarget, birdContribution.amount, true);
+          damageApplications.push({
+            targetId: contributionTarget.id,
+            result: damageUnit(contributionTarget, birdContribution.amount, true),
+          });
           amounts[contributionTarget.id] = (amounts[contributionTarget.id] ?? 0) + birdContribution.amount;
           birdAmount += birdContribution.amount;
         }
@@ -2957,6 +3088,8 @@ function resolveCombatBatch(
             ? `${combatName(actor)}'s ${action.birdCount} birds strike ${combatName(birdTarget)} for ${birdAmount} damage.`
             : `${combatName(actor)}'s birds find no target.`,
           {
+            ...timingForAction(action),
+            ...damageEventMetadata(damageApplications),
             actorId: actor.id,
             targetIds: birdTarget ? [birdTarget.id] : [],
             amount: birdAmount,
@@ -2972,17 +3105,20 @@ function resolveCombatBatch(
 
     if (action.values.damage <= 0) continue;
     const amounts: Record<string, number> = {};
+    const damageApplications: { targetId: string; result: DamageApplication }[] = [];
     let amount = 0;
     for (const contribution of actorDamage) {
       const target = units.find((unit) => unit.id === contribution.targetId);
       if (!target) continue;
-      damageUnit(target, contribution.amount, true);
+      damageApplications.push({
+        targetId: target.id,
+        result: damageUnit(target, contribution.amount, true),
+      });
       target.mana = Math.max(0, target.mana - contribution.manaDrain);
       target.stunned = Math.max(target.stunned, contribution.stunTurns);
       amounts[target.id] = (amounts[target.id] ?? 0) + contribution.amount;
       amount += contribution.amount;
     }
-    if (action.destination !== null) actor.position = action.destination;
     addEvent(
       events,
       units,
@@ -2991,6 +3127,8 @@ function resolveCombatBatch(
       "ability",
       abilityEventText(actor, action.targetIds, units, amount),
       {
+        ...timingForAction(action),
+        ...damageEventMetadata(damageApplications),
         actorId: actor.id,
         targetIds: action.targetIds,
         amount,
@@ -3013,14 +3151,16 @@ function resolveCombatBatch(
     if (!actor) continue;
     const landingDamage = damageBySource.get(landing.id) ?? [];
     const amounts: Record<string, number> = {};
+    const damageApplications: { targetId: string; result: DamageApplication }[] = [];
     let amount = 0;
     for (const contribution of landingDamage) {
       const target = units.find((unit) => unit.id === contribution.targetId);
       if (!target) continue;
-      const applied = damageUnit(target, contribution.amount, true);
+      const result = damageUnit(target, contribution.amount, true);
+      damageApplications.push({ targetId: target.id, result });
       target.mana = Math.max(0, target.mana - landing.manaDrain);
-      amounts[target.id] = applied;
-      amount += applied;
+      amounts[target.id] = result.amount;
+      amount += result.amount;
     }
     addEvent(
       events,
@@ -3030,6 +3170,8 @@ function resolveCombatBatch(
       "landing",
       gravityLandingEventText(actor, landing, units, amount),
       {
+        ...(eventTimingBySourceId.get(landing.id) ?? { durationSeconds: 0 }),
+        ...damageEventMetadata(damageApplications),
         actorId: actor.id,
         targetIds: landing.targetIds,
         amount,
@@ -3045,15 +3187,25 @@ function resolveCombatBatch(
   const newlyDefeated = units
     .filter((unit) => aliveAtStart.has(unit.id) && !unit.alive)
     .sort((a, b) => a.id.localeCompare(b.id));
-  for (const target of newlyDefeated) {
+  const ownerDamageByTargetId = new Map(newlyDefeated.flatMap((target) => {
     const ownerDamage = resolvedDamage
       .filter((contribution) => contribution.targetId === target.id && contribution.amount > 0)
-      .sort((a, b) => b.amount - a.amount || a.actorId.localeCompare(b.actorId) || a.id.localeCompare(b.id))[0];
+      .sort(
+        (a, b) =>
+          b.amount - a.amount
+          || a.actorId.localeCompare(b.actorId)
+          || a.id.localeCompare(b.id),
+      )[0];
+    return ownerDamage ? [[target.id, ownerDamage] as const] : [];
+  }));
+  for (const target of newlyDefeated) {
+    const ownerDamage = ownerDamageByTargetId.get(target.id);
     if (!ownerDamage) continue;
     const owner = units.find((unit) => unit.id === ownerDamage.actorId);
     if (!owner) continue;
     owner.mana = Math.min(owner.maxMana, owner.mana + ownerDamage.takedownMana);
     addEvent(events, units, turn, timestamp, "defeat", `${combatName(target)} is defeated.`, {
+      ...(eventTimingBySourceId.get(ownerDamage.sourceId) ?? { durationSeconds: 0 }),
       actorId: owner.id,
       targetIds: [target.id],
     });
@@ -3063,6 +3215,15 @@ function resolveCombatBatch(
   // has resolved. A Meat Gaga defeated in this batch is therefore ineligible,
   // while any stack gained here is reserved for her next basic attack.
   if (newlyDefeated.length > 0) {
+    const harvestDurationSeconds = roundCombatDecimal(Math.max(
+      0,
+      ...newlyDefeated.map((fallen) => {
+        const sourceId = ownerDamageByTargetId.get(fallen.id)?.sourceId;
+        return sourceId
+          ? eventTimingBySourceId.get(sourceId)?.durationSeconds ?? 0
+          : 0;
+      }),
+    ));
     const survivors = units
       .filter((unit) => unit.heroId === "meat-gaga" && unit.alive)
       .sort((a, b) => a.id.localeCompare(b.id));
@@ -3085,6 +3246,7 @@ function resolveCombatBatch(
         "passive",
         `${combatName(meatGaga)} harvests ${gained} meat from ${newlyDefeated.length === 1 ? "the fallen" : `${newlyDefeated.length} fallen characters`}.`,
         {
+          durationSeconds: harvestDurationSeconds,
           actorId: meatGaga.id,
           targetIds: newlyDefeated.map((fallen) => fallen.id),
           amount: gained,
@@ -3129,16 +3291,95 @@ function regenerateMana(units: CombatUnit[], elapsedSeconds: number): void {
   }
 }
 
-type CombatOpportunityKind = "attack" | "move";
+interface CombatActionTiming {
+  durationSeconds: number;
+  fromPosition?: number;
+  toPosition?: number;
+}
 
-function combatOpportunityKind(unit: CombatUnit, units: CombatUnit[]): CombatOpportunityKind {
+function stationaryActionDurationSeconds(
+  actor: CombatUnit,
+  opportunityKind: CombatOpportunityKind,
+): number {
+  const durationSeconds = opportunityKind === "attack"
+    ? attackAnimationSeconds(actor.attackSpeed)
+    : movementTravelSeconds(actor.moveSpeed, 0, 1);
+  return roundCombatDecimal(Math.max(COMBAT_EVENT_STEP_SECONDS, durationSeconds));
+}
+
+function combatActionTiming(
+  actor: CombatUnit,
+  action: PlannedCombatAction,
+): CombatActionTiming {
+  if (
+    action.kind === "stunned"
+    || action.kind === "timed-stunned"
+    || action.kind === "levitating"
+  ) {
+    return {
+      durationSeconds: stationaryActionDurationSeconds(actor, action.opportunityKind),
+      fromPosition: actor.position,
+      toPosition: actor.position,
+    };
+  }
+  if (action.kind === "move") {
+    const toPosition = action.destination ?? actor.position;
+    return {
+      durationSeconds: action.destination === null
+        ? stationaryActionDurationSeconds(actor, "move")
+        : roundCombatDecimal(
+            movementTravelSeconds(actor.moveSpeed, actor.position, toPosition),
+          ),
+      fromPosition: actor.position,
+      toPosition,
+    };
+  }
+  if (action.kind === "attack") {
+    return {
+      durationSeconds: attackAnimationSeconds(actor.attackSpeed),
+    };
+  }
+  const timing: CombatActionTiming = {
+    durationSeconds: roundCombatDecimal(
+      Math.max(0, HEROES[actor.heroId].ability.castAnimationSeconds),
+    ),
+  };
+  if (action.destination !== null) {
+    timing.fromPosition = actor.position;
+    timing.toPosition = action.destination;
+  }
+  return timing;
+}
+
+function combatOpportunityKind(
+  unit: CombatUnit,
+  units: CombatUnit[],
+  timestamp: number,
+): CombatOpportunityKind {
   if (unit.heroId !== "meat-gaga" && unit.maxMana > 0 && unit.mana >= unit.maxMana) {
     return "attack";
   }
-  const target = nearestEnemy(unit, units);
+  const target = nearestEnemy(unit, units, timestamp);
   return target && manhattan(unit.position, target.position) <= unit.range
     ? "attack"
     : "move";
+}
+
+function earliestEnemyArrival(
+  unit: CombatUnit,
+  units: CombatUnit[],
+  timestamp: number,
+): number {
+  return units
+    .filter((candidate) =>
+      candidate.side !== unit.side
+      && candidate.alive
+      && timedStatusActive(candidate.movingUntil, timestamp),
+    )
+    .reduce(
+      (earliest, candidate) => Math.min(earliest, candidate.movingUntil ?? Infinity),
+      Infinity,
+    );
 }
 
 function scheduledOpportunityTime(
@@ -3146,12 +3387,25 @@ function scheduledOpportunityTime(
   units: CombatUnit[],
   nextAttackAt: ReadonlyMap<string, number>,
   nextMoveAt: ReadonlyMap<string, number>,
+  actionReadyAt: ReadonlyMap<string, number>,
   currentTime: number,
 ): number {
-  const scheduledTime = combatOpportunityKind(unit, units) === "move"
+  const target = nearestEnemy(unit, units, currentTime);
+  if (!target) {
+    return Math.max(
+      currentTime,
+      earliestEnemyArrival(unit, units, currentTime),
+      actionReadyAt.get(unit.id) ?? 0,
+    );
+  }
+  const scheduledTime = combatOpportunityKind(unit, units, currentTime) === "move"
     ? nextMoveAt.get(unit.id)
     : nextAttackAt.get(unit.id);
-  return Math.max(currentTime, scheduledTime ?? Infinity);
+  return Math.max(
+    currentTime,
+    scheduledTime ?? Infinity,
+    actionReadyAt.get(unit.id) ?? 0,
+  );
 }
 
 function nextOpportunityTime(timestamp: number, speed: number): number {
@@ -3185,14 +3439,28 @@ export function resolveCombat(state: GameState): GameActionResult {
   const nextMoveAt = new Map(
     units.map((unit) => [unit.id, COMBAT_EVENT_STEP_SECONDS]),
   );
+  const actionReadyAt = new Map(
+    units.map((unit) => [unit.id, 0]),
+  );
   let pendingGravityLandings: PendingGravityLanding[] = [];
+  let pendingCombatMovements: PendingCombatMovement[] = [];
+  let lastResolvedMomentTime: number | null = null;
 
   while (true) {
     const bothSidesAlive =
       units.some((unit) => unit.side === "player" && unit.alive)
       && units.some((unit) => unit.side === "enemy" && unit.alive);
-    const canProcessActions = actionCount < MAX_COMBAT_ACTIONS && bothSidesAlive;
-    if (!canProcessActions && pendingGravityLandings.length === 0) break;
+    const canProcessActions =
+      !reachedTimeLimit
+      && actionCount < MAX_COMBAT_ACTIONS
+      && bothSidesAlive;
+    if (
+      !canProcessActions
+      && pendingGravityLandings.length === 0
+      && pendingCombatMovements.length === 0
+    ) {
+      break;
+    }
 
     const actionTime = canProcessActions
       ? units
@@ -3200,7 +3468,14 @@ export function resolveCombat(state: GameState): GameActionResult {
           .reduce(
             (earliest, unit) => Math.min(
               earliest,
-              scheduledOpportunityTime(unit, units, nextAttackAt, nextMoveAt, elapsedTime),
+              scheduledOpportunityTime(
+                unit,
+                units,
+                nextAttackAt,
+                nextMoveAt,
+                actionReadyAt,
+                elapsedTime,
+              ),
             ),
             Infinity,
           )
@@ -3209,16 +3484,47 @@ export function resolveCombat(state: GameState): GameActionResult {
       (earliest, landing) => Math.min(earliest, landing.resolvesAt),
       Infinity,
     );
-    const momentTime = Math.min(actionTime, landingTime);
-    if (momentTime > COMBAT_DURATION_SECONDS) {
+    const movementCompletionTime = pendingCombatMovements.reduce(
+      (earliest, movement) => Math.min(earliest, movement.completesAt),
+      Infinity,
+    );
+    const earliestMomentTime = roundCombatDecimal(
+      Math.min(actionTime, landingTime, movementCompletionTime),
+    );
+    if (!Number.isFinite(earliestMomentTime)) break;
+    const momentTime = lastResolvedMomentTime !== null
+      && earliestMomentTime <= lastResolvedMomentTime + COMBAT_EPSILON
+      ? roundCombatDecimal(lastResolvedMomentTime + COMBAT_EVENT_STEP_SECONDS)
+      : earliestMomentTime;
+    if (!reachedTimeLimit && momentTime > COMBAT_DURATION_SECONDS) {
       regenerateMana(units, COMBAT_DURATION_SECONDS - elapsedTime);
       elapsedTime = COMBAT_DURATION_SECONDS;
       reachedTimeLimit = true;
-      break;
+      continue;
+    }
+    // The cap prevents new starts, but an interval authored before it remains
+    // authoritative and must drain to its movement or landing endpoint.
+    if (!reachedTimeLimit && momentTime >= COMBAT_DURATION_SECONDS) {
+      reachedTimeLimit = true;
     }
     regenerateMana(units, momentTime - elapsedTime);
     elapsedTime = momentTime;
-    turn += 1;
+
+    // Movement owns its origin throughout [start, end). At the exact endpoint,
+    // every due mover arrives atomically before landings and actions inspect the board.
+    const dueMovements = pendingCombatMovements
+      .filter((movement) => movement.completesAt <= momentTime + COMBAT_EPSILON)
+      .sort((a, b) => a.actorId.localeCompare(b.actorId));
+    pendingCombatMovements = pendingCombatMovements.filter(
+      (movement) => movement.completesAt > momentTime + COMBAT_EPSILON,
+    );
+    for (const movement of dueMovements) {
+      const actor = units.find((unit) => unit.id === movement.actorId);
+      if (actor) {
+        actor.position = movement.toPosition;
+        actor.movingUntil = 0;
+      }
+    }
 
     const dueLandings = pendingGravityLandings.filter(
       (landing) => landing.resolvesAt <= momentTime + COMBAT_EPSILON,
@@ -3226,6 +3532,7 @@ export function resolveCombat(state: GameState): GameActionResult {
     pendingGravityLandings = pendingGravityLandings.filter(
       (landing) => landing.resolvesAt > momentTime + COMBAT_EPSILON,
     );
+    const momentTurn = turn + 1;
     const gravityLandings = prepareGravityLandings(dueLandings, units, momentTime);
     if (gravityLandings.length > 0) {
       // Scheduled landings have timestamp priority. All landings due now are
@@ -3236,7 +3543,7 @@ export function resolveCombat(state: GameState): GameActionResult {
         gravityLandings,
         units,
         events,
-        turn,
+        momentTurn,
         elapsedTime,
         pendingGravityLandings,
       );
@@ -3244,43 +3551,69 @@ export function resolveCombat(state: GameState): GameActionResult {
     const bothSidesAliveAfterLandings =
       units.some((unit) => unit.side === "player" && unit.alive)
       && units.some((unit) => unit.side === "enemy" && unit.alive);
-    const batchActors = canProcessActions && bothSidesAliveAfterLandings
+    const scheduledActionTimeByActorId = new Map(
+      units
+        .filter((unit) => unit.alive)
+        .map((unit) => [
+          unit.id,
+          scheduledOpportunityTime(
+            unit,
+            units,
+            nextAttackAt,
+            nextMoveAt,
+            actionReadyAt,
+            elapsedTime,
+          ),
+        ] as const),
+    );
+    const batchActors = canProcessActions && !reachedTimeLimit && bothSidesAliveAfterLandings
       ? units
-          .filter((unit) => (
+          .filter((unit) =>
             unit.alive
-              && Math.abs(
-                scheduledOpportunityTime(unit, units, nextAttackAt, nextMoveAt, elapsedTime) - momentTime,
-              ) <= COMBAT_EPSILON
-          ))
+              && roundCombatDecimal(
+                scheduledActionTimeByActorId.get(unit.id) ?? Infinity,
+              ) <= momentTime + COMBAT_EPSILON,
+          )
           .sort((a, b) => {
             if (a.side !== b.side) return a.side === "player" ? -1 : 1;
             return a.id.localeCompare(b.id);
           })
       : [];
-    if (batchActors.length === 0 && gravityLandings.length === 0) break;
+    if (batchActors.length === 0 && gravityLandings.length === 0) {
+      if (
+        canProcessActions
+        || dueMovements.length > 0
+        || pendingGravityLandings.length > 0
+        || pendingCombatMovements.length > 0
+      ) {
+        continue;
+      }
+      break;
+    }
+    turn = momentTurn;
+    lastResolvedMomentTime = momentTime;
 
     const planningUnits = cloneCombatUnits(units);
     const opportunityKindByActorId = new Map(
-      batchActors.map((actor) => [actor.id, combatOpportunityKind(actor, units)] as const),
+      batchActors.map((actor) => [
+        actor.id,
+        combatOpportunityKind(actor, units, momentTime),
+      ] as const),
     );
-    const reservedPositions = new Set<number>();
+    // In-flight destinations stay unavailable even though their movers still
+    // logically occupy the origin until their authoritative interval completes.
+    const reservedPositions = new Set<number>(
+      pendingCombatMovements.map((movement) => movement.toPosition),
+    );
     const reservedLiftTargetIds = new Set<string>();
-    const vacatedPositionsBySide = new Map<Side, Set<number>>();
-    const vacatedPositionsFor = (side: Side): Set<number> => {
-      const existing = vacatedPositionsBySide.get(side);
-      if (existing) return existing;
-      const positions = new Set<number>();
-      vacatedPositionsBySide.set(side, positions);
-      return positions;
-    };
     const plannedByActorId = new Map([...batchActors]
       .sort((a, b) => {
         const aMoves = opportunityKindByActorId.get(a.id) === "move";
         const bMoves = opportunityKindByActorId.get(b.id) === "move";
         if (aMoves !== bMoves) return aMoves ? 1 : -1;
         if (aMoves && bMoves) {
-          const aTarget = nearestEnemy(a, planningUnits);
-          const bTarget = nearestEnemy(b, planningUnits);
+          const aTarget = nearestEnemy(a, planningUnits, momentTime);
+          const bTarget = nearestEnemy(b, planningUnits, momentTime);
           const aDistance = aTarget ? manhattan(a.position, aTarget.position) : Infinity;
           const bDistance = bTarget ? manhattan(b.position, bTarget.position) : Infinity;
           if (aDistance !== bDistance) return aDistance - bDistance;
@@ -3295,34 +3628,62 @@ export function resolveCombat(state: GameState): GameActionResult {
           reservedPositions,
           momentTime,
           reservedLiftTargetIds,
-          vacatedPositionsFor(actor.side),
+          opportunityKindByActorId.get(actor.id) ?? "attack",
         );
-        if (
-          (action.kind === "move" || action.kind === "ability")
-          && action.destination !== null
-        ) {
-          vacatedPositionsFor(actor.side).add(planningActor.position);
-        }
         return [actor.id, action] as const;
       }));
     const plannedActions = batchActors.map((actor) => plannedByActorId.get(actor.id)!);
+    const startingMovements: PendingCombatMovement[] = [];
 
     for (const actor of batchActors) {
       const action = plannedByActorId.get(actor.id)!;
+      const actionStartedAt = roundCombatDecimal(momentTime);
+      const timing = combatActionTiming(actor, action);
+      const { durationSeconds } = timing;
+      const actionCompletesAt = roundCombatDecimal(actionStartedAt + durationSeconds);
+      actionReadyAt.set(
+        actor.id,
+        actionCompletesAt,
+      );
+      if (
+        (action.kind === "move" || action.kind === "ability")
+        && action.destination !== null
+        && timing.fromPosition !== undefined
+        && timing.toPosition !== undefined
+        && timing.fromPosition !== timing.toPosition
+      ) {
+        startingMovements.push({
+          actorId: actor.id,
+          fromPosition: timing.fromPosition,
+          toPosition: timing.toPosition,
+          completesAt: actionCompletesAt,
+        });
+        actor.movingUntil = actionCompletesAt;
+      }
       const opportunityKind = action.kind === "move"
         ? "move"
         : action.kind === "attack" || action.kind === "ability"
           ? "attack"
           : opportunityKindByActorId.get(actor.id) ?? "attack";
+      const scheduledActionTime = scheduledActionTimeByActorId.get(actor.id) ?? momentTime;
+      const cadenceAnchorTime = roundCombatDecimal(scheduledActionTime) < momentTime
+        ? momentTime
+        : scheduledActionTime;
       if (opportunityKind === "move") {
-        nextMoveAt.set(actor.id, nextOpportunityTime(momentTime, actor.moveSpeed));
+        nextMoveAt.set(actor.id, nextOpportunityTime(cadenceAnchorTime, actor.moveSpeed));
         if ((nextAttackAt.get(actor.id) ?? Infinity) <= momentTime + COMBAT_EPSILON) {
-          nextAttackAt.set(actor.id, momentTime + COMBAT_EVENT_STEP_SECONDS);
+          nextAttackAt.set(
+            actor.id,
+            roundCombatDecimal(momentTime + COMBAT_EVENT_STEP_SECONDS),
+          );
         }
       } else {
-        nextAttackAt.set(actor.id, nextOpportunityTime(momentTime, actor.attackSpeed));
+        nextAttackAt.set(actor.id, nextOpportunityTime(cadenceAnchorTime, actor.attackSpeed));
         if ((nextMoveAt.get(actor.id) ?? Infinity) <= momentTime + COMBAT_EPSILON) {
-          nextMoveAt.set(actor.id, momentTime + COMBAT_EVENT_STEP_SECONDS);
+          nextMoveAt.set(
+            actor.id,
+            roundCombatDecimal(momentTime + COMBAT_EVENT_STEP_SECONDS),
+          );
         }
       }
     }
@@ -3347,7 +3708,31 @@ export function resolveCombat(state: GameState): GameActionResult {
         pendingGravityLandings,
       );
     }
+    for (const movement of startingMovements) {
+      if (movement.completesAt <= elapsedTime + COMBAT_EPSILON) {
+        const actor = units.find((unit) => unit.id === movement.actorId);
+        if (actor) {
+          actor.position = movement.toPosition;
+          actor.movingUntil = 0;
+        }
+      } else {
+        pendingCombatMovements.push(movement);
+      }
+    }
   }
+
+  // Effects resolve from their frozen start batch, but the outcome belongs
+  // after every interval that batch authored. This keeps lethal and
+  // cap-crossing attacks/casts on the same clock as their visual completion.
+  const authoredTimelineEnd = events.reduce(
+    (latestEnd, event) => Math.max(
+      latestEnd,
+      roundCombatDecimal(event.timestamp + (event.durationSeconds ?? 0)),
+    ),
+    elapsedTime,
+  );
+  regenerateMana(units, authoredTimelineEnd - elapsedTime);
+  elapsedTime = authoredTimelineEnd;
 
   const playerAlive = units.filter((unit) => unit.side === "player" && unit.alive);
   const enemyAlive = units.filter((unit) => unit.side === "enemy" && unit.alive);

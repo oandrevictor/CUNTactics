@@ -13,7 +13,8 @@ import type {
   Vector2,
   WebGLRenderer,
 } from "three";
-import { BOARD_COLUMNS, BOARD_ROWS, attackAnimationSeconds, movementTravelSeconds, type CombatEvent, type GameState } from "./game-engine";
+import { BOARD_COLUMNS, BOARD_ROWS, type CombatEvent, type GameState } from "./game-engine";
+import { combatEventProgress } from "./combat-playback";
 import {
   MEAT_GAGA_ANIMATION_CLIPS,
   chooseMeatGagaRenderMode,
@@ -38,9 +39,7 @@ export interface MeatGaga3DLayerProps {
   previousSnapshotEvent: CombatEvent | null;
   phase: GameState["phase"];
   playing: boolean;
-  previewing: boolean;
-  speed: number;
-  actionDuration: number;
+  combatTime: number;
   boardHeightRatio: number;
   onReady?: () => void;
   onFallback?: (reason: MeatGagaRendererFallbackReason) => void;
@@ -65,11 +64,7 @@ interface MeatGagaEntity {
   bodyMaterials: MaterialState[];
   visual: MeatGagaVisualState;
   cueKey: string;
-  bodyElapsed: number;
-  clipElapsed: number;
-  clipDuration: number;
   activeAction: AnimationAction | null;
-  activeMotion: MeatGagaVisualState["motion"];
   moveFrom: Vector2;
   moveTo: Vector2;
   currentPosition: Vector2;
@@ -85,7 +80,6 @@ const MODEL_TARGET_HEIGHT = 1.28;
 const MODEL_FOOT_OFFSET = -0.38;
 const MEAT_GAGA_MODEL_FORWARD_TILT_RADIANS = (40 * Math.PI) / 180;
 const MEAT_GAGA_MODEL_YAW_RADIANS = (180 * Math.PI) / 180;
-const MIN_ONE_SHOT_SECONDS = 0.56;
 const IDLE_POSE_PROGRESS = 0.24;
 
 function isSkinnedMesh(object: object): object is SkinnedMesh {
@@ -99,6 +93,15 @@ function isTexture(value: unknown): value is Texture {
 function smoothStep(value: number): number {
   const clamped = Math.min(1, Math.max(0, value));
   return clamped * clamped * (3 - 2 * clamped);
+}
+
+function authoredProgress(
+  startTime: number | null,
+  durationSeconds: number,
+  combatTime: number,
+): number {
+  if (startTime === null) return 1;
+  return combatEventProgress({ timestamp: startTime, durationSeconds }, combatTime);
 }
 
 function boardPoint(position: number | null, boardHeightRatio: number): [number, number] {
@@ -136,9 +139,6 @@ function poseEntity(entity: MeatGagaEntity) {
   }
   entity.model.updateMatrixWorld(true);
   entity.activeAction = idleAction ?? null;
-  entity.activeMotion = "idle";
-  entity.clipElapsed = 0;
-  entity.clipDuration = 0;
 }
 
 /** One decorative canvas shared by every deployed Meat Gaga. */
@@ -148,9 +148,7 @@ export function MeatGaga3DLayer({
   previousSnapshotEvent,
   phase,
   playing,
-  previewing,
-  speed,
-  actionDuration,
+  combatTime,
   boardHeightRatio,
   onReady,
   onFallback,
@@ -163,9 +161,7 @@ export function MeatGaga3DLayer({
     previousSnapshotEvent,
     phase,
     playing,
-    previewing,
-    speed,
-    actionDuration,
+    combatTime,
     boardHeightRatio,
   });
   const callbacksRef = useRef({ onReady, onFallback, onDisposed });
@@ -177,9 +173,7 @@ export function MeatGaga3DLayer({
       previousSnapshotEvent,
       phase,
       playing,
-      previewing,
-      speed,
-      actionDuration,
+      combatTime,
       boardHeightRatio,
     };
     callbacksRef.current = { onReady, onFallback, onDisposed };
@@ -432,11 +426,7 @@ export function MeatGaga3DLayer({
             bodyMaterials,
             visual,
             cueKey: "",
-            bodyElapsed: 0,
-            clipElapsed: 0,
-            clipDuration: 0,
             activeAction: null,
-            activeMotion: "idle",
             moveFrom,
             moveTo,
             currentPosition: moveFrom.clone(),
@@ -495,20 +485,10 @@ export function MeatGaga3DLayer({
 
         const startAuthoredAction = (
           entity: MeatGagaEntity,
-          unit: MeatGagaRenderUnit,
           visual: MeatGagaVisualState,
-          latest: LatestProps,
         ) => {
           const clipName = meatGagaClipForMotion(visual.motion);
-          const shouldFinishOneShot = entity.activeAction
-            && (entity.activeMotion === "throw" || entity.activeMotion === "stunned")
-            && entity.clipElapsed < entity.clipDuration;
           if (!clipName) {
-            if (visual.motion === "idle" && (reducedMotion || latest.previewing)) {
-              poseEntity(entity);
-              return;
-            }
-            if (visual.motion === "idle" && shouldFinishOneShot) return;
             poseEntity(entity);
             return;
           }
@@ -516,54 +496,21 @@ export function MeatGaga3DLayer({
           const action = entity.actions.get(clipName);
           if (!action) throw new Error(`Meat Gaga action ${clipName} is unavailable`);
           const previousAction = entity.activeAction;
-          const samplesAuthoredPose = reducedMotion || latest.previewing;
           action.reset();
           action.enabled = true;
           action.clampWhenFinished = visual.motion !== "move";
           if (visual.motion === "move") {
             action.setLoop(THREE.LoopRepeat, Infinity);
-            entity.clipDuration = Math.max(
-              0.08,
-              movementTravelSeconds(unit.moveSpeed, visual.fromPosition, visual.position),
-            );
-            action.setDuration(entity.clipDuration);
           } else {
             action.setLoop(THREE.LoopOnce, 1);
-            const actionSeconds = visual.motion === "attack" || visual.motion === "throw"
-              ? attackAnimationSeconds(unit.attackSpeed)
-              : latest.actionDuration;
-            entity.clipDuration = Math.max(MIN_ONE_SHOT_SECONDS, actionSeconds);
-            action.setDuration(entity.clipDuration);
           }
+          if (visual.durationSeconds > 0) action.setDuration(visual.durationSeconds);
           action.play();
-          if (samplesAuthoredPose) {
-            if (previousAction && previousAction !== action) previousAction.stop();
-            action.stopFading();
-            action.setEffectiveWeight(1);
-          } else if (previousAction === action) {
-            action.stopFading();
-            action.setEffectiveWeight(1);
-          } else if (previousAction && previousAction !== action) {
-            previousAction.crossFadeTo(action, 0.08, false);
-          } else {
-            action.fadeIn(0.08);
-          }
+          if (previousAction && previousAction !== action) previousAction.stop();
+          action.stopFading();
+          action.setEffectiveWeight(1);
+          action.paused = true;
           entity.activeAction = action;
-          entity.activeMotion = visual.motion;
-          entity.clipElapsed = 0;
-
-          if (samplesAuthoredPose) {
-            const previewProgress = visual.motion === "stunned" ? 0.34 : 0.46;
-            action.time = action.getClip().duration * previewProgress;
-            action.paused = true;
-            entity.bodyElapsed = visual.motion === "move"
-              ? entity.clipDuration * previewProgress
-              : entity.bodyElapsed;
-            entity.clipElapsed = reducedMotion
-              ? entity.clipDuration
-              : entity.clipDuration * previewProgress;
-            entity.mixer.update(0);
-          }
         };
 
         const updateEntityCues = (
@@ -576,15 +523,13 @@ export function MeatGaga3DLayer({
             entity.cueKey = visual.cueKey;
             entity.bodyDrawn = false;
             entity.bodyValidated = false;
-            entity.bodyElapsed = 0;
-            if (visual.motion === "move") {
-              const [fromX, fromY] = boardPoint(visual.fromPosition, latest.boardHeightRatio);
-              entity.moveFrom.set(fromX, fromY);
-            } else {
-              entity.moveFrom.copy(entity.currentPosition);
-            }
-            startAuthoredAction(entity, unit, visual, latest);
+            startAuthoredAction(entity, visual);
           }
+          const [fromX, fromY] = boardPoint(
+            visual.motion === "move" ? visual.fromPosition : visual.position,
+            latest.boardHeightRatio,
+          );
+          entity.moveFrom.set(fromX, fromY);
           const [toX, toY] = boardPoint(visual.position, latest.boardHeightRatio);
           entity.moveTo.set(toX, toY);
           entity.visual = visual;
@@ -593,7 +538,7 @@ export function MeatGaga3DLayer({
 
         let lastFrame = performance.now();
         let lastRender = 0;
-        let elapsed = 0;
+        let ambientElapsed = 0;
         let ready = false;
         let lastRatio = latestRef.current.boardHeightRatio;
 
@@ -634,12 +579,8 @@ export function MeatGaga3DLayer({
             const delta = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
             lastFrame = now;
             lastRender = now;
-            const motionScale = reducedMotion
-              ? 0
-              : latest.phase === "combat"
-                ? latest.playing ? latest.speed : 0
-                : 1;
-            elapsed += delta * motionScale;
+            if (!reducedMotion && latest.phase !== "combat") ambientElapsed += delta;
+            const elapsed = latest.phase === "combat" ? latest.combatTime : ambientElapsed;
 
             if (Math.abs(lastRatio - latest.boardHeightRatio) > 0.001) resize();
             const seen = new Set<string>();
@@ -654,41 +595,35 @@ export function MeatGaga3DLayer({
               }
               updateEntityCues(entity, unit, visual, latest);
 
-              entity.bodyElapsed += delta * motionScale;
-              entity.clipElapsed += delta * motionScale;
-              const actionSeconds = Math.max(0.08, entity.clipDuration || latest.actionDuration);
-              const actionProgress = latest.phase === "combat" && !latest.playing && latest.previewing
-                ? 0.46
-                : Math.min(1, entity.bodyElapsed / actionSeconds);
+              const actionProgress = authoredProgress(
+                visual.startTime,
+                visual.durationSeconds,
+                latest.combatTime,
+              );
+              const hitProgress = authoredProgress(
+                visual.hitStartTime,
+                visual.hitDurationSeconds,
+                latest.combatTime,
+              );
               if (visual.motion === "move") {
                 entity.currentPosition.lerpVectors(entity.moveFrom, entity.moveTo, smoothStep(actionProgress));
               } else {
-                const settle = reducedMotion ? 1 : 1 - Math.exp(-delta * Math.max(1, motionScale) * 12);
-                entity.currentPosition.lerp(entity.moveTo, settle);
+                entity.currentPosition.copy(entity.moveTo);
               }
 
               if (entity.activeAction) {
-                const movementFinished = entity.activeMotion === "move" && actionProgress >= 1;
-                entity.activeAction.paused = entity.activeMotion === "idle"
-                  || reducedMotion
-                  || latest.previewing
-                  || !latest.playing
-                  || movementFinished;
-                if (visual.motion === "idle" && entity.clipDuration > 0 && entity.clipElapsed >= entity.clipDuration) {
-                  poseEntity(entity);
+                entity.activeAction.paused = true;
+                if (visual.motion !== "idle") {
+                  entity.activeAction.time = entity.activeAction.getClip().duration * actionProgress;
                 }
               }
-              entity.mixer.update(delta * motionScale);
+              entity.mixer.update(0);
 
               const nextYaw = sideYaw(unit.side)
                 + targetYaw(entity.currentPosition, visual.facingPosition, latest.boardHeightRatio);
-              entity.facingYaw = THREE.MathUtils.lerp(
-                entity.facingYaw,
-                nextYaw,
-                reducedMotion ? 1 : 1 - Math.exp(-delta * Math.max(1, motionScale) * 10),
-              );
+              entity.facingYaw = nextYaw;
               const pulse = Math.sin(actionProgress * Math.PI);
-              const hitShake = visual.isHit ? Math.sin(actionProgress * Math.PI * 7) * (1 - actionProgress) * 0.055 : 0;
+              const hitShake = visual.isHit ? Math.sin(hitProgress * Math.PI * 7) * (1 - hitProgress) * 0.055 : 0;
               const attackLunge = visual.motion === "attack" ? pulse * 0.12 : 0;
               const harvestPulse = visual.motion === "harvest" ? pulse : 0;
               const deathProgress = visual.motion === "death" ? smoothStep(actionProgress) : 0;
