@@ -65,6 +65,7 @@ function event(
   return {
     id,
     timestamp: 1,
+    durationSeconds: 0.8,
     turn: 1,
     type,
     text: id,
@@ -73,14 +74,20 @@ function event(
   };
 }
 
-test("Meat Gaga walks only when a movement event changes her board cell", () => {
+test("Meat Gaga walks along the engine-authored movement route", () => {
   const enemy = combatUnit({ id: ENEMY_ID, heroId: "nix", side: "enemy", position: 16 });
-  const before = event("before-move", "start", [combatUnit({ position: 40 }), enemy]);
+  const before = event("before-move", "start", [combatUnit({ position: 47 }), enemy]);
   const move = event(
     "move",
     "move",
     [combatUnit({ position: 32 }), enemy],
-    { actorId: GAGA_ID, targetIds: [ENEMY_ID] },
+    {
+      actorId: GAGA_ID,
+      targetIds: [ENEMY_ID],
+      durationSeconds: 2.25,
+      fromPosition: 40,
+      toPosition: 32,
+    },
   );
   const state = deriveMeatGagaVisualState(renderUnit({ position: 32 }), [move], before);
 
@@ -88,6 +95,8 @@ test("Meat Gaga walks only when a movement event changes her board cell", () => 
   assert.equal(state.fromPosition, 40);
   assert.equal(state.position, 32);
   assert.equal(state.facingPosition, 16);
+  assert.equal(state.startTime, move.timestamp);
+  assert.equal(state.durationSeconds, 2.25);
   assert.equal(meatGagaClipForMotion(state.motion), MEAT_GAGA_ANIMATION_CLIPS.walking);
 });
 
@@ -203,6 +212,75 @@ test("a frozen simultaneous empowered attack keeps Throw while retaining incomin
   assert.equal(state.enhancedAttack, true);
   assert.equal(state.isHit, true);
   assert.equal(state.healthDamage, 20);
+  assert.equal(state.cueKey, "gaga-throws:throw");
+  assert.equal(state.hitCueKey, "vesper-hits:hit");
+  assert.equal(state.hitStartTime, incoming.timestamp);
+  assert.equal(state.hitDurationSeconds, incoming.durationSeconds);
+  assert.equal(state.durationSeconds, throwEvent.durationSeconds);
+});
+
+test("keeps an authored cue stable when an unrelated overlapping action appears", () => {
+  const enemy = combatUnit({ id: ENEMY_ID, heroId: "nix", side: "enemy", position: 24 });
+  const other = combatUnit({ id: "other-test", heroId: "tide", side: "player", position: 41 });
+  const snapshot = [combatUnit(), enemy, other];
+  const shot = event(
+    "gaga-shot",
+    "attack",
+    snapshot,
+    { actorId: GAGA_ID, targetIds: [ENEMY_ID], durationSeconds: 1.6 },
+  );
+  const unrelated = event(
+    "other-casts",
+    "ability",
+    snapshot,
+    { actorId: other.id, targetIds: [other.id], durationSeconds: 0.5 },
+  );
+
+  const withoutOverlap = deriveMeatGagaVisualState(renderUnit(), [shot]);
+  const withOverlap = deriveMeatGagaVisualState(renderUnit(), [shot, unrelated]);
+
+  assert.equal(withOverlap.cueKey, withoutOverlap.cueKey);
+  assert.equal(withOverlap.durationSeconds, 1.6);
+});
+
+test("newest overlapping incoming impact owns the independent hit timeline", () => {
+  const olderAttacker = combatUnit({ id: ENEMY_ID, heroId: "nix", side: "enemy", position: 24 });
+  const newerAttacker = combatUnit({ id: "newer-enemy", heroId: "vesper", side: "enemy", position: 32 });
+  const snapshot = [combatUnit({ hp: 150 }), olderAttacker, newerAttacker];
+  const olderHit = event(
+    "older-hit",
+    "attack",
+    snapshot,
+    {
+      timestamp: 1,
+      durationSeconds: 3,
+      actorId: olderAttacker.id,
+      targetIds: [GAGA_ID],
+      amount: 10,
+    },
+  );
+  const newerHit = event(
+    "newer-hit",
+    "ability",
+    snapshot,
+    {
+      timestamp: 2,
+      durationSeconds: 1.25,
+      actorId: newerAttacker.id,
+      targetIds: [GAGA_ID],
+      amount: 20,
+    },
+  );
+
+  const state = deriveMeatGagaVisualState(renderUnit({ hp: 150 }), [newerHit, olderHit]);
+
+  assert.equal(state.motion, "hit");
+  assert.equal(state.cueKey, "newer-hit:hit");
+  assert.equal(state.hitCueKey, "newer-hit:hit");
+  assert.equal(state.startTime, 2);
+  assert.equal(state.durationSeconds, 1.25);
+  assert.equal(state.hitStartTime, 2);
+  assert.equal(state.hitDurationSeconds, 1.25);
 });
 
 test("a frozen ordinary attack completes before a newly applied simultaneous stun is shown", () => {
@@ -249,6 +327,43 @@ test("a same-moment attack retains its action while exposing passive meat harves
   const state = deriveMeatGagaVisualState(renderUnit({ meatStack: 78 }), [normalAttack, harvest]);
 
   assert.equal(state.motion, "attack");
+  assert.equal(state.meatStackGained, 78);
+});
+
+test("a primary attack outranks an older harvest while their intervals overlap", () => {
+  const enemy = combatUnit({ id: ENEMY_ID, heroId: "nix", side: "enemy", position: 24 });
+  const snapshot = [combatUnit({ meatStack: 78 }), enemy];
+  const olderHarvest = event(
+    "older-harvest",
+    "passive",
+    snapshot,
+    {
+      timestamp: 1,
+      durationSeconds: 2,
+      actorId: GAGA_ID,
+      meatStackBefore: 0,
+      meatStackGained: 78,
+      meatStackAfter: 78,
+    },
+  );
+  const newerAttack = event(
+    "newer-attack",
+    "attack",
+    snapshot,
+    {
+      timestamp: 2,
+      durationSeconds: 1,
+      actorId: GAGA_ID,
+      targetIds: [ENEMY_ID],
+      amount: 34,
+    },
+  );
+
+  const state = deriveMeatGagaVisualState(renderUnit({ meatStack: 78 }), [olderHarvest, newerAttack]);
+
+  assert.equal(state.motion, "attack");
+  assert.equal(state.cueKey, "newer-attack:attack");
+  assert.equal(state.durationSeconds, 1);
   assert.equal(state.meatStackGained, 78);
 });
 
@@ -360,16 +475,19 @@ test("the shared animated layer is decorative and preserves the interactive port
   assert.match(layer, /LoopRepeat/);
   assert.match(layer, /LoopOnce/);
   assert.match(layer, /action\.setDuration/);
-  assert.match(layer, /mixer\.update\(delta \* motionScale\)/);
-  assert.match(layer, /entity\.bodyElapsed = visual\.motion === "move"/);
-  assert.match(layer, /entity\.clipElapsed = reducedMotion/);
+  assert.match(layer, /mixer\.update\(0\)/);
+  assert.match(layer, /combatTime: number/);
+  assert.match(layer, /combatEventProgress\(\{ timestamp: startTime, durationSeconds \}, combatTime\)/);
+  assert.match(layer, /visual\.startTime,[\s\S]+visual\.durationSeconds,[\s\S]+latest\.combatTime/);
+  assert.match(layer, /visual\.hitStartTime,[\s\S]+visual\.hitDurationSeconds,[\s\S]+latest\.combatTime/);
+  assert.match(layer, /entity\.activeAction\.time = entity\.activeAction\.getClip\(\)\.duration \* actionProgress/);
+  assert.doesNotMatch(layer, /attackAnimationSeconds|movementTravelSeconds|bodyElapsed|clipElapsed|actionDuration|latest\.speed|latest\.previewing/);
+  assert.doesNotMatch(layer, /\?\s*0\.46|\?\s*0\.72/);
   assert.match(layer, /idleAction\.time = idleAction\.getClip\(\)\.duration \* IDLE_POSE_PROGRESS/);
   assert.match(layer, /entity\.activeAction = idleAction \?\? null/);
-  assert.match(layer, /entity\.activeMotion === "idle"/);
-  assert.match(layer, /samplesAuthoredPose = reducedMotion \|\| latest\.previewing/);
   assert.match(layer, /action\.stopFading\(\)/);
   assert.match(layer, /action\.setEffectiveWeight\(1\)/);
-  assert.match(layer, /previousAction === action/);
+  assert.match(layer, /previousAction && previousAction !== action/);
   assert.doesNotMatch(layer, /\.skeleton\.pose\(\)/);
   assert.match(layer, /mesh\.onAfterRender/);
   assert.match(layer, /bone\.getWorldPosition\(jointPosition\)/);

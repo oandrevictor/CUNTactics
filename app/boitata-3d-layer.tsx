@@ -16,7 +16,8 @@ import type {
   Vector2,
   WebGLRenderer,
 } from "three";
-import { BOARD_COLUMNS, BOARD_ROWS, HEROES, attackAnimationSeconds, movementTravelSeconds, type CombatEvent, type GameState } from "./game-engine";
+import { BOARD_COLUMNS, BOARD_ROWS, type CombatEvent, type GameState } from "./game-engine";
+import { combatEventProgress } from "./combat-playback";
 import {
   chooseBoitataRenderMode,
   deriveBoitataVisualState,
@@ -39,8 +40,7 @@ export interface Boitata3DLayerProps {
   previousSnapshotEvent: CombatEvent | null;
   phase: GameState["phase"];
   playing: boolean;
-  speed: number;
-  actionDuration: number;
+  combatTime: number;
   boardHeightRatio: number;
   onReady?: () => void;
   onFallback?: (reason: BoitataRendererFallbackReason) => void;
@@ -72,8 +72,6 @@ interface BoitataEntity {
   visual: BoitataVisualState;
   bodyCueKey: string;
   shieldCueKey: string;
-  bodyElapsed: number;
-  shieldElapsed: number;
   moveFrom: Vector2;
   moveTo: Vector2;
   currentPosition: Vector2;
@@ -130,11 +128,13 @@ function facingAngle(from: Vector2, to: Vector2, fallback: number): number {
   return Math.atan2(-dx, dy);
 }
 
-function shortestAngle(from: number, to: number): number {
-  let delta = (to - from) % (Math.PI * 2);
-  if (delta > Math.PI) delta -= Math.PI * 2;
-  if (delta < -Math.PI) delta += Math.PI * 2;
-  return from + delta;
+function authoredProgress(
+  startTime: number | null,
+  durationSeconds: number,
+  combatTime: number,
+): number {
+  if (startTime === null) return 1;
+  return combatEventProgress({ timestamp: startTime, durationSeconds }, combatTime);
 }
 
 /**
@@ -147,8 +147,7 @@ export function Boitata3DLayer({
   previousSnapshotEvent,
   phase,
   playing,
-  speed,
-  actionDuration,
+  combatTime,
   boardHeightRatio,
   onReady,
   onFallback,
@@ -161,14 +160,13 @@ export function Boitata3DLayer({
     previousSnapshotEvent,
     phase,
     playing,
-    speed,
-    actionDuration,
+    combatTime,
     boardHeightRatio,
   });
   const callbacksRef = useRef({ onReady, onFallback, onReducedMotionChange });
 
   useEffect(() => {
-    latestRef.current = { units, currentEvents, previousSnapshotEvent, phase, playing, speed, actionDuration, boardHeightRatio };
+    latestRef.current = { units, currentEvents, previousSnapshotEvent, phase, playing, combatTime, boardHeightRatio };
     callbacksRef.current = { onReady, onFallback, onReducedMotionChange };
   });
 
@@ -413,8 +411,6 @@ export function Boitata3DLayer({
             visual,
             bodyCueKey: visual.bodyCueKey,
             shieldCueKey: visual.shieldCueKey,
-            bodyElapsed: 0,
-            shieldElapsed: 0,
             moveFrom,
             moveTo,
             currentPosition: moveFrom.clone(),
@@ -436,18 +432,15 @@ export function Boitata3DLayer({
         const updateEntityCues = (entity: BoitataEntity, unit: BoitataRenderUnit, visual: BoitataVisualState) => {
           if (entity.bodyCueKey !== visual.bodyCueKey) {
             entity.bodyCueKey = visual.bodyCueKey;
-            entity.bodyElapsed = 0;
-            if (visual.motion === "move") {
-              const [fromX, fromY] = boardPoint(visual.fromPosition, latestRef.current.boardHeightRatio);
-              entity.moveFrom.set(fromX, fromY);
-            } else {
-              entity.moveFrom.copy(entity.currentPosition);
-            }
           }
           if (entity.shieldCueKey !== visual.shieldCueKey) {
             entity.shieldCueKey = visual.shieldCueKey;
-            entity.shieldElapsed = 0;
           }
+          const [fromX, fromY] = boardPoint(
+            visual.motion === "move" ? visual.fromPosition : visual.position,
+            latestRef.current.boardHeightRatio,
+          );
+          entity.moveFrom.set(fromX, fromY);
           const [toX, toY] = boardPoint(visual.position, latestRef.current.boardHeightRatio);
           entity.moveTo.set(toX, toY);
           entity.visual = visual;
@@ -461,13 +454,13 @@ export function Boitata3DLayer({
           entity: BoitataEntity,
           elapsed: number,
           actionProgress: number,
-          motionScale: number,
+          hitProgress: number,
         ) => {
           const motion = entity.visual.motion;
           const attackStretch = motion === "attack" ? Math.sin(actionProgress * Math.PI) : 0;
           const castLift = motion === "cast" ? Math.sin(actionProgress * Math.PI) : 0;
           const hitShake = entity.visual.isHit
-            ? Math.sin(actionProgress * Math.PI * 7) * (1 - actionProgress) * 0.17
+            ? Math.sin(hitProgress * Math.PI * 7) * (1 - hitProgress) * 0.17
             : 0;
           const deathProgress = motion === "death" ? smoothStep(actionProgress) : 0;
           const waveSpeed = motion === "move" ? 5.8 : 2.5;
@@ -527,9 +520,6 @@ export function Boitata3DLayer({
           const baseScale = 0.22 + Math.min(0.025, Math.max(0, entity.level - 1) * 0.005);
           entity.root.scale.setScalar(baseScale);
 
-          if (motionScale === 0 && motion !== "idle" && !reducedMotion) {
-            entity.modelPivot.rotation.z += motion === "hit" ? 0.08 : 0;
-          }
         };
 
         const updateWall = (entity: BoitataEntity, elapsed: number, actionProgress: number) => {
@@ -564,7 +554,7 @@ export function Boitata3DLayer({
 
         let lastFrame = performance.now();
         let lastRender = 0;
-        let elapsed = 0;
+        let ambientElapsed = 0;
         let ready = false;
         let lastRatio = latestRef.current.boardHeightRatio;
 
@@ -606,12 +596,8 @@ export function Boitata3DLayer({
           const delta = Math.min(0.05, Math.max(0, (now - lastFrame) / 1000));
           lastFrame = now;
           lastRender = now;
-          const motionScale = reducedMotion
-            ? 0
-            : latest.phase === "combat"
-              ? latest.playing ? latest.speed : 0
-              : 1;
-          elapsed += delta * motionScale;
+          if (!reducedMotion && latest.phase !== "combat") ambientElapsed += delta;
+          const elapsed = latest.phase === "combat" ? latest.combatTime : ambientElapsed;
 
           if (Math.abs(lastRatio - latest.boardHeightRatio) > 0.001) resize();
 
@@ -627,29 +613,27 @@ export function Boitata3DLayer({
             }
             updateEntityCues(entity, unit, visual);
 
-            entity.bodyElapsed += delta * motionScale;
-            entity.shieldElapsed += delta * motionScale;
-            const actionSeconds = Math.max(0.08, latest.actionDuration);
-            const bodyActionSeconds = visual.motion === "move"
-              ? Math.max(0.08, movementTravelSeconds(unit.moveSpeed, visual.fromPosition, visual.position))
-              : visual.motion === "attack"
-                ? Math.max(0.08, attackAnimationSeconds(unit.attackSpeed))
-                : visual.motion === "cast"
-                  ? HEROES.boitata.ability.castAnimationSeconds
-                  : actionSeconds;
-            const bodyProgress = latest.phase === "combat" && !latest.playing && visual.motion !== "idle"
-              ? visual.motion === "death" ? 0.72 : 0.46
-              : Math.min(1, entity.bodyElapsed / bodyActionSeconds);
-            const shieldProgress = latest.phase === "combat" && !latest.playing && visual.shieldMotion !== "active" && visual.shieldMotion !== "hidden"
-              ? visual.shieldMotion === "shield-break" ? 0.72 : 0.46
-              : Math.min(1, entity.shieldElapsed / actionSeconds);
+            const bodyProgress = authoredProgress(
+              visual.startTime,
+              visual.durationSeconds,
+              latest.combatTime,
+            );
+            const hitProgress = authoredProgress(
+              visual.hitStartTime,
+              visual.hitDurationSeconds,
+              latest.combatTime,
+            );
+            const shieldProgress = authoredProgress(
+              visual.shieldStartTime,
+              visual.shieldDurationSeconds,
+              latest.combatTime,
+            );
 
             if (visual.motion === "move") {
               const travel = smoothStep(bodyProgress);
               entity.currentPosition.lerpVectors(entity.moveFrom, entity.moveTo, travel);
             } else {
-              const settle = reducedMotion ? 1 : 1 - Math.exp(-delta * Math.max(1, motionScale) * 10);
-              entity.currentPosition.lerp(entity.moveTo, settle);
+              entity.currentPosition.copy(entity.moveTo);
             }
 
             const defaultFacing = unit.side === "player" ? 0 : Math.PI;
@@ -660,14 +644,10 @@ export function Boitata3DLayer({
                   new THREE.Vector2(...boardPoint(visual.facingPosition, latest.boardHeightRatio)),
                   defaultFacing,
                 );
-            entity.facing = THREE.MathUtils.lerp(
-              entity.facing,
-              shortestAngle(entity.facing, targetFacing),
-              reducedMotion ? 1 : 1 - Math.exp(-delta * Math.max(1, motionScale) * 12),
-            );
+            entity.facing = targetFacing;
             entity.root.position.z = Math.floor(unit.position / BOARD_COLUMNS) * 0.015;
 
-            updateBody(entity, elapsed, bodyProgress, motionScale);
+            updateBody(entity, elapsed, bodyProgress, hitProgress);
             updateWall(entity, elapsed, shieldProgress);
           }
 

@@ -59,11 +59,12 @@ function event(
   id: string,
   type: CombatEventType,
   snapshot: CombatUnit[],
-  options: Pick<CombatEvent, "actorId" | "targetIds" | "amount" | "amounts"> = {},
+  options: Partial<CombatEvent> = {},
 ): CombatEvent {
   return {
     id,
     timestamp: 1,
+    durationSeconds: 0.8,
     turn: 1,
     type,
     text: id,
@@ -72,9 +73,9 @@ function event(
   };
 }
 
-test("derives movement from post-action snapshots and faces the actor target", () => {
+test("derives movement from the engine-authored route and faces the actor target", () => {
   const before = event("before-move", "start", [
-    combatUnit({ position: 40 }),
+    combatUnit({ position: 47 }),
     combatUnit({ id: ENEMY_ID, heroId: "bramble", side: "enemy", position: 16 }),
   ]);
   const after = event(
@@ -84,7 +85,13 @@ test("derives movement from post-action snapshots and faces the actor target", (
       combatUnit({ position: 32 }),
       combatUnit({ id: ENEMY_ID, heroId: "bramble", side: "enemy", position: 16 }),
     ],
-    { actorId: BOITATA_ID, targetIds: [ENEMY_ID] },
+    {
+      actorId: BOITATA_ID,
+      targetIds: [ENEMY_ID],
+      durationSeconds: 2.4,
+      fromPosition: 40,
+      toPosition: 32,
+    },
   );
 
   const state = deriveBoitataVisualState(renderUnit({ position: 32 }), [after], before);
@@ -92,6 +99,8 @@ test("derives movement from post-action snapshots and faces the actor target", (
   assert.equal(state.fromPosition, 40);
   assert.equal(state.position, 32);
   assert.equal(state.facingPosition, 16);
+  assert.equal(state.startTime, after.timestamp);
+  assert.equal(state.durationSeconds, 2.4);
 });
 
 test("derives an attack without replacing an already-active wall", () => {
@@ -145,7 +154,90 @@ test("keeps an attack cue while reacting to a simultaneous incoming hit", () => 
   assert.equal(state.isHit, true);
   assert.equal(state.healthDamage, 30);
   assert.equal(state.facingPosition, 24);
-  assert.match(state.bodyCueKey, /boitata-attacks:enemy-attacks/);
+  assert.equal(state.bodyCueKey, "boitata-attacks:attack");
+  assert.equal(state.hitCueKey, "enemy-attacks:hit");
+  assert.equal(state.hitStartTime, incomingAttack.timestamp);
+  assert.equal(state.hitDurationSeconds, incomingAttack.durationSeconds);
+  assert.equal(state.durationSeconds, ownAttack.durationSeconds);
+});
+
+test("does not restart a body cue when an unrelated overlapping event appears", () => {
+  const enemy = combatUnit({ id: ENEMY_ID, heroId: "nix", side: "enemy", position: 24 });
+  const healer = combatUnit({ id: HEALER_ID, heroId: "tide", side: "player", position: 41 });
+  const snapshot = [combatUnit(), enemy, healer];
+  const ownAttack = event(
+    "boitata-attacks",
+    "attack",
+    snapshot,
+    { actorId: BOITATA_ID, targetIds: [ENEMY_ID], durationSeconds: 1.7 },
+  );
+  const unrelatedHeal = event(
+    "healer-acts",
+    "heal",
+    snapshot,
+    { actorId: HEALER_ID, targetIds: [HEALER_ID], durationSeconds: 0.6 },
+  );
+
+  const withoutOverlap = deriveBoitataVisualState(renderUnit(), [ownAttack]);
+  const withOverlap = deriveBoitataVisualState(renderUnit(), [ownAttack, unrelatedHeal]);
+
+  assert.equal(withOverlap.bodyCueKey, withoutOverlap.bodyCueKey);
+  assert.equal(withOverlap.durationSeconds, 1.7);
+});
+
+test("body and wall reactions keep their own overlapping source timelines", () => {
+  const olderAttacker = combatUnit({ id: ENEMY_ID, heroId: "nix", side: "enemy", position: 24 });
+  const newerAttacker = combatUnit({ id: "newer-enemy", heroId: "vesper", side: "enemy", position: 32 });
+  const snapshot = [combatUnit({ hp: 170, shield: 20, fireWallShield: 20 }), olderAttacker, newerAttacker];
+  const before = event(
+    "before-overlap",
+    "start",
+    [combatUnit({ hp: 180, shield: 50, fireWallShield: 50 }), olderAttacker, newerAttacker],
+  );
+  const olderHit = event(
+    "older-hit",
+    "attack",
+    snapshot,
+    {
+      timestamp: 1,
+      durationSeconds: 3,
+      actorId: olderAttacker.id,
+      targetIds: [BOITATA_ID],
+      amount: 10,
+      shieldAbsorbedAmounts: { [BOITATA_ID]: 10 },
+      fireWallAbsorbedAmounts: { [BOITATA_ID]: 10 },
+    },
+  );
+  const newerHit = event(
+    "newer-hit",
+    "ability",
+    snapshot,
+    {
+      timestamp: 2,
+      durationSeconds: 1.25,
+      actorId: newerAttacker.id,
+      targetIds: [BOITATA_ID],
+      amount: 20,
+    },
+  );
+
+  const state = deriveBoitataVisualState(
+    renderUnit({ hp: 170, fireWallShield: 20 }),
+    [newerHit, olderHit],
+    before,
+  );
+
+  assert.equal(state.motion, "hit");
+  assert.equal(state.bodyCueKey, "newer-hit:hit");
+  assert.equal(state.hitCueKey, "newer-hit:hit");
+  assert.equal(state.startTime, 2);
+  assert.equal(state.durationSeconds, 1.25);
+  assert.equal(state.hitStartTime, 2);
+  assert.equal(state.hitDurationSeconds, 1.25);
+  assert.equal(state.shieldDamage, 10);
+  assert.equal(state.shieldCueKey, "older-hit:shield-hit");
+  assert.equal(state.shieldStartTime, 1);
+  assert.equal(state.shieldDurationSeconds, 3);
 });
 
 test("reacts to incoming damage even when simultaneous healing masks the net health loss", () => {
@@ -223,7 +315,12 @@ test("keeps body and Wall of Fire cues independent", () => {
     "shield-hit",
     "attack",
     [combatUnit({ shield: 55, fireWallShield: 55 }), attacker],
-    { actorId: ENEMY_ID, targetIds: [BOITATA_ID] },
+    {
+      actorId: ENEMY_ID,
+      targetIds: [BOITATA_ID],
+      shieldAbsorbedAmounts: { [BOITATA_ID]: 40 },
+      fireWallAbsorbedAmounts: { [BOITATA_ID]: 40 },
+    },
   );
   const shieldHitState = deriveBoitataVisualState(
     renderUnit({ fireWallShield: 55 }),
@@ -237,6 +334,184 @@ test("keeps body and Wall of Fire cues independent", () => {
   assert.equal(shieldHitState.facingPosition, 32);
 });
 
+test("the newest overlapping wall source controls the 3D shield timeline", () => {
+  const attacker = combatUnit({ id: ENEMY_ID, heroId: "nix", side: "enemy", position: 32 });
+  const snapshot = [
+    combatUnit({ shield: 71, fireWallShield: 71 }),
+    attacker,
+  ];
+  const olderCast = event(
+    "older-wall-cast",
+    "ability",
+    snapshot,
+    {
+      timestamp: 1,
+      durationSeconds: 3,
+      actorId: BOITATA_ID,
+      targetIds: [BOITATA_ID],
+    },
+  );
+  const newerImpact = event(
+    "newer-wall-impact",
+    "attack",
+    snapshot,
+    {
+      timestamp: 2,
+      durationSeconds: 1.25,
+      actorId: ENEMY_ID,
+      targetIds: [BOITATA_ID],
+      amount: 24,
+      shieldAbsorbedAmounts: { [BOITATA_ID]: 24 },
+      fireWallAbsorbedAmounts: { [BOITATA_ID]: 24 },
+    },
+  );
+
+  const impactState = deriveBoitataVisualState(
+    renderUnit({ fireWallShield: 71 }),
+    [newerImpact, olderCast],
+  );
+  assert.equal(impactState.motion, "cast");
+  assert.equal(impactState.bodyCueKey, "older-wall-cast:cast");
+  assert.equal(impactState.hitCueKey, "newer-wall-impact:hit");
+  assert.equal(impactState.shieldMotion, "shield-hit");
+  assert.equal(impactState.shieldCueKey, "newer-wall-impact:shield-hit");
+  assert.equal(impactState.shieldStartTime, 2);
+  assert.equal(impactState.shieldDurationSeconds, 1.25);
+
+  const olderBreak = event(
+    "older-wall-break",
+    "attack",
+    snapshot,
+    {
+      timestamp: 1,
+      durationSeconds: 3,
+      actorId: ENEMY_ID,
+      targetIds: [BOITATA_ID],
+      amount: 24,
+      shieldAbsorbedAmounts: { [BOITATA_ID]: 24 },
+      fireWallAbsorbedAmounts: { [BOITATA_ID]: 24 },
+      fireWallBrokenTargetIds: [BOITATA_ID],
+    },
+  );
+  const newerCast = event(
+    "newer-wall-cast",
+    "ability",
+    snapshot,
+    {
+      timestamp: 2,
+      durationSeconds: 1.8,
+      actorId: BOITATA_ID,
+      targetIds: [BOITATA_ID],
+    },
+  );
+
+  const castState = deriveBoitataVisualState(
+    renderUnit({ fireWallShield: 71 }),
+    [newerCast, olderBreak],
+  );
+  assert.equal(castState.shieldMotion, "cast");
+  assert.equal(castState.shieldCueKey, "newer-wall-cast:cast");
+  assert.equal(castState.shieldStartTime, 2);
+  assert.equal(castState.shieldDurationSeconds, 1.8);
+});
+
+test("keeps a wall impact on its source interval after an unrelated later snapshot", () => {
+  const attacker = combatUnit({ id: ENEMY_ID, heroId: "bramble", side: "enemy", position: 32 });
+  const healer = combatUnit({ id: HEALER_ID, heroId: "tide", side: "player", position: 41 });
+  const afterHitSnapshot = [
+    combatUnit({ shield: 55, fireWallShield: 55 }),
+    attacker,
+    healer,
+  ];
+  const shieldHit = event(
+    "persistent-shield-hit",
+    "attack",
+    afterHitSnapshot,
+    {
+      timestamp: 1,
+      durationSeconds: 3,
+      actorId: ENEMY_ID,
+      targetIds: [BOITATA_ID],
+      amount: 40,
+      shieldAbsorbedAmounts: { [BOITATA_ID]: 40 },
+      fireWallAbsorbedAmounts: { [BOITATA_ID]: 40 },
+    },
+  );
+  const unrelatedHeal = event(
+    "later-unrelated-heal",
+    "heal",
+    afterHitSnapshot,
+    {
+      timestamp: 2,
+      durationSeconds: 0.6,
+      actorId: HEALER_ID,
+      targetIds: [HEALER_ID],
+      amount: 10,
+    },
+  );
+
+  const state = deriveBoitataVisualState(
+    renderUnit({ fireWallShield: 55 }),
+    [shieldHit, unrelatedHeal],
+    shieldHit,
+  );
+
+  assert.equal(state.shieldMotion, "shield-hit");
+  assert.equal(state.shieldDamage, 40);
+  assert.equal(state.shieldCueKey, "persistent-shield-hit:shield-hit");
+  assert.equal(state.shieldStartTime, 1);
+  assert.equal(state.shieldDurationSeconds, 3);
+});
+
+test("keeps a wall break on its source interval after an unrelated later snapshot", () => {
+  const attacker = combatUnit({ id: ENEMY_ID, heroId: "bramble", side: "enemy", position: 32 });
+  const healer = combatUnit({ id: HEALER_ID, heroId: "tide", side: "player", position: 41 });
+  const afterBreakSnapshot = [
+    combatUnit({ shield: 0, fireWallShield: 0 }),
+    attacker,
+    healer,
+  ];
+  const shieldBreak = event(
+    "persistent-shield-break",
+    "attack",
+    afterBreakSnapshot,
+    {
+      timestamp: 1,
+      durationSeconds: 3,
+      actorId: ENEMY_ID,
+      targetIds: [BOITATA_ID],
+      amount: 20,
+      shieldAbsorbedAmounts: { [BOITATA_ID]: 20 },
+      fireWallAbsorbedAmounts: { [BOITATA_ID]: 20 },
+      fireWallBrokenTargetIds: [BOITATA_ID],
+    },
+  );
+  const unrelatedHeal = event(
+    "later-unrelated-heal",
+    "heal",
+    afterBreakSnapshot,
+    {
+      timestamp: 2,
+      durationSeconds: 0.6,
+      actorId: HEALER_ID,
+      targetIds: [HEALER_ID],
+      amount: 10,
+    },
+  );
+
+  const state = deriveBoitataVisualState(
+    renderUnit({ fireWallShield: 0 }),
+    [shieldBreak, unrelatedHeal],
+    shieldBreak,
+  );
+
+  assert.equal(state.shieldMotion, "shield-break");
+  assert.equal(state.shieldDamage, 20);
+  assert.equal(state.shieldCueKey, "persistent-shield-break:shield-break");
+  assert.equal(state.shieldStartTime, 1);
+  assert.equal(state.shieldDurationSeconds, 3);
+});
+
 test("prioritizes wall break while retaining the creature hit reaction", () => {
   const attacker = combatUnit({ id: ENEMY_ID, heroId: "bramble", side: "enemy", position: 32 });
   const before = event("before-break", "attack", [
@@ -247,7 +522,14 @@ test("prioritizes wall break while retaining the creature hit reaction", () => {
     "break",
     "attack",
     [combatUnit({ hp: 188, shield: 0, fireWallShield: 0 }), attacker],
-    { actorId: ENEMY_ID, targetIds: [BOITATA_ID] },
+    {
+      actorId: ENEMY_ID,
+      targetIds: [BOITATA_ID],
+      amount: 32,
+      shieldAbsorbedAmounts: { [BOITATA_ID]: 20 },
+      fireWallAbsorbedAmounts: { [BOITATA_ID]: 20 },
+      fireWallBrokenTargetIds: [BOITATA_ID],
+    },
   );
 
   const state = deriveBoitataVisualState(
@@ -311,6 +593,18 @@ test("3D layer is decorative and exposes stable fallback hooks", async () => {
   assert.match(source, /prefers-reduced-motion:\s*reduce/);
   assert.match(source, /navigator\.connection/);
   assert.match(source, /webglcontextlost/);
+});
+
+test("3D action poses project directly from the authoritative combat clock", async () => {
+  const source = await readFile(new URL("../app/boitata-3d-layer.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /combatTime: number/);
+  assert.match(source, /combatEventProgress\(\{ timestamp: startTime, durationSeconds \}, combatTime\)/);
+  assert.match(source, /visual\.startTime,[\s\S]+visual\.durationSeconds,[\s\S]+latest\.combatTime/);
+  assert.match(source, /visual\.hitStartTime,[\s\S]+visual\.hitDurationSeconds,[\s\S]+latest\.combatTime/);
+  assert.match(source, /visual\.shieldStartTime,[\s\S]+visual\.shieldDurationSeconds,[\s\S]+latest\.combatTime/);
+  assert.doesNotMatch(source, /attackAnimationSeconds|movementTravelSeconds|bodyElapsed|shieldElapsed|actionDuration|latest\.speed/);
+  assert.doesNotMatch(source, /\?\s*0\.46|\?\s*0\.72/);
 });
 
 test("3D creature uses a model-local visual anchor without moving its board position", async () => {

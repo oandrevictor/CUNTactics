@@ -151,9 +151,10 @@ test("ships the bespoke social card and no starter preview dependency", async ()
 });
 
 test("combat playback batches equal timestamps while its visible clock advances linearly", async () => {
-  const [client, playback] = await Promise.all([
+  const [client, playback, styles] = await Promise.all([
     readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/combat-playback.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(client, /const LEGACY_COMBAT_EVENT_SECONDS = 0\.82/);
@@ -167,45 +168,43 @@ test("combat playback batches equal timestamps while its visible clock advances 
   assert.match(client, /Math\.abs\(current\.timestamp - timestamp\) <= COMBAT_TIMESTAMP_EPSILON_SECONDS/);
   assert.match(client, /current\.events\.push\(event\)/);
   assert.match(client, /current\.snapshotEvent = event/);
-  assert.match(client, /const interval = nextTimestamp - currentTimestamp/);
-  assert.match(client, /interval > 0 \? interval : 0/);
-  assert.doesNotMatch(client, /Math\.max\(MIN_COMBAT_MOMENT_SECONDS, interval\)/);
   assert.match(
     client,
     /groupCombatEventsByTimestamp\(combatEvents\)/,
   );
   assert.match(
     client,
-    /combatMoments\[combatMomentIndex \+ 1\]\?\.timestamp/,
+    /const combatMomentIndex = useMemo\(\(\) => \{/,
   );
+  assert.match(client, /combatMoments\[index\]\.timestamp > currentCombatTime/);
 
-  assert.match(client, /playbackMomentKeyRef = useRef<string \| null>\(null\)/);
-  assert.match(client, /playbackRemainingSecondsRef = useRef<number \| null>\(null\)/);
   assert.match(client, /combatClockSeconds, setCombatClockSeconds/);
+  assert.match(client, /combatClockSecondsRef = useRef\(0\)/);
+  assert.match(client, /playbackGenerationRef = useRef\(0\)/);
   assert.match(client, /sampleLinearCombatClock\(\{/);
   assert.match(
     client,
-    /const remainingSeconds = playbackRemainingSecondsRef\.current \?\? currentMomentInterval/,
+    /const remainingSeconds = totalCombatTime - anchorTime/,
   );
   assert.match(client, /const startedAt = performance\.now\(\)/);
-  assert.match(client, /Math\.round\(\(remainingSeconds \* 1000\) \/ speed\)/);
+  assert.match(client, /endTime: totalCombatTime/);
+  assert.match(client, /remainingDuration: remainingSeconds/);
   assert.match(client, /window\.requestAnimationFrame\(updateClock\)/);
   assert.match(client, /window\.cancelAnimationFrame\(animationFrame\)/);
-  assert.match(client, /const COMBAT_CLOCK_RENDER_INTERVAL_MS = 50/);
-  assert.match(
-    client,
-    /now - lastClockRenderAt >= COMBAT_CLOCK_RENDER_INTERVAL_MS \|\| sample\.remainingDuration === 0/,
-  );
-  assert.match(client, /lastClockRenderAt = now/);
-  assert.match(
-    client,
-    /playbackRemainingSecondsRef\.current = sample\.remainingDuration/,
-  );
+  assert.match(client, /playbackGenerationRef\.current !== playbackGeneration/);
+  assert.match(client, /combatClockSecondsRef\.current = sample\.time/);
   assert.match(client, /setCombatClockSeconds\(sample\.time\)/);
-  assert.match(client, /window\.clearTimeout\(timeout\)/);
+  assert.doesNotMatch(client, /playbackMomentKeyRef|playbackRemainingSecondsRef/);
+  assert.doesNotMatch(client, /nextMomentTimestamp|currentMomentInterval/);
+  assert.doesNotMatch(client, /COMBAT_CLOCK_RENDER_INTERVAL_MS|lastClockRenderAt/);
   assert.doesNotMatch(client, /Math\.round\(820 \/ speed\)/);
 
   assert.match(playback, /export function sampleLinearCombatClock/);
+  assert.match(playback, /export function activeCombatEventsAtTime/);
+  assert.match(playback, /export function combatEventEndTime/);
+  assert.match(playback, /export function combatEventProgress/);
+  assert.match(playback, /return roundCombatTime\(combatEventStartTime\(event\) \+ combatEventDuration\(event\)\)/);
+  assert.match(playback, /currentTime >= startTime && currentTime < endTime/);
   assert.match(playback, /const segmentDuration = endTime - startTime/);
   assert.match(playback, /elapsedWallTime[\s\S]*?\* Math\.max\(0, finiteOr\(input\.speed, 1\)\)/);
   assert.match(playback, /Math\.max\(0, initialRemaining - elapsedTimelineTime\)/);
@@ -218,22 +217,66 @@ test("combat playback batches equal timestamps while its visible clock advances 
   assert.match(client, /--combat-preview-delay/);
   assert.match(client, /<span>\{t\("Combat time"\)\}<\/span>/);
   assert.match(client, />\{t\("Next moment"\)\}<\/button>/);
-  assert.match(client, /setCombatClockSeconds\(combatMoments\[nextIndex\]\?\.timestamp \?\? currentCombatTime\)/);
+  assert.match(client, /activeCombatEventsAtTime\(combatEvents, currentCombatTime\)/);
+  assert.match(client, /combatUnitPresentationAnchor\([\s\S]*?combatEvents,[\s\S]*?unit\.id,[\s\S]*?currentCombatTime,[\s\S]*?displayed\.position/);
+  assert.match(client, /Math\.max\(latestEndTime, combatEventEndTime\(event\)\)/);
+  assert.match(client, /currentCombatTime >= totalCombatTime - COMBAT_TIMESTAMP_EPSILON_SECONDS/);
+  assert.match(client, /endTime: totalCombatTime/);
   assert.match(client, /setCombatClockSeconds\(totalCombatTime\)/);
-  assert.match(client, /const movementBeatMilliseconds = currentEvents\.reduce/);
-  assert.match(client, /movementTravelSeconds\(after\.moveSpeed, before\.position, after\.position\)/);
-  assert.match(client, /const actionBeatMilliseconds = currentEvents\.reduce/);
-  assert.match(client, /attackAnimationSeconds\(actor\.attackSpeed\)/);
-  assert.match(client, /HEROES\[actor\.heroId\]\.ability\.castAnimationSeconds/);
+  assert.doesNotMatch(client, /const movementBeatMilliseconds = currentEvents\.reduce/);
+  assert.doesNotMatch(client, /const actionBeatMilliseconds = currentEvents\.reduce/);
+  assert.doesNotMatch(client, /attackAnimationSeconds|movementTravelSeconds/);
   assert.doesNotMatch(client, /currentMomentPlaybackInterval/);
   assert.doesNotMatch(client, /segmentDuration:/);
-  assert.match(client, /playbackRemainingSecondsRef\.current = currentMomentInterval/);
+  assert.match(client, /function combatEventTimingStyle/);
+  assert.match(client, /event\.durationSeconds \?\? 0/);
+  assert.match(client, /combatEventProgress\(event, combatTime\)/);
+  assert.match(client, /"--combat-anchor-delay": `\$\{timelineDelayMilliseconds\}ms`/);
+  assert.doesNotMatch(client, /durationMilliseconds \* 0\.46/);
+  assert.match(client, /const delayMilliseconds = Math\.min\(/);
+  assert.match(client, /"--combat-child-delay": `\$\{delayMilliseconds\}ms`/);
+  assert.match(client, /"--combat-beat": `\$\{eventDurationMilliseconds - delayMilliseconds\}ms`/);
   assert.match(client, /"--move-from-x"/);
   assert.match(client, /"--move-from-y"/);
   assert.match(client, /"--move-duration"/);
-  assert.match(client, /movementTravelSeconds\(unit\.moveSpeed, previousUnit\.position, unit\.position\)/);
+  assert.match(client, /actorEvent\?\.fromPosition/);
+  assert.match(client, /actorEvent\?\.toPosition/);
+  assert.match(client, /const isMoveActionEvent = actorEvent\?\.type === "move"/);
+  assert.match(client, /const moveFromPosition = actorEvent\?\.fromPosition \?\? null/);
+  assert.match(client, /didMove \? "unit-event-actor unit-event-move"/);
+  assert.match(client, /function combatActorVisualEvent/);
+  assert.match(client, /return primaryEvent[\s\S]*?\?\? gravityEvent[\s\S]*?\?\? passiveEvent/);
+  assert.match(client, /const actorGravityPhase = elphabaAbilityPhase\(actorEvent\)/);
+  assert.match(client, /const tokenTimingEvent = actorEvent \?\? targetImpactEvent/);
+  assert.match(client, /function CombatTimedCue\(/);
+  assert.match(client, /key=\{`fire-wall:\$\{fireWallTimingEvent\.id\}`\}[\s\S]*?event=\{fireWallTimingEvent\}/);
+  assert.match(client, /const fireWallTimingEvent = targetEffects\.findLast/);
+  assert.match(client, /key=\{`block:\$\{event\.id\}`\}[\s\S]*?event=\{event\}/);
+  assert.match(client, /key=\{`impact:\$\{targetImpactEvent\.id\}`\}[\s\S]*?event=\{targetImpactEvent\}/);
+  assert.match(client, /key=\{`shield-impact:\$\{event\.id\}`\}[\s\S]*?event=\{event\}/);
+  assert.match(styles, /\.unit-impact-layer\s*\{[\s\S]*?position: absolute/);
+  assert.match(client, /function latestCombatTargetEvent[\s\S]*?activeEvents\.length - 1[\s\S]*?index >= 0/);
+  assert.match(client, /combatLinkStyle\(event\.fromPosition, event\.toPosition, boardHeightRatio\)/);
   assert.match(client, /"--action-duration"/);
   assert.match(client, /style=\{tokenStyle\}/);
+  assert.match(client, /key=\{`\$\{unit\.id\}:\$\{unitVisualCueEvent\?\.id \?\? "idle"\}`\}/);
+  assert.match(client, /key=\{link\.key\}/);
+  assert.match(client, /key=\{starfall\.event\.id\}/);
+  assert.match(client, /playbackClockSampleRef = useRef/);
+  assert.match(client, /const sample = playing \? playbackClockSampleRef\.current\?\.\(\) \?\? null : null/);
+  assert.match(client, /playbackGenerationRef\.current \+= 1/);
+  assert.doesNotMatch(client, /playbackManualReanchorRef|visualTimelineAnchor/);
+  assert.match(client, /handleCombatSpeedChange\(Number\(event\.target\.value\)\)/);
+  assert.match(client, /combatClockSecondsRef\.current = steppedCombatTime/);
+  assert.match(styles, /\.combat-timeline-cue[\s\S]*?animation-delay: calc\(var\(--combat-anchor-delay, 0ms\) \+ var\(--combat-child-delay, 0ms\)\) !important/);
+  assert.match(styles, /\.combat-timeline-cue[\s\S]*?animation-play-state: paused !important/);
+  assert.match(styles, /combat-step-preview[\s\S]*?var\(--combat-anchor-delay, var\(--combat-preview-delay, 0ms\)\)[\s\S]*?var\(--combat-child-delay, 0ms\)/);
+  assert.match(client, /currentEvents=\{activeVisualEvents\}/);
+  assert.match(client, /<Boitata3DLayer[\s\S]*?combatTime=\{currentCombatTime\}/);
+  assert.match(client, /<MeatGaga3DLayer[\s\S]*?combatTime=\{currentCombatTime\}/);
+  assert.doesNotMatch(client, /function combatDurationForUnits/);
+  assert.doesNotMatch(client, /actionDuration=\{(?:boitata|meatGaga)VisualDurationSeconds\}/);
+  assert.doesNotMatch(client, /key=\{`\$\{unit\.id\}[:\-]\$\{currentMoment/);
 });
 
 test("unit inspector exposes effective attack, movement, and mana rates", async () => {
@@ -316,10 +359,11 @@ test("combat actions expose directional links, actor emphasis, impacts, and redu
   ]);
 
   assert.match(client, /data-testid="combat-links"/);
-  assert.match(client, /currentEvents\.flatMap<CombatLinkCue>/);
+  assert.match(client, /activeVisualEvents\.flatMap<CombatLinkCue>/);
+  assert.doesNotMatch(client, /currentEvents\.flatMap/);
   assert.match(client, /unit-event-actor/);
   assert.match(client, /unit-event-move/);
-  assert.match(client, /unit-impact-damage/);
+  assert.match(client, /!isActor && isDamaged \? "unit-impact-damage"/);
   assert.match(client, /if \(event\?\.type === "shield"\) return "shield"/);
   assert.match(client, /event\.type === "move" \|\| event\.type === "attack" \|\| event\.type === "ability"/);
   assert.match(styles, /@keyframes combat-strike-line/);
@@ -330,13 +374,33 @@ test("combat actions expose directional links, actor emphasis, impacts, and redu
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
+test("shield reactions stay attached to their source combat event", async () => {
+  const [engine, client, boitataState] = await Promise.all([
+    readFile(new URL("../app/game-engine.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/boitata-3d-state.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(engine, /shieldAbsorbedAmounts\?: Record<string, number>/);
+  assert.match(engine, /fireWallAbsorbedAmounts\?: Record<string, number>/);
+  assert.match(engine, /fireWallBrokenTargetIds\?: string\[\]/);
+  assert.match(client, /event\.shieldAbsorbedAmounts\?\.\[unit\.id\]/);
+  assert.match(client, /event\.fireWallAbsorbedAmounts\?\.\[unit\.id\]/);
+  assert.match(client, /event\.fireWallBrokenTargetIds\?\.includes\(unit\.id\)/);
+  assert.doesNotMatch(client, /\(previousUnit\?\.shield \?\? 0\) - unit\.shield/);
+  assert.doesNotMatch(client, /previousUnit\.fireWallShield - unit\.fireWallShield/);
+  assert.match(boitataState, /const shieldImpactEvent = newestEvent/);
+  assert.match(boitataState, /shieldImpactEvent\?\.fireWallAbsorbedAmounts\?\.\[unit\.id\]/);
+  assert.doesNotMatch(boitataState, /snapshotShieldDamage/);
+});
+
 test("Sol's Starfall traces the cluster and marks every damaged character", async () => {
   const [client, styles] = await Promise.all([
     readFile(new URL("../app/game-client.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(client, /currentEvents\.flatMap<SolStarfallCue>/);
+  assert.match(client, /activeVisualEvents\.flatMap<SolStarfallCue>/);
   assert.match(client, /solStarfalls\.map\(\(starfall\) =>/);
   assert.match(client, /actor\?\.heroId !== "sol"/);
   assert.match(client, /data-testid="sol-starfall-layer"/);
@@ -398,7 +462,7 @@ test("empowered Meat Gaga attacks throw concurrent meat projectiles and splatter
 
   assert.match(client, /function isMeatGagaEnhancedAttack/);
   assert.match(client, /event\.meatBonusDamage/);
-  assert.match(client, /currentEvents\.flatMap<MeatProjectileCue>/);
+  assert.match(client, /activeVisualEvents\.flatMap<MeatProjectileCue>/);
   assert.match(client, /meatProjectiles\.map\(\(cue\) =>/);
   assert.match(client, /data-testid="meat-projectile-layer"/);
   assert.match(client, /data-testid=\{`meat-projectile-\$\{cue\.event\.id\}-\$\{cue\.targetId\}`\}/);
